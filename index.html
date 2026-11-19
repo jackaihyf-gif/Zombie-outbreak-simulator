@@ -1,0 +1,1035 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PROJECT OUTBREAK — Autonomous 3D Zombie Outbreak Simulator</title>
+  <style>
+    :root {
+      --bg-glass: rgba(10, 14, 23, 0.84);
+      --bg-card: rgba(17, 24, 39, 0.9);
+      --border-subtle: rgba(148, 163, 184, 0.16);
+      --border-active: rgba(56, 189, 248, 0.55);
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent-cyan: #38bdf8;
+      --accent-blue: #3b82f6;
+      --accent-green: #22c55e;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-red: #ef4444;
+      --accent-purple: #a855f7;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #070a10;
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      font-size: 12.5px;
+    }
+
+    #canvas-container {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+    }
+
+    #hud-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 10;
+      pointer-events: none;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .interactive {
+      pointer-events: auto;
+    }
+
+    /* 1. SLEEK SINGLE-ROW TOP BAR */
+    .top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(14px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 4px 10px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.42);
+      min-height: 40px;
+      flex-wrap: wrap;
+    }
+
+    .brand-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .brand-logo {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 800;
+      font-size: 13px;
+      letter-spacing: 0.06em;
+      color: #fff;
+    }
+
+    .brand-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-red);
+      box-shadow: 0 0 8px var(--accent-red);
+      animation: pulseDot 1.6s infinite;
+    }
+
+    @keyframes pulseDot {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.25); opacity: 0.65; }
+    }
+
+    .sim-clock {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      color: var(--accent-cyan);
+      background: rgba(56, 189, 248, 0.1);
+      padding: 2px 6px;
+      border-radius: 5px;
+    }
+
+    .status-badge {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 5px;
+      letter-spacing: 0.04em;
+    }
+    .status-normal { background: rgba(34, 197, 94, 0.16); color: #4ade80; }
+    .status-incident { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
+    .status-outbreak { background: rgba(239, 68, 68, 0.22); color: #f87171; }
+    .status-contained { background: rgba(56, 189, 248, 0.2); color: #38bdf8; }
+
+    /* Compact Inline Stats */
+    .stats-inline {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+      padding: 3px 9px;
+      border-radius: 7px;
+      white-space: nowrap;
+    }
+
+    .stat-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+    }
+
+    .stat-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+
+    .stat-lbl {
+      color: var(--text-muted);
+      font-size: 10px;
+    }
+
+    .stat-val {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      color: #fff;
+    }
+
+    /* Compact Top Buttons */
+    .controls-strip {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      white-space: nowrap;
+    }
+
+    .btn {
+      background: rgba(30, 41, 59, 0.78);
+      color: var(--text-main);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 3px 7px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.14s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .btn:hover {
+      background: rgba(51, 65, 85, 0.92);
+      border-color: rgba(148, 163, 184, 0.4);
+    }
+
+    .btn.active {
+      background: rgba(56, 189, 248, 0.22);
+      color: var(--accent-cyan);
+      border-color: var(--accent-cyan);
+    }
+
+    .btn-primary {
+      background: rgba(37, 99, 235, 0.85);
+      border-color: #3b82f6;
+      color: #fff;
+    }
+
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.16);
+      border-color: rgba(239, 68, 68, 0.35);
+      color: #fca5a5;
+    }
+
+    /* NON-BLOCKING CRISIS ALERT TOAST */
+    .alert-toast {
+      position: absolute;
+      top: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 30;
+      pointer-events: none;
+      padding: 7px 16px;
+      border-radius: 8px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 8px 26px rgba(0, 0, 0, 0.55);
+      border: 1px solid rgba(239, 68, 68, 0.55);
+      background: rgba(24, 10, 14, 0.88);
+      color: #fecaca;
+      opacity: 0;
+      transition: opacity 0.25s ease;
+      white-space: nowrap;
+    }
+
+    .alert-toast.visible {
+      opacity: 1;
+    }
+
+    .alert-toast.sev-warn {
+      border-color: rgba(245, 158, 11, 0.6);
+      background: rgba(28, 18, 6, 0.9);
+      color: #fde68a;
+    }
+
+    .alert-toast.sev-info {
+      border-color: rgba(56, 189, 248, 0.6);
+      background: rgba(8, 22, 36, 0.9);
+      color: #bae6fd;
+    }
+
+    /* 2. SINGLE COMPACT TOP-RIGHT TACTICAL WIDGET (TABBED & COLLAPSIBLE) */
+    .tactical-drawer {
+      position: absolute;
+      top: 62px;
+      right: 14px;
+      width: 256px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(14px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 8px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .drawer-tabs {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .tab-btn {
+      flex: 1;
+      background: rgba(15, 23, 42, 0.65);
+      color: var(--text-muted);
+      border: 1px solid transparent;
+      border-radius: 6px;
+      padding: 4px 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.14s;
+    }
+
+    .tab-btn:hover { color: #fff; }
+    .tab-btn.active {
+      background: rgba(56, 189, 248, 0.18);
+      color: var(--accent-cyan);
+      border-color: rgba(56, 189, 248, 0.4);
+    }
+
+    .tab-collapse-btn {
+      background: transparent;
+      color: var(--text-muted);
+      border: none;
+      padding: 3px 6px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .drawer-body.collapsed { display: none; }
+    .tab-pane { display: none; flex-direction: column; gap: 6px; }
+    .tab-pane.active { display: flex; }
+
+    #minimap-canvas {
+      width: 238px;
+      height: 170px;
+      background: #080c14;
+      border-radius: 6px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      cursor: crosshair;
+    }
+
+    #chart-canvas {
+      width: 238px;
+      height: 140px;
+      background: #080c14;
+      border-radius: 6px;
+      border: 1px solid rgba(148, 163, 184, 0.15);
+    }
+
+    .chart-legend {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10.5px;
+      color: var(--text-muted);
+    }
+
+    .legend-item { display: flex; align-items: center; gap: 4px; }
+    .legend-swatch { width: 7px; height: 7px; border-radius: 2px; }
+
+    .event-log-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 170px;
+      overflow-y: auto;
+      padding-right: 2px;
+    }
+
+    .event-log-list::-webkit-scrollbar { width: 3px; }
+    .event-log-list::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.3); border-radius: 3px; }
+
+    .event-item {
+      background: rgba(15, 23, 42, 0.72);
+      border-left: 2.5px solid var(--accent-cyan);
+      padding: 4px 7px;
+      border-radius: 4px;
+      font-size: 11px;
+      line-height: 1.3;
+      cursor: pointer;
+    }
+    .event-item:hover { background: rgba(30, 41, 59, 0.9); }
+    .event-item.type-infection { border-left-color: var(--accent-red); }
+    .event-item.type-report { border-left-color: var(--accent-amber); }
+    .event-item.type-police { border-left-color: var(--accent-blue); }
+    .event-item.type-evac { border-left-color: var(--accent-green); }
+    .event-time { font-family: var(--font-mono); font-size: 9.5px; color: var(--text-muted); margin-right: 4px; }
+
+    /* 3. CONTEXTUAL AUTO-HIDING AGENT INSPECTOR POPUP (BOTTOM-LEFT) */
+    .inspector-popup {
+      position: absolute;
+      bottom: 64px;
+      left: 14px;
+      width: 274px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(14px);
+      border: 1px solid var(--border-active);
+      border-radius: 10px;
+      padding: 10px 12px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .inspector-popup.hidden { display: none; }
+
+    .insp-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+    .insp-title {
+      font-weight: 700;
+      font-size: 13px;
+      color: #fff;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .insp-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10.5px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    .health-bar-bg {
+      width: 100%;
+      height: 5px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .health-bar-fill { height: 100%; background: var(--accent-green); transition: width 0.2s ease; }
+
+    .insp-story {
+      font-size: 11px;
+      color: #cbd5e1;
+      line-height: 1.35;
+      max-height: 68px;
+      overflow-y: auto;
+      background: rgba(15, 23, 42, 0.55);
+      padding: 5px 7px;
+      border-radius: 5px;
+    }
+
+    /* 4. COMPACT SINGLE-ROW CENTERED BOTTOM TACTICAL DOCK */
+    .bottom-dock-wrapper {
+      display: flex;
+      justify-content: center;
+      width: 100%;
+    }
+
+    .bottom-dock {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-wrap: wrap;
+      max-width: 100%;
+      gap: 4px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(14px);
+      border: 1px solid var(--border-subtle);
+      border-radius: 11px;
+      padding: 4px 8px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55);
+    }
+
+    .tool-btn {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(20, 29, 47, 0.85);
+      border: 1px solid var(--border-subtle);
+      border-radius: 7px;
+      padding: 5px 8px;
+      cursor: pointer;
+      transition: all 0.14s ease;
+      color: var(--text-main);
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .tool-btn:hover {
+      background: rgba(30, 41, 59, 0.95);
+      border-color: rgba(56, 189, 248, 0.45);
+      transform: translateY(-1px);
+    }
+
+    .tool-btn.active {
+      background: rgba(37, 99, 235, 0.32);
+      border-color: var(--accent-cyan);
+      color: #fff;
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.25);
+    }
+
+    .tool-cost {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--accent-cyan);
+      background: rgba(56, 189, 248, 0.12);
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    .cp-pill {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      padding: 5px 10px;
+      border-radius: 7px;
+      font-family: var(--font-mono);
+      font-weight: 800;
+      font-size: 12px;
+      color: var(--accent-cyan);
+      margin-left: 3px;
+      white-space: nowrap;
+    }
+
+    /* SCENARIO & MAP LAB MODAL */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(4, 7, 13, 0.8);
+      backdrop-filter: blur(8px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .modal-backdrop.hidden { display: none; }
+
+    .modal-card {
+      background: linear-gradient(180deg, #111827 0%, #0b101b 100%);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      border-radius: 14px;
+      max-width: 780px;
+      width: 100%;
+      padding: 20px 24px;
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.78);
+      display: flex;
+      flex-direction: column;
+      gap: 13px;
+    }
+
+    .modal-title {
+      font-size: 19px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .section-lbl {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      margin-bottom: -6px;
+    }
+
+    .map-cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 9px;
+    }
+
+    .scenario-cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 9px;
+    }
+
+    .map-card, .scenario-card {
+      background: rgba(20, 29, 47, 0.75);
+      border: 1px solid var(--border-subtle);
+      border-radius: 9px;
+      padding: 10px 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .map-card:hover, .scenario-card:hover { border-color: rgba(56, 189, 248, 0.5); }
+    .map-card.selected, .scenario-card.selected {
+      border-color: var(--accent-cyan);
+      background: rgba(37, 99, 235, 0.24);
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.18);
+    }
+
+    .map-card h3, .scenario-card h3 { font-size: 13px; color: #fff; }
+    .map-card .tag, .scenario-card .tag {
+      font-family: var(--font-mono);
+      font-size: 9.5px;
+      color: var(--accent-cyan);
+      text-transform: uppercase;
+    }
+    .map-card p, .scenario-card p { font-size: 11px; color: var(--text-muted); line-height: 1.35; }
+
+    .modal-config-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      background: rgba(15, 23, 42, 0.75);
+      padding: 9px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      flex-wrap: wrap;
+    }
+
+    .config-field { display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
+
+    .input-compact, .select-compact {
+      background: rgba(15, 23, 42, 0.9);
+      color: var(--text-main);
+      border: 1px solid var(--border-subtle);
+      border-radius: 5px;
+      padding: 4px 7px;
+      font-size: 11.5px;
+      font-family: var(--font-mono);
+    }
+
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+    #hover-tooltip {
+      position: fixed;
+      z-index: 50;
+      pointer-events: none;
+      background: rgba(10, 14, 23, 0.92);
+      border: 1px solid rgba(56, 189, 248, 0.45);
+      padding: 5px 9px;
+      border-radius: 5px;
+      font-size: 11px;
+      color: #fff;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      display: none;
+      white-space: nowrap;
+    }
+    .map-cards { grid-template-columns: repeat(2, 1fr) !important; }
+    .hidden { display: none !important; }
+    @media (max-width: 1120px) {
+      .top-bar { height: auto !important; flex-wrap: wrap; row-gap: 6px; padding: 6px 10px !important; }
+      .tactical-drawer { top: 96px !important; }
+    }
+    #fps-hud {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 40;
+      display: none;
+    }
+    #fps-hud.active { display: block; }
+    #fps-danger-vignette {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at center, transparent 42%, rgba(220, 38, 38, 0.85) 100%);
+      opacity: 0;
+      transition: opacity 0.12s ease;
+    }
+    #fps-crosshair {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 10px;
+      height: 10px;
+      transform: translate(-50%, -50%);
+      border: 1.5px solid rgba(255, 255, 255, 0.75);
+      border-radius: 50%;
+      box-shadow: 0 0 6px rgba(0, 0, 0, 0.7);
+    }
+    #fps-top-panel {
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(10, 15, 28, 0.82);
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 10px;
+      padding: 8px 16px;
+      text-align: center;
+      backdrop-filter: blur(8px);
+      min-width: 300px;
+      pointer-events: auto;
+    }
+    #fps-objective { font-size: 13px; font-weight: 700; color: #f8fafc; letter-spacing: 0.3px; }
+    #fps-train-status { font-size: 11px; color: #38bdf8; margin-top: 2px; }
+    #fps-interact-prompt {
+      position: absolute;
+      left: 50%;
+      top: 58%;
+      transform: translateX(-50%);
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid #f59e0b;
+      color: #fde68a;
+      padding: 7px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 700;
+      display: none;
+    }
+    #fps-bottom-panel {
+      position: absolute;
+      bottom: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      background: rgba(10, 15, 28, 0.86);
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      border-radius: 10px;
+      padding: 10px 16px;
+      pointer-events: auto;
+      backdrop-filter: blur(8px);
+    }
+    .fps-bar-wrap { width: 120px; }
+    .fps-bar-label { font-size: 10px; color: #cbd5e1; margin-bottom: 3px; display: flex; justify-content: space-between; }
+    .fps-bar-track { height: 7px; background: rgba(255, 255, 255, 0.14); border-radius: 4px; overflow: hidden; }
+    #fps-hp-fill { height: 100%; width: 100%; background: #22c55e; transition: width 0.1s; }
+    #fps-stam-fill { height: 100%; width: 100%; background: #38bdf8; transition: width 0.1s; }
+    #fps-controls-hint { font-size: 11px; color: #94a3b8; white-space: nowrap; }
+    #fps-outcome-card {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(10, 15, 28, 0.94);
+      border: 1px solid rgba(148, 163, 184, 0.45);
+      border-radius: 12px;
+      padding: 20px 26px;
+      text-align: center;
+      pointer-events: auto;
+      display: none;
+      min-width: 280px;
+    }
+    #fps-outcome-card.active { display: block; }
+    #fps-outcome-title { font-size: 18px; font-weight: 800; margin-bottom: 6px; }
+    #fps-outcome-desc { font-size: 12px; color: #cbd5e1; margin-bottom: 14px; }
+    .fps-outcome-actions { display: flex; gap: 10px; justify-content: center; }
+  </style>
+</head>
+<body>
+  <div id="canvas-container"></div>
+  <div id="hover-tooltip"></div>
+
+  <div id="hud-layer">
+    <!-- 1. COMPACT SINGLE-ROW TOP BAR -->
+    <header class="top-bar interactive">
+      <div class="brand-group">
+        <div class="brand-logo">
+          <span class="brand-dot"></span>
+          <span>OUTBREAK</span>
+        </div>
+        <div id="sim-clock" class="sim-clock">08:00:00</div>
+        <div id="outbreak-status-badge" class="status-badge status-normal">CITY NORMAL</div>
+      </div>
+
+      <div class="stats-inline">
+        <div class="stat-item" title="Healthy Civilians">
+          <span class="stat-dot" style="background:#38bdf8"></span>
+          <span class="stat-lbl">Healthy</span>
+          <span id="stat-healthy" class="stat-val">0</span>
+        </div>
+        <div class="stat-item" title="Active Infected & Incubating">
+          <span class="stat-dot" style="background:#ef4444"></span>
+          <span class="stat-lbl">Infected</span>
+          <span id="stat-infected" class="stat-val">0</span>
+        </div>
+        <div class="stat-item" title="Police & SWAT Officers">
+          <span class="stat-dot" style="background:#3b82f6"></span>
+          <span class="stat-lbl">Police</span>
+          <span id="stat-police" class="stat-val">0</span>
+        </div>
+        <div class="stat-item" title="Antiviral Cures by Paramedics">
+          <span class="stat-dot" style="background:#10b981"></span>
+          <span class="stat-lbl">Cured</span>
+          <span id="stat-cured" class="stat-val">0</span>
+        </div>
+        <div class="stat-item" title="Civilians Sheltering in Buildings">
+          <span class="stat-dot" style="background:#a855f7"></span>
+          <span class="stat-lbl">Shelter</span>
+          <span id="stat-sheltered" class="stat-val">0</span>
+        </div>
+        <div class="stat-item" title="Safely Evacuated Civilians">
+          <span class="stat-dot" style="background:#22c55e"></span>
+          <span class="stat-lbl">Evac</span>
+          <span id="stat-evacuated" class="stat-val">0</span>
+        </div>
+        <div class="stat-item" title="Casualties & Neutralized Hostiles">
+          <span class="stat-dot" style="background:#64748b"></span>
+          <span class="stat-lbl">Dead</span>
+          <span id="stat-deceased" class="stat-val">0</span>
+        </div>
+      </div>
+
+      <div class="controls-strip">
+        <button id="btn-play-pause" class="btn active" title="Pause / Resume (Space)">⏸</button>
+        <button id="btn-speed-1" class="btn active">1x</button>
+        <button id="btn-speed-2" class="btn">2x</button>
+        <button id="btn-speed-5" class="btn">5x</button>
+        <button id="btn-find-infected" class="btn" title="Locate Active Infected">🔍 Infected</button>
+        <button id="btn-fps-mode" class="btn" title="First-Person Unarmed Survivor Escape (F)">🏃 Escape</button>
+        <button id="btn-auto-cam" class="btn" title="Cinematic Auto-Director Camera">🎬 Auto</button>
+        <button id="btn-audio" class="btn active" title="Toggle Sound Effects">🔊</button>
+        <button id="btn-lighting" class="btn" title="Cycle Atmosphere: Dusk / Night / Day">🌆</button>
+        <button id="btn-reset" class="btn btn-danger" title="Reset Current Scenario">↺</button>
+        <button id="btn-open-scenarios" class="btn btn-primary" title="Maps, Modes & Population Lab">⚙ Lab</button>
+      </div>
+    </header>
+
+    <!-- NON-BLOCKING CRISIS ALERT TOAST -->
+    <div id="alert-toast" class="alert-toast"></div>
+
+    <!-- 2. SINGLE TABBED & COLLAPSIBLE TOP-RIGHT MINI-DRAWER -->
+    <aside class="tactical-drawer interactive">
+      <div class="drawer-tabs">
+        <button class="tab-btn active" data-tab="radar">📡 Radar</button>
+        <button class="tab-btn" data-tab="trend">📈 Trend</button>
+        <button class="tab-btn" data-tab="log">📻 Radio <span id="active-reports-count"></span></button>
+        <button id="btn-collapse-drawer" class="tab-collapse-btn" title="Collapse / Expand Drawer">▾</button>
+      </div>
+
+      <div id="drawer-body" class="drawer-body">
+        <div id="tab-radar" class="tab-pane active">
+          <canvas id="minimap-canvas" width="238" height="170"></canvas>
+          <div id="defense-lines-status" style="font-size:10px; color:#cbd5e1; margin-top:4px; line-height:1.45;"></div>
+          <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted); margin-top:2px;">
+            <span>Click map to pan / gate</span>
+            <span id="priority-sector-label" style="color:var(--accent-cyan);">All Sectors</span>
+          </div>
+        </div>
+
+        <div id="tab-trend" class="tab-pane">
+          <canvas id="chart-canvas" width="238" height="140"></canvas>
+          <div class="chart-legend">
+            <span class="legend-item"><span class="legend-swatch" style="background:#38bdf8"></span>Healthy</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#f59e0b"></span>Panic</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#ef4444"></span>Infected</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#22c55e"></span>Evac</span>
+            <span id="chart-time-label">0s</span>
+          </div>
+        </div>
+
+        <div id="tab-log" class="tab-pane">
+          <div id="event-log-list" class="event-log-list"></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 3. CONTEXTUAL AUTO-HIDING AGENT INSPECTOR POPUP (BOTTOM-LEFT) -->
+    <section id="inspector-panel" class="inspector-popup interactive hidden">
+      <div class="insp-header">
+        <span id="insp-name" class="insp-title">Agent Name</span>
+        <div style="display:flex; gap:4px;">
+          <button id="btn-follow-agent" class="btn" style="padding:2px 6px; font-size:10px;">Follow</button>
+          <button id="btn-close-inspector" class="btn" style="padding:2px 6px; font-size:10px;">✕</button>
+        </div>
+      </div>
+      <div class="insp-meta">
+        <span id="insp-state">CIVILIAN</span>
+        <span id="insp-district">Downtown</span>
+      </div>
+      <div class="health-bar-bg">
+        <div id="insp-health-bar" class="health-bar-fill" style="width: 100%;"></div>
+      </div>
+      <div style="font-size:11px; color:var(--accent-cyan);" id="insp-task">Walking</div>
+      <div id="insp-story" class="insp-story"></div>
+    </section>
+
+    <!-- 4. SLEEK SINGLE-ROW BOTTOM TACTICAL DOCK -->
+    <div class="bottom-dock-wrapper">
+      <footer class="bottom-dock interactive">
+        <button class="tool-btn active" data-tool="inspect" title="[1] Click any agent to inspect & follow">
+          <span>🔍 Inspect</span>
+        </button>
+        <button class="tool-btn" data-tool="deploy_police" title="[2] Deploy 2 Patrol Officers">
+          <span>🚓 Patrol</span><span class="tool-cost">20</span>
+        </button>
+        <button class="tool-btn" data-tool="deploy_swat" title="[3] Deploy 2 Heavy Armored SWAT Operators">
+          <span>🛡️ SWAT</span><span class="tool-cost">35</span>
+        </button>
+        <button class="tool-btn" data-tool="deploy_medic" title="[4] Deploy 2 Field Paramedics (Cures Incubating Victims)">
+          <span>🚑 Medic</span><span class="tool-cost">25</span>
+        </button>
+        <button class="tool-btn" data-tool="lure_flare" title="[5] Lure Flare — Draws infected away (15)">
+          <span>📢 Lure</span><span class="tool-cost">15</span>
+        </button>
+        <button class="tool-btn" data-tool="frag_bomb" title="[6] Frag Strike — Blast apart zombie pyramids (20)">
+          <span>💣 Frag</span><span class="tool-cost">20</span>
+        </button>
+        <button class="tool-btn" data-tool="roadblock" title="[7] Establish Fortified Street Barricade">
+          <span>🚧 Roadblock</span><span class="tool-cost">15</span>
+        </button>
+        <button class="tool-btn" data-tool="defend_zone" title="[8] Rally Police to Defend Perimeter">
+          <span>🎯 Defend</span><span class="tool-cost">15</span>
+        </button>
+        <button class="tool-btn" data-tool="evac_zone" title="[9] Place Civilian Evacuation Beacon">
+          <span>🚩 Evac</span><span class="tool-cost">20</span>
+        </button>
+        <button class="tool-btn" data-tool="priority_sector" title="[0] Prioritize Neighborhood Patrols">
+          <span>📡 Priority</span><span class="tool-cost">10</span>
+        </button>
+
+        <div id="cp-display" class="cp-pill" title="Tactical Command Points">⚡ 120 CP</div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- FIRST-PERSON UNARMED ESCAPE HUD -->
+  <div id="fps-hud">
+    <div id="fps-danger-vignette"></div>
+    <div id="fps-crosshair"></div>
+    <div id="fps-top-panel">
+      <div id="fps-objective">OBJECTIVE: Reach South Express Station</div>
+      <div id="fps-train-status">Express Train: Approaching</div>
+    </div>
+    <div id="fps-interact-prompt">Press [E] to Toggle Blast Gate</div>
+    <div id="fps-bottom-panel">
+      <div class="fps-bar-wrap">
+        <div class="fps-bar-label"><span>HP</span><span id="fps-hp-text">100</span></div>
+        <div class="fps-bar-track"><div id="fps-hp-fill"></div></div>
+      </div>
+      <div class="fps-bar-wrap">
+        <div class="fps-bar-label"><span>STAMINA</span><span id="fps-stam-text">100</span></div>
+        <div class="fps-bar-track"><div id="fps-stam-fill"></div></div>
+      </div>
+      <div id="fps-controls-hint">WASD Move • Shift Sprint • Mouse/Drag Look • E Gate • F Exit</div>
+      <button id="btn-exit-fps" class="btn btn-danger" style="padding:5px 10px; font-size:11px;">Exit (F)</button>
+    </div>
+    <div id="fps-outcome-card">
+      <div id="fps-outcome-title">SURVIVED</div>
+      <div id="fps-outcome-desc">You escaped aboard the Express Train!</div>
+      <div class="fps-outcome-actions">
+        <button id="btn-fps-respawn" class="btn btn-primary">New Survivor</button>
+        <button id="btn-fps-commander" class="btn">Commander View</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SCENARIO & MAP LAB MODAL -->
+  <div id="scenario-modal" class="modal-backdrop hidden">
+    <div class="modal-card interactive">
+      <div class="modal-title">
+        <span class="brand-dot"></span>
+        <span>PROJECT OUTBREAK // MAP & SCENARIO LAB</span>
+      </div>
+
+      <div class="section-lbl">1. Select City Map</div>
+      <div class="map-cards">
+        <div class="map-card selected" data-map="citadel_express">
+          <span class="tag">3 Defense Lines • 456m Organic Corridor</span>
+          <h3>🧱 Citadel Wall & Express</h3>
+          <p>Non-grid metropolis with North Highway pileup, Midtown Canal bridges, brick alleys, parking lots & 3 Blast Gate lines leading to the KTX South Terminal.</p>
+        </div>
+        <div class="map-card" data-map="grand_metropolis">
+          <span class="tag">7×7 Mega Grid • 49 Blocks</span>
+          <h3>🏙️ Grand Metropolis</h3>
+          <p>Massive city with towering skyscraper core, Civic Stadium Plaza, Industrial Zone & dual evac terminals.</p>
+        </div>
+        <div class="map-card" data-map="twin_bridges">
+          <span class="tag">7×7 River Divide • Bottleneck</span>
+          <h3>🌉 Twin River Bridges</h3>
+          <p>Central river splits North Downtown from South Safe Zone. Crowds & zombies funnel across two suspension bridges!</p>
+        </div>
+        <div class="map-card" data-map="quarantine_citadel">
+          <span class="tag">5×5 High-Density Canyon</span>
+          <h3>🏟️ Neon Downtown</h3>
+          <p>Compact vertical skyscraper canyon where panic spreads explosively through dense intersections.</p>
+        </div>
+      </div>
+
+      <div class="section-lbl">2. Select Outbreak Mode</div>
+      <div class="scenario-cards">
+        <div class="scenario-card selected" data-scenario="wwz_busan">
+          <span class="tag">Layered Siege • Pyramids & Express</span>
+          <h3>🚄 WWZ × 釜山狂潮</h3>
+          <p>Hordes pile up in 3D Zombie Pyramids against Defense Line 1 & 2 while runaway trucks crash and the Express Train cycles South!</p>
+        </div>
+        <div class="scenario-card" data-scenario="patient_zero">
+          <span class="tag">Classic Origin</span>
+          <h3>🧬 Patient Zero</h3>
+          <p>1 hidden carrier sparks an emergent outbreak. Police & Medics patrol normally.</p>
+        </div>
+        <div class="scenario-card" data-scenario="multi_epicenter">
+          <span class="tag">Simultaneous Crisis</span>
+          <h3>☣️ Multi-Epicenter</h3>
+          <p>5 simultaneous outbreak points erupt across different districts, stretching police response thin.</p>
+        </div>
+        <div class="scenario-card" data-scenario="horde_invasion">
+          <span class="tag">3-Wave Apocalypse</span>
+          <h3>🌊 Crimson Tide Siege</h3>
+          <p>55 Infected + 4 Alpha Brutes surge from the North, with massive reinforcement waves at 38s & 80s!</p>
+        </div>
+        <div class="scenario-card" data-scenario="delayed_response">
+          <span class="tag">Comms Blackout</span>
+          <h3>📡 Delayed Response</h3>
+          <p>2 carriers start an outbreak while a 35s 911 blackout delays police mobilization.</p>
+        </div>
+        <div class="scenario-card" data-scenario="super_spreader">
+          <span class="tag">2.5s Fast Strain</span>
+          <h3>⚡ Fast Strain</h3>
+          <p>2.5s hyper-fast incubation, 22% faster zombies, and frequent Runner & Brute mutations.</p>
+        </div>
+        <div class="scenario-card" data-scenario="no_intervention">
+          <span class="tag">Pure Sandbox</span>
+          <h3>👁️ No Intervention</h3>
+          <p>Tactical command tools locked. Watch whether city defenses survive completely unassisted.</p>
+        </div>
+      </div>
+
+      <div class="modal-config-row">
+        <div class="config-field">
+          <label for="input-seed">Seed:</label>
+          <input id="input-seed" class="input-compact" type="text" value="CITADEL-2026" style="width: 112px;" />
+          <button id="btn-random-seed" class="btn">🎲</button>
+        </div>
+        <div class="config-field">
+          <label for="select-population">Population (InstancedMesh):</label>
+          <select id="select-population" class="select-compact">
+            <option value="300">300 (Standard)</option>
+            <option value="600" selected>600 (Rush Hour)</option>
+            <option value="1200">1200 (Mega Metropolis)</option>
+            <option value="2200">2200 (Apocalypse Swarm)</option>
+          </select>
+        </div>
+        <div class="config-field">
+          <label for="select-incubation">Incubation:</label>
+          <select id="select-incubation" class="select-compact">
+            <option value="3">3s (Rapid)</option>
+            <option value="7" selected>7s (Normal)</option>
+            <option value="12">12s (Stealth)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="btn-close-modal" class="btn">Close</button>
+        <button id="btn-launch-scenario" class="btn btn-primary" style="padding: 6px 16px;">▶ Launch Simulation</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

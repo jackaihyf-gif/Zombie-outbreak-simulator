@@ -1,0 +1,7 @@
+node_modules/
+dist/
+_legacy_kingdom_siege/
+.DS_Store
+*.log
+.env
+.env.*
