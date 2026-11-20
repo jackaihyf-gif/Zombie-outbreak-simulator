@@ -1,9 +1,18 @@
 import { CityLayout } from './cityData';
-import { AgentData, BlastGateData, BuildingData, DefenseWallData, Vec2 } from './types';
+import {
+  AgentData,
+  BlastGateData,
+  BuildingData,
+  DefenseWallData,
+  InteriorDoorData,
+  StaticObstacleData,
+  Vec2
+} from './types';
 
 export class SpatialGrid {
   private cellSize: number;
   private cells: Map<number, AgentData[]> = new Map();
+  private activeBuckets: AgentData[][] = [];
 
   constructor(cellSize = 10) {
     this.cellSize = cellSize;
@@ -14,7 +23,10 @@ export class SpatialGrid {
   }
 
   public clear(): void {
-    this.cells.clear();
+    for (let i = 0; i < this.activeBuckets.length; i++) {
+      this.activeBuckets[i].length = 0;
+    }
+    this.activeBuckets.length = 0;
   }
 
   public insert(agent: AgentData): void {
@@ -25,6 +37,9 @@ export class SpatialGrid {
     if (!bucket) {
       bucket = [];
       this.cells.set(key, bucket);
+    }
+    if (bucket.length === 0) {
+      this.activeBuckets.push(bucket);
     }
     bucket.push(agent);
   }
@@ -57,6 +72,7 @@ export class SpatialGrid {
 
 const losScratch: BuildingData[] = [];
 const colScratch: BuildingData[] = [];
+const obsScratch: StaticObstacleData[] = [];
 
 /**
  * Checks if segment (x1,z1)->(x2,z2) intersects an expanded 2D AABB
@@ -118,7 +134,8 @@ export function hasLineOfSight(
   z2: number,
   city: CityLayout,
   walls: DefenseWallData[] = [],
-  gates: BlastGateData[] = []
+  gates: BlastGateData[] = [],
+  _interiorDoors: InteriorDoorData[] = []
 ): boolean {
   // Check tall solid defense walls first
   for (let wi = 0; wi < walls.length; wi++) {
@@ -155,24 +172,47 @@ export function hasLineOfSight(
     if (b.maxX < segMinX || b.minX > segMaxX || b.maxZ < segMinZ || b.minZ > segMaxZ) {
       continue;
     }
-    if (
-      segmentIntersectsAABB(
-        x1,
-        z1,
-        x2,
-        z2,
-        b.minX + 0.2,
-        b.maxX - 0.2,
-        b.minZ + 0.2,
-        b.maxZ - 0.2
-      )
-    ) {
-      return false;
+    if (!b.interior) {
+      if (
+        segmentIntersectsAABB(
+          x1,
+          z1,
+          x2,
+          z2,
+          b.minX + 0.2,
+          b.maxX - 0.2,
+          b.minZ + 0.2,
+          b.maxZ - 0.2
+        )
+      ) {
+        return false;
+      }
+    } else {
+      for (let wi = 0; wi < b.interior.walls.length; wi++) {
+        const w = b.interior.walls[wi];
+        if (segmentIntersectsAABB(x1, z1, x2, z2, w.minX, w.maxX, w.minZ, w.maxZ)) {
+          return false;
+        }
+      }
+      for (let pi = 0; pi < b.interior.props.length; pi++) {
+        const p = b.interior.props[pi];
+        if (p.height >= 2.2 && segmentIntersectsAABB(x1, z1, x2, z2, p.minX, p.maxX, p.minZ, p.maxZ)) {
+          return false;
+        }
+      }
     }
   }
-  for (let i = 0; i < city.staticObstacles.length; i++) {
-    const obs = city.staticObstacles[i];
-    if (obs.height < 2.2) continue;
+  for (let i = 0; i < city.tallObstacles.length; i++) {
+    const obs = city.tallObstacles[i];
+    const r = obs.boundR ?? Math.max(obs.width, obs.depth) * 0.6;
+    if (
+      obs.x + r < segMinX ||
+      obs.x - r > segMaxX ||
+      obs.z + r < segMinZ ||
+      obs.z - r > segMaxZ
+    ) {
+      continue;
+    }
     const hw = obs.width * 0.5;
     const hd = obs.depth * 0.5;
     if (segmentIntersectsAABB(x1, z1, x2, z2, obs.x - hw, obs.x + hw, obs.z - hd, obs.z + hd)) {
@@ -182,9 +222,36 @@ export function hasLineOfSight(
   return true;
 }
 
+function pushOutBox(
+  pos: Vec2,
+  radius: number,
+  boxMinX: number,
+  boxMaxX: number,
+  boxMinZ: number,
+  boxMaxZ: number
+): void {
+  const minX = boxMinX - radius;
+  const maxX = boxMaxX + radius;
+  const minZ = boxMinZ - radius;
+  const maxZ = boxMaxZ + radius;
+
+  if (pos.x > minX && pos.x < maxX && pos.z > minZ && pos.z < maxZ) {
+    const dLeft = pos.x - minX;
+    const dRight = maxX - pos.x;
+    const dTop = pos.z - minZ;
+    const dBottom = maxZ - pos.z;
+
+    const minDist = Math.min(dLeft, dRight, dTop, dBottom);
+    if (minDist === dLeft) pos.x = minX - 0.01;
+    else if (minDist === dRight) pos.x = maxX + 0.01;
+    else if (minDist === dTop) pos.z = minZ - 0.01;
+    else pos.z = maxZ + 0.01;
+  }
+}
+
 /**
- * Pushes position (x, z) out of nearby building footprints, open river channels,
- * static pileup obstacles / shipping containers, and closed defense walls.
+ * Pushes position (x, z) out of nearby building footprints (or walkable 1st-floor interior walls/props/locked doors),
+ * open river channels, static pileup obstacles / shipping containers, and closed defense walls.
  */
 export function resolveWorldCollisions(
   pos: Vec2,
@@ -192,41 +259,67 @@ export function resolveWorldCollisions(
   city: CityLayout,
   walls: DefenseWallData[] = [],
   gates: BlastGateData[] = [],
-  climbY = 0
+  climbY = 0,
+  interiorDoors: InteriorDoorData[] = []
 ): void {
-  const buildings = city.getBuildingsNearPos(pos.x, pos.z, colScratch);
+  const buildings = city.getBuildingsNearPos(pos.x, pos.z, colScratch, radius + 1.4);
   for (let i = 0; i < buildings.length; i++) {
     const b = buildings[i];
-    const minX = b.minX - radius;
-    const maxX = b.maxX + radius;
-    const minZ = b.minZ - radius;
-    const maxZ = b.maxZ + radius;
-
-    if (pos.x > minX && pos.x < maxX && pos.z > minZ && pos.z < maxZ) {
-      const dLeft = pos.x - minX;
-      const dRight = maxX - pos.x;
-      const dTop = pos.z - minZ;
-      const dBottom = maxZ - pos.z;
-
-      const minDist = Math.min(dLeft, dRight, dTop, dBottom);
-      if (minDist === dLeft) pos.x = minX - 0.01;
-      else if (minDist === dRight) pos.x = maxX + 0.01;
-      else if (minDist === dTop) pos.z = minZ - 0.01;
-      else pos.z = maxZ + 0.01;
+    if (!b.interior) {
+      pushOutBox(pos, radius, b.minX, b.maxX, b.minZ, b.maxZ);
+    } else if (
+      pos.x >= b.minX - radius - 1.2 &&
+      pos.x <= b.maxX + radius + 1.2 &&
+      pos.z >= b.minZ - radius - 1.2 &&
+      pos.z <= b.maxZ + radius + 1.2
+    ) {
+      for (let wi = 0; wi < b.interior.walls.length; wi++) {
+        const w = b.interior.walls[wi];
+        pushOutBox(pos, radius, w.minX, w.maxX, w.minZ, w.maxZ);
+      }
+      for (let pi = 0; pi < b.interior.props.length; pi++) {
+        const p = b.interior.props[pi];
+        pushOutBox(pos, radius, p.minX, p.maxX, p.minZ, p.maxZ);
+      }
+      for (let di = 0; di < interiorDoors.length; di++) {
+        const door = interiorDoors[di];
+        if (door.buildingId !== b.id || !door.isLocked || door.isBroken) continue;
+        if (door.side === 'N' || door.side === 'S') {
+          pushOutBox(
+            pos,
+            radius,
+            door.x - door.width * 0.5,
+            door.x + door.width * 0.5,
+            door.z - 0.34,
+            door.z + 0.34
+          );
+        } else {
+          pushOutBox(
+            pos,
+            radius,
+            door.x - 0.34,
+            door.x + 0.34,
+            door.z - door.width * 0.5,
+            door.z + door.width * 0.5
+          );
+        }
+      }
     }
   }
 
-  // Push out of static wrecked vehicles, jersey barriers, burning trucks & shipping containers (OBB)
-  for (let i = 0; i < city.staticObstacles.length; i++) {
-    const obs = city.staticObstacles[i];
+  // Push out of spatial static wrecked vehicles, jersey barriers, burning trucks & shipping containers (OBB)
+  const nearObs = city.getObstaclesNearPos(pos.x, pos.z, obsScratch, radius + 0.8);
+  for (let i = 0; i < nearObs.length; i++) {
+    const obs = nearObs[i];
     const hw = obs.width * 0.5 + radius;
     const hd = obs.depth * 0.5 + radius;
     const dx = pos.x - obs.x;
     const dz = pos.z - obs.z;
-    if (Math.abs(dx) > hw + 2.5 && Math.abs(dz) > hd + 2.5) continue;
+    const rBound = (obs.boundR ?? Math.max(hw, hd) + 1.5) + radius;
+    if (Math.abs(dx) > rBound || Math.abs(dz) > rBound) continue;
 
-    const cosR = Math.cos(obs.rotationY);
-    const sinR = Math.sin(obs.rotationY);
+    const cosR = obs.cosR ?? Math.cos(obs.rotationY);
+    const sinR = obs.sinR ?? Math.sin(obs.rotationY);
     const lx = dx * cosR - dz * sinR;
     const lz = dx * sinR + dz * cosR;
 

@@ -6,6 +6,7 @@ import {
   AgentRole,
   AlertBanner,
   BlastGateData,
+  BrokenWindowData,
   BuildingData,
   DefenseWallData,
   EvacZoneData,
@@ -14,12 +15,15 @@ import {
   FirstPersonState,
   HoldZoneData,
   IncidentReport,
+  InteriorDoorData,
   LureFlareData,
   PrioritySectorData,
   RoadblockData,
   ScenarioConfig,
   SimulationStats,
+  SupplyPickupData,
   TimeSeriesPoint,
+  Vec2,
   VehicleData,
   VisualEffectEvent,
   ZombieVariant
@@ -34,7 +38,20 @@ const SKIN_PALETTE = [0xfde68a, 0xfcd34d, 0xfdba74, 0xd97706, 0x92400e];
 const VEHICLE_COLORS = [0x3b82f6, 0xe2e8f0, 0x64748b, 0xef4444, 0x10b981, 0x6366f1];
 
 export type SoundTrigger = (
-  type: 'gunshot' | 'swat_shot' | 'radio' | 'cure' | 'bite' | 'siren' | 'explosion' | 'train_horn' | 'gate_slam',
+  type:
+    | 'gunshot'
+    | 'swat_shot'
+    | 'radio'
+    | 'cure'
+    | 'bite'
+    | 'siren'
+    | 'explosion'
+    | 'train_horn'
+    | 'gate_slam'
+    | 'window_shatter'
+    | 'body_thud'
+    | 'door_pound'
+    | 'car_alarm',
   x: number,
   z: number
 ) => void;
@@ -83,6 +100,67 @@ export class OutbreakSimulation {
   private buildingBuffer: BuildingData[] = [];
   private agentById: Map<number, AgentData> = new Map();
 
+  public interiorDoors: InteriorDoorData[] = [];
+  public brokenWindows: BrokenWindowData[] = [];
+  public carAlarms: Map<number, { x: number; z: number; remaining: number; beepTimer: number }> = new Map();
+  public gridFlickerTimer = 0;
+  public blackoutMaxZ = -999;
+  public supplyPickups: SupplyPickupData[] = [];
+  private windowBreachCooldown = 2.8;
+  private overpassDropCooldown = 5.5;
+  private activeAlarmSet: Set<number> = new Set();
+  private pathsComputedThisTick = 0;
+  private pyramidBuckets: AgentData[][][] = [];
+  private fpVaultActive = false;
+  private fpVaultTimer = 0;
+  private fpVaultDuration = 0.38;
+  private fpVaultStartX = 0;
+  private fpVaultStartZ = 0;
+  private fpVaultEndX = 0;
+  private fpVaultEndZ = 0;
+  private fpVaultPeakY = 1.0;
+  private fpGraceTimer = 0;
+  private fpSafeTimer = 0;
+
+  public getActiveAlarmObstacleIds(): Set<number> {
+    this.activeAlarmSet.clear();
+    for (const id of this.carAlarms.keys()) {
+      this.activeAlarmSet.add(id);
+    }
+    return this.activeAlarmSet;
+  }
+
+  private pushEffect(ev: VisualEffectEvent): void {
+    if (
+      this.effects.length >= 160 &&
+      (ev.type === 'bite' || ev.type === 'convert' || ev.type === 'gunshot')
+    ) {
+      return;
+    }
+    this.effects.push(ev);
+  }
+
+  private requestPath(
+    startX: number,
+    startZ: number,
+    goalX: number,
+    goalZ: number,
+    isZombie: boolean
+  ): Vec2[] | null {
+    if (this.pathsComputedThisTick >= 18) return null;
+    this.pathsComputedThisTick++;
+    return this.city.findPath(
+      startX,
+      startZ,
+      goalX,
+      goalZ,
+      this.roadblocks,
+      this.defenseWalls,
+      this.blastGates,
+      isZombie
+    );
+  }
+
   constructor(config: ScenarioConfig) {
     this.config = { ...config };
     this.rng = new SeededRNG(this.config.seed);
@@ -99,11 +177,21 @@ export class OutbreakSimulation {
     this.city = new CityLayout(this.config.seed, this.config.mapId);
     this.spatial.clear();
     this.agentById.clear();
+    this.pyramidBuckets = [];
+    this.pathsComputedThisTick = 0;
 
     this.agents = [];
     this.vehicles = [];
     this.defenseWalls = [];
     this.blastGates = [];
+    this.interiorDoors = this.city.interiorDoors.map((d) => ({ ...d }));
+    this.brokenWindows = [];
+    this.carAlarms.clear();
+    this.supplyPickups = [];
+    this.fpVaultActive = false;
+    this.fpVaultTimer = 0;
+    this.fpGraceTimer = 0;
+    this.fpSafeTimer = 0;
     this.roadblocks = [];
     this.evacZones = [];
     this.holdZones = [];
@@ -115,6 +203,10 @@ export class OutbreakSimulation {
     this.history = [];
 
     this.simTime = 0;
+    this.gridFlickerTimer = 0;
+    this.blackoutMaxZ = -999;
+    this.windowBreachCooldown = 2.8;
+    this.overpassDropCooldown = 5.5;
     this.commandPoints = !this.config.allowPlayerIntervention
       ? 0
       : this.config.id === 'horde_invasion' || this.config.id === 'wwz_busan'
@@ -179,11 +271,41 @@ export class OutbreakSimulation {
       x: this.city.hasExpressRail ? this.city.stationPos.x : -this.city.cityHalfX - 65,
       z: this.city.railZ,
       state: this.city.hasExpressRail ? 'DOCKED' : 'COOLDOWN',
-      timer: 16,
+      timer: 40,
       boardedTotal: 0,
       stationX: this.city.stationPos.x,
       stationZ: this.city.stationPos.z,
-      length: 50
+      length: 54,
+      carLength: 14.4,
+      carWidth: 4.2,
+      carHeight: 3.1,
+      boardingDoorLocalX: -15.0,
+      cabinSwitchLocalX: 21.0,
+      doors: [
+        {
+          id: 1,
+          localX: -7.5,
+          label: 'Car 3 ↔ Car 2 Glass Door',
+          isLocked: false,
+          isBroken: false,
+          integrity: 110,
+          maxIntegrity: 110,
+          lastHitTime: -99
+        },
+        {
+          id: 2,
+          localX: 7.5,
+          label: 'Car 2 ↔ Car 1 Glass Door',
+          isLocked: false,
+          isBroken: false,
+          integrity: 110,
+          maxIntegrity: 110,
+          lastHitTime: -99
+        }
+      ],
+      playerInsideCar: 0,
+      playerDeparting: false,
+      departRideTimer: 0
     };
 
     this.firstPerson = {
@@ -196,12 +318,31 @@ export class OutbreakSimulation {
       sprinting: false,
       nearestZombieDist: 999,
       nearbyGateId: null,
+      nearbyDoorId: null,
+      insideBuildingId: null,
+      pursuers: 0,
+      shoveCooldown: 0,
+      decoyCooldown: 0,
+      adrenalineTimer: 0,
+      vaultY: 0,
+      vaultRoll: 0,
+      nearbyVaultLabel: null,
+      nearbyCarId: null,
+      nearbyPickupId: null,
+      nearbyTrainDoorId: null,
+      nearTrainCabinConsole: false,
+      insideTrainCar: 0,
+      waypointX: 0,
+      waypointZ: 0,
+      waypointLabel: '',
+      spawnLabel: '',
       outcome: null,
       survivalTime: 0
     };
 
     this.spawnInitialPopulation();
     this.spawnInitialVehicles();
+    this.spawnSupplyPickups();
 
     for (const pt of this.city.evacSpawnPoints) {
       this.evacZones.push({
@@ -215,6 +356,82 @@ export class OutbreakSimulation {
     }
 
     this.recordHistoryPoint();
+  }
+
+  private spawnSupplyPickups(): void {
+    this.supplyPickups = [];
+    for (let i = 0; i < this.city.buildings.length; i++) {
+      const b = this.city.buildings[i];
+      if (!b.interior) continue;
+      if (b.interior.theme === 'mart') {
+        this.supplyPickups.push({
+          id: this.nextEntityId++,
+          x: b.x - 1.5,
+          z: b.z + 0.5,
+          kind: 'energy_drink',
+          label: 'Cold Energy Drink (Full Stamina + Surge)',
+          collected: false
+        });
+      } else if (b.interior.theme === 'clinic' || b.interior.theme === 'hospital') {
+        this.supplyPickups.push({
+          id: this.nextEntityId++,
+          x: b.x,
+          z: b.z,
+          kind: 'antiviral_kit',
+          label: 'Antiviral Medkit (+65 HP & Cure)',
+          collected: false
+        });
+      } else if (b.interior.theme === 'terminal') {
+        this.supplyPickups.push({
+          id: this.nextEntityId++,
+          x: b.x,
+          z: b.z,
+          kind: 'emergency_pack',
+          label: 'Emergency Tactical Pack (+HP & Decoy)',
+          collected: false
+        });
+      }
+    }
+
+    if (this.config.mapId === 'citadel_express') {
+      this.supplyPickups.push(
+        {
+          id: this.nextEntityId++,
+          x: -31.0,
+          z: -146.5,
+          kind: 'energy_drink',
+          label: 'Alley Energy Stash (Full Stamina + Surge)',
+          collected: false
+        },
+        {
+          id: this.nextEntityId++,
+          x: 56.0,
+          z: -42.0,
+          kind: 'emergency_pack',
+          label: 'Midtown Supply Pack (+HP & Decoy)',
+          collected: false
+        }
+      );
+    } else {
+      this.supplyPickups.push(
+        {
+          id: this.nextEntityId++,
+          x: this.city.hospitalPos.x,
+          z: this.city.hospitalPos.z,
+          kind: 'antiviral_kit',
+          label: 'Antiviral Medkit (+65 HP & Cure)',
+          collected: false
+        },
+        {
+          id: this.nextEntityId++,
+          x: this.city.precinctPos.x,
+          z: this.city.precinctPos.z,
+          kind: 'emergency_pack',
+          label: 'Emergency Tactical Pack (+HP & Decoy)',
+          collected: false
+        }
+      );
+    }
   }
 
   public triggerAlert(text: string, severity: AlertBanner['severity']): void {
@@ -316,11 +533,15 @@ export class OutbreakSimulation {
 
     // 3. Autonomous Civilians
     for (let i = 0; i < civCount; i++) {
-      const node = this.rng.pick(this.city.navNodes);
+      // Seed 3 civilians right inside KTX Central Station Hall on Citadel Express for instant Station/Train possession
+      const nearStation = isCitadel && i < 3;
+      const node = nearStation
+        ? this.city.findNearestNode(this.rng.range(-10, 10), 178 + this.rng.range(-3, 4))
+        : this.rng.pick(this.city.navNodes);
       const civ = this.createAgent(
         'civilian',
-        node.x + this.rng.range(-1.5, 1.5),
-        node.z + this.rng.range(-1.5, 1.5),
+        nearStation ? this.rng.range(-10, 10) : node.x + this.rng.range(-1.5, 1.5),
+        nearStation ? this.rng.range(176, 184) : node.z + this.rng.range(-1.5, 1.5),
         false
       );
       if (this.rng.chance(0.16)) {
@@ -535,6 +756,15 @@ export class OutbreakSimulation {
       rotationY: this.rng.range(0, Math.PI * 2),
       climbY: 0,
       convulseTimer: 0,
+      fallY: 0,
+      fallVy: 0,
+      fallRoll: 0,
+      stunnedTimer: 0,
+      attackMode: 'none',
+      grappleTargetId: null,
+      pinnedById: null,
+      pinTimer: 0,
+      biteCount: 0,
       isPlayerControlled: false,
       health: maxHp,
       maxHealth: maxHp,
@@ -803,8 +1033,172 @@ export class OutbreakSimulation {
     }
   }
 
+  public triggerWindowBreach(b: BuildingData): void {
+    if (b.height < 11) return;
+    b.hasUpperBreach = true;
+
+    let dirX = 0;
+    let dirZ = -1;
+    const fp = this.firstPerson?.active ? this.agentById.get(this.firstPerson.playerId ?? -1) : undefined;
+    if (fp && fp.isAlive) {
+      const dx = fp.x - b.x;
+      const dz = fp.z - b.z;
+      if (Math.abs(dx) > Math.abs(dz)) {
+        dirX = dx >= 0 ? 1 : -1;
+        dirZ = 0;
+      } else {
+        dirX = 0;
+        dirZ = dz >= 0 ? 1 : -1;
+      }
+    } else if (Math.abs(b.x) > 10) {
+      dirX = b.x > 0 ? -1 : 1;
+      dirZ = 0;
+    }
+
+    const winY = this.rng.range(6.0, Math.max(6.2, Math.min(b.height - 2.0, 10.6)));
+    const wx = b.x + dirX * (b.width * 0.5 + 0.06);
+    const wz = b.z + dirZ * (b.depth * 0.5 + 0.06);
+    const rotY = dirX !== 0 ? Math.PI / 2 : 0;
+
+    this.brokenWindows.push({
+      buildingId: b.id,
+      x: wx,
+      y: winY,
+      z: wz,
+      rotY
+    });
+
+    this.effects.push({
+      type: 'window_shatter',
+      x: wx,
+      y: winY,
+      z: wz,
+      dirX,
+      dirZ,
+      age: 0,
+      duration: 1.4
+    });
+
+    if (this.onSound) this.onSound('window_shatter', wx, wz);
+    this.addEventLog('infection', `UPPER BREACH: Infected burst through upper window at ${b.name}!`, wx, wz);
+
+    const dropCount = this.rng.next() < 0.45 ? 2 : 1;
+    for (let k = 0; k < dropCount; k++) {
+      const spread = (k - (dropCount - 1) * 0.5) * 1.1;
+      const spawnX = wx + dirX * 0.75 + dirZ * spread;
+      const spawnZ = wz + dirZ * 0.75 - dirX * spread;
+      const variant: ZombieVariant = this.rng.next() < 0.35 ? 'runner' : 'standard';
+      const zmb = this.createAgent('infected', spawnX, spawnZ, false, variant);
+      zmb.fallY = winY;
+      zmb.fallVy = this.rng.range(0.5, 2.2);
+      zmb.fallRoll = this.rng.range(0, Math.PI * 2);
+      const horizSpeed = this.rng.range(3.2, 5.4);
+      zmb.vx = dirX * horizSpeed + dirZ * (spread * 0.9);
+      zmb.vz = dirZ * horizSpeed - dirX * (spread * 0.9);
+      zmb.rotationY = Math.atan2(dirX, dirZ);
+      this.pushAgent(zmb);
+    }
+  }
+
   public step(dt: number): void {
     this.simTime += dt;
+    this.pathsComputedThisTick = 0;
+    if (this.gridFlickerTimer > 0) this.gridFlickerTimer = Math.max(0, this.gridFlickerTimer - dt);
+    if (this.windowBreachCooldown > 0) this.windowBreachCooldown -= dt;
+    if (this.overpassDropCooldown > 0) this.overpassDropCooldown -= dt;
+    if (this.fpGraceTimer > 0) this.fpGraceTimer = Math.max(0, this.fpGraceTimer - dt);
+
+    for (const [id, alarm] of this.carAlarms.entries()) {
+      alarm.remaining -= dt;
+      alarm.beepTimer -= dt;
+      if (alarm.beepTimer <= 0) {
+        alarm.beepTimer = 1.15;
+        if (this.onSound) this.onSound('car_alarm', alarm.x, alarm.z);
+        this.effects.push({
+          type: 'car_alarm_pulse',
+          x: alarm.x,
+          z: alarm.z,
+          age: 0,
+          duration: 0.75
+        });
+      }
+      if (alarm.remaining <= 0) {
+        this.carAlarms.delete(id);
+      }
+    }
+
+    if (this.windowBreachCooldown <= 0) {
+      let triggered = false;
+      const fp = this.firstPerson?.active ? this.agentById.get(this.firstPerson.playerId ?? -1) : undefined;
+      if (fp && fp.isAlive && this.brokenWindows.length < 18) {
+        const fwdX = -Math.sin(this.firstPerson.yaw);
+        const fwdZ = -Math.cos(this.firstPerson.yaw);
+        let bestTarget: BuildingData | null = null;
+        let bestScore = Infinity;
+        for (let bi = 0; bi < this.city.buildings.length; bi++) {
+          const b = this.city.buildings[bi];
+          if (b.height < 11 || b.hasUpperBreach) continue;
+          const distToFp = Math.hypot(b.x - fp.x, b.z - fp.z);
+          const dot = (b.x - fp.x) * fwdX + (b.z - fp.z) * fwdZ;
+          if (dot > -4 && distToFp < 46 && distToFp > 13.5) {
+            const score = distToFp - (b.interior ? 16 : 0);
+            if (score < bestScore) {
+              bestScore = score;
+              bestTarget = b;
+            }
+          }
+        }
+        if (bestTarget) {
+          this.triggerWindowBreach(bestTarget);
+          triggered = true;
+        }
+      }
+      if (!triggered && this.brokenWindows.length < 12 && this.simTime > 4) {
+        for (let bi = 0; bi < this.city.buildings.length; bi++) {
+          const b = this.city.buildings[bi];
+          if (b.height < 11 || b.hasUpperBreach) continue;
+          const near = this.spatial.queryRadius(b.x, b.z, Math.max(b.width, b.depth) * 0.5 + 16, this.neighborBuffer);
+          let zCount = 0;
+          for (let k = 0; k < near.length; k++) {
+            if (near[k].role === 'infected') zCount++;
+          }
+          if (zCount >= 3 || (this.firstPerson?.active && this.rng.next() < 0.15 && Math.abs(b.z) < 170)) {
+            this.triggerWindowBreach(b);
+            break;
+          }
+        }
+      }
+      this.windowBreachCooldown = this.firstPerson?.active
+        ? this.rng.range(7.5, 12.5)
+        : this.rng.range(4.2, 7.8);
+    }
+
+    // Elevated Expressway Overpass sky-fall zombies spilling onto jammed avenue
+    if (this.overpassDropCooldown <= 0 && this.city.overpasses.length > 0 && this.agents.length < 2350) {
+      const op = this.city.overpasses[0];
+      const fp = this.firstPerson?.active ? this.agentById.get(this.firstPerson.playerId ?? -1) : undefined;
+      const nearOverpass = fp
+        ? Math.abs(fp.z - op.z) < 42
+        : this.city.staticObstacles.length > 0;
+      if (nearOverpass && (this.simTime > 6 || Boolean(fp))) {
+        const dropCount = fp ? 1 : 2;
+        for (let k = 0; k < dropCount; k++) {
+          let spawnX = fp ? fp.x + this.rng.pick([-1, 1]) * this.rng.range(13, 20) : this.rng.pick([-52, 26]) + this.rng.range(-8, 8);
+          spawnX = Math.max(-this.city.cityHalfX + 12, Math.min(this.city.cityHalfX - 12, spawnX));
+          const sideSign = this.rng.pick([-1, 1]);
+          const zmb = this.createAgent('infected', spawnX, op.z + sideSign * (op.width * 0.45), false, k === 0 ? 'runner' : 'standard');
+          zmb.fallY = op.deckY;
+          zmb.fallVy = 1.2;
+          zmb.vx = this.rng.range(-0.8, 0.8);
+          zmb.vz = sideSign * 2.9;
+          this.pushAgent(zmb);
+        }
+        if (fp && Math.abs(fp.z - op.z) < 32) {
+          this.triggerAlert('⚠ OVERPASS DROP: Infected tumbling from the elevated highway!', 'warn');
+        }
+      }
+      this.overpassDropCooldown = this.rng.range(8.5, 13.5);
+    }
 
     if (this.config.allowPlayerIntervention) {
       this.commandPoints = Math.min(260, this.commandPoints + dt * 1.8);
@@ -864,6 +1258,56 @@ export class OutbreakSimulation {
       if (a.stateTimer > 0) a.stateTimer -= dt;
       if (a.perceptionCooldown > 0) a.perceptionCooldown -= dt;
       if (a.repathCooldown > 0) a.repathCooldown -= dt;
+      if (a.stunnedTimer > 0) a.stunnedTimer = Math.max(0, a.stunnedTimer - dt);
+      if (a.pinTimer > 0) a.pinTimer = Math.max(0, a.pinTimer - dt);
+      if (a.pinnedById !== null) {
+        const att = this.getAgentById(a.pinnedById);
+        if (!att || !att.isAlive || att.role !== 'infected' || att.grappleTargetId !== a.id) {
+          a.pinnedById = null;
+          a.attackMode = 'none';
+          a.pinTimer = 0;
+          a.stunnedTimer = Math.max(a.stunnedTimer, 0.32);
+        }
+      }
+
+      if (a.fallY > 0) {
+        a.fallVy -= 22 * dt;
+        a.fallY += a.fallVy * dt;
+        a.x += a.vx * dt;
+        a.z += a.vz * dt;
+        a.fallRoll += dt * 7.5;
+        if (a.fallY <= 0) {
+          a.fallY = 0;
+          a.fallVy = 0;
+          a.fallRoll = 0;
+          a.vx = 0;
+          a.vz = 0;
+          a.stunnedTimer = 0.65;
+          if (this.onSound) this.onSound('body_thud', a.x, a.z);
+          this.effects.push({
+            type: 'bite',
+            x: a.x,
+            z: a.z,
+            age: 0,
+            duration: 0.75
+          });
+          for (let oi = 0; oi < this.city.staticObstacles.length; oi++) {
+            const obs = this.city.staticObstacles[oi];
+            if (obs.kind !== 'car' && obs.kind !== 'taxi' && obs.kind !== 'van') continue;
+            if (Math.hypot(a.x - obs.x, a.z - obs.z) <= 3.8) {
+              this.carAlarms.set(obs.id, {
+                x: obs.x,
+                z: obs.z,
+                remaining: 18,
+                beepTimer: 0.15
+              });
+              if (this.onSound) this.onSound('car_alarm', obs.x, obs.z);
+              break;
+            }
+          }
+        }
+        continue;
+      }
 
       if (a.role === 'civilian') {
         this.updateCivilian(a, dt);
@@ -895,9 +1339,74 @@ export class OutbreakSimulation {
   }
 
   /**
-   * High-Speed Express Train cycle (Train to Busan style):
-   * COOLDOWN (18s) -> APPROACHING (5s, horn + alert) -> DOCKED (14s boarding) -> DEPARTING (5s)
+   * High-Speed Express Train cycle (Option B Periodic 40s Docking + Walkable 3-Car KTX Climax):
+   * COOLDOWN (22s) -> APPROACHING (5s, horn + alert) -> DOCKED (40s boarding) -> DEPARTING (5.5s)
    */
+  private getTrainCarForPos(x: number, z: number): 0 | 1 | 2 | 3 {
+    const tr = this.expressTrain;
+    if (!tr.active || tr.state !== 'DOCKED') return 0;
+    const lx = x - tr.x;
+    const lz = z - tr.z;
+    if (lx < -22.2 || lx > 22.2 || Math.abs(lz) > tr.carWidth * 0.5) return 0;
+    if (lx < -7.5) return 3;
+    if (lx < 7.5) return 2;
+    return 1;
+  }
+
+  private resolveTrainCollisions(pos: Vec2, radius: number): void {
+    const tr = this.expressTrain;
+    if (!tr.active || tr.state !== 'DOCKED') return;
+    if (pos.z < tr.z - 4.2 || pos.z > tr.z + 4.2 || Math.abs(pos.x - tr.x) > 27.5) return;
+
+    const pushBox = (bMinX: number, bMaxX: number, bMinZ: number, bMaxZ: number) => {
+      const minX = bMinX - radius;
+      const maxX = bMaxX + radius;
+      const minZ = bMinZ - radius;
+      const maxZ = bMaxZ + radius;
+      if (pos.x > minX && pos.x < maxX && pos.z > minZ && pos.z < maxZ) {
+        const dL = pos.x - minX;
+        const dR = maxX - pos.x;
+        const dT = pos.z - minZ;
+        const dB = maxZ - pos.z;
+        const m = Math.min(dL, dR, dT, dB);
+        if (m === dL) pos.x = minX - 0.01;
+        else if (m === dR) pos.x = maxX + 0.01;
+        else if (m === dT) pos.z = minZ - 0.01;
+        else pos.z = maxZ + 0.01;
+      }
+    };
+
+    const tx = tr.x;
+    const tz = tr.z;
+    // Aerodynamic head (+X) & tail (-X) noses outside cars
+    pushBox(tx - 26.2, tx - 22.25, tz - 1.8, tz + 1.8);
+    pushBox(tx + 22.15, tx + 26.2, tz - 1.8, tz + 1.8);
+
+    // Outer car perimeter walls (North wall has a 3.6m open boarding door at Car 3 x ∈ [-16.8, -13.2])
+    pushBox(tx - 22.3, tx - 16.85, tz - 2.18, tz - 1.92);
+    pushBox(tx - 13.15, tx + 22.3, tz - 2.18, tz - 1.92);
+    pushBox(tx - 22.3, tx + 22.3, tz + 1.92, tz + 2.18);
+    // Rear Car 3 & Front Car 1 Cabin Endwalls
+    pushBox(tx - 22.45, tx - 22.12, tz - 2.15, tz + 2.15);
+    pushBox(tx + 21.95, tx + 22.35, tz - 2.15, tz + 2.15);
+
+    // Side passenger seat banks leaving a wide 1.88m central aisle (z ∈ [tz - 0.94, tz + 0.94]) & Car 3 doorway entry clear
+    pushBox(tx - 22.1, tx - 17.1, tz - 1.94, tz - 0.96);
+    pushBox(tx - 12.9, tx + 21.8, tz - 1.94, tz - 0.96);
+    pushBox(tx - 22.1, tx + 21.8, tz + 0.96, tz + 1.94);
+
+    // Inter-car Bulkhead side walls + locked sliding glass connector doors
+    for (let i = 0; i < tr.doors.length; i++) {
+      const td = tr.doors[i];
+      const dx = tx + td.localX;
+      pushBox(dx - 0.18, dx + 0.18, tz - 2.15, tz - 0.88);
+      pushBox(dx - 0.18, dx + 0.18, tz + 0.88, tz + 2.15);
+      if (td.isLocked && !td.isBroken) {
+        pushBox(dx - 0.16, dx + 0.16, tz - 0.9, tz + 0.9);
+      }
+    }
+  }
+
   private updateExpressTrain(dt: number): void {
     const tr = this.expressTrain;
     if (!tr.active) return;
@@ -905,6 +1414,7 @@ export class OutbreakSimulation {
     const half = this.city.cityHalfX;
     const minX = -half - 65;
     const maxX = half + 65;
+    const prevX = tr.x;
 
     tr.timer -= dt;
 
@@ -913,6 +1423,14 @@ export class OutbreakSimulation {
       if (tr.timer <= 0) {
         tr.state = 'APPROACHING';
         tr.timer = 5.0;
+        tr.playerDeparting = false;
+        tr.departRideTimer = 0;
+        for (const d of tr.doors) {
+          d.isLocked = false;
+          d.isBroken = false;
+          d.integrity = d.maxIntegrity;
+          d.lastHitTime = -99;
+        }
         this.effects.push({
           type: 'train_horn',
           x: tr.stationX,
@@ -921,10 +1439,10 @@ export class OutbreakSimulation {
           duration: 1.5
         });
         if (this.onSound) this.onSound('train_horn', tr.stationX, tr.stationZ);
-        this.triggerAlert('🚄 KTX EXPRESS APPROACHING STATION — 5s TO BOARDING!', 'info');
+        this.triggerAlert('🚄 KTX-101 APPROACHING PLATFORM — 5s TO BOARDING!', 'info');
         this.addEventLog(
           'evac',
-          `TRAIN ALERT: High-speed evacuation express approaching Grand Concourse!`,
+          `TRAIN ALERT: High-speed evacuation express approaching Central Station!`,
           tr.stationX,
           tr.stationZ
         );
@@ -937,35 +1455,55 @@ export class OutbreakSimulation {
 
       if (tr.timer <= 0) {
         tr.state = 'DOCKED';
-        tr.timer = 14.0;
+        tr.timer = 40.0;
         tr.x = tr.stationX;
-        this.triggerAlert('🚄 KTX EXPRESS DOCKED — 14s BOARDING WINDOW OPEN!', 'info');
+        this.triggerAlert('🚄 KTX-101 DOCKED (40s) — Board Car 3, Lock Doors & Reach Car 1!', 'info');
+
+        // Push a small pursuing threat toward Car 3 rear plaza in FP mode for authentic Train to Busan tension
+        if (this.firstPerson.active) {
+          let nearTermZ = 0;
+          const platNear = this.spatial.queryRadius(tr.stationX - 15, 188, 22, this.neighborBuffer);
+          for (let i = 0; i < platNear.length; i++) {
+            if (platNear[i].isAlive && platNear[i].role === 'infected') nearTermZ++;
+          }
+          if (nearTermZ < 2 && this.agents.length < 2380) {
+            const fp = this.getAgentById(this.firstPerson.playerId);
+            for (let k = 0; k < 2; k++) {
+              const sx = tr.stationX - 20 - k * 3.5;
+              const sz = 186.5 + k * 2.0;
+              if (!fp || Math.hypot(fp.x - sx, fp.z - sz) > 9.0) {
+                const zmb = this.createAgent('infected', sx, sz, false, k === 0 ? 'runner' : 'standard');
+                this.pushAgent(zmb);
+              }
+            }
+          }
+        }
       }
     } else if (tr.state === 'DOCKED') {
       tr.x = tr.stationX;
       const platX = tr.stationX;
       const platZ = tr.stationZ - 5.5;
 
-      // Board civilians who reach the platform
+      // Board AI civilians who reach the platform / Car 3 entrance
       for (let i = 0; i < this.agents.length; i++) {
         const a = this.agents[i];
         if (!a.isAlive || a.isEvacuated || a.role !== 'civilian' || a.isPlayerControlled) continue;
         if (a.civState === 'SHELTERED' || a.civState === 'CONVULSING') continue;
 
-        const distPlat = Math.hypot(a.x - platX, a.z - platZ);
-        if (distPlat <= 13.5) {
+        const distPlat = Math.hypot(a.x - (platX - 15.0), a.z - platZ);
+        if (distPlat <= 3.8 || this.getTrainCarForPos(a.x, a.z) > 0) {
           a.isEvacuated = true;
           tr.boardedTotal++;
           this.totalEvacuated++;
-          this.logAgentAction(a, `Boarded the KTX Express Evacuation Train!`);
+          this.logAgentAction(a, `Boarded the KTX-101 Express Evacuation Train!`);
         } else if (distPlat <= 75 && a.civState !== 'EVACUATING' && a.repathCooldown <= 0) {
           a.civState = 'EVACUATING';
           a.repathCooldown = 1.2;
-          a.destinationLabel = 'Express Train Platform';
+          a.destinationLabel = 'KTX Car 3 Boarding Door';
           a.path = this.city.findPath(
             a.x,
             a.z,
-            platX,
+            platX - 15.0,
             platZ,
             this.roadblocks,
             this.defenseWalls,
@@ -978,25 +1516,55 @@ export class OutbreakSimulation {
 
       if (tr.timer <= 0) {
         tr.state = 'DEPARTING';
-        tr.timer = 5.0;
+        tr.timer = 5.5;
         if (this.onSound) this.onSound('train_horn', tr.stationX, tr.stationZ);
+        if (this.firstPerson.active && this.firstPerson.outcome === 'PLAYING') {
+          const fp = this.getAgentById(this.firstPerson.playerId);
+          if (fp && fp.isAlive && tr.playerInsideCar > 0) {
+            tr.playerDeparting = true;
+            tr.departRideTimer = 1.6;
+            this.triggerAlert('🚄 KTX-101 DEPARTING FOR BUSAN — YOU MADE IT ON BOARD!', 'info');
+          } else {
+            this.triggerAlert('⚠ MISSED KTX-101! Hold out in Central Station until next train!', 'danger');
+          }
+        }
         this.addEventLog(
           'evac',
-          `TRAIN DEPARTED: Express departed with ${tr.boardedTotal} total evacuees!`,
+          `TRAIN DEPARTED: KTX-101 departed with ${tr.boardedTotal} total evacuees!`,
           tr.stationX,
           tr.stationZ
         );
       }
     } else if (tr.state === 'DEPARTING') {
-      const p = 1 - Math.max(0, tr.timer) / 5.0;
+      const p = 1 - Math.max(0, tr.timer) / 5.5;
       const eased = p * p;
       tr.x = tr.stationX + (maxX - tr.stationX) * eased;
+      const deltaTrainX = tr.x - prevX;
       this.plowZombiesOnTrack(tr);
+
+      if (tr.playerDeparting && this.firstPerson.active && this.firstPerson.outcome === 'PLAYING') {
+        const fp = this.getAgentById(this.firstPerson.playerId);
+        if (fp && fp.isAlive) {
+          fp.x += deltaTrainX;
+          tr.departRideTimer -= dt;
+          if (tr.departRideTimer <= 0) {
+            tr.playerDeparting = false;
+            fp.isEvacuated = true;
+            this.totalEvacuated++;
+            tr.boardedTotal++;
+            this.firstPerson.outcome = 'ESCAPED';
+            this.logAgentAction(fp, `Escaped aboard KTX-101 Express to Busan!`);
+          }
+        } else {
+          tr.playerDeparting = false;
+        }
+      }
 
       if (tr.timer <= 0) {
         tr.state = 'COOLDOWN';
-        tr.timer = 18.0;
+        tr.timer = 22.0;
         tr.x = minX;
+        tr.playerDeparting = false;
       }
     }
   }
@@ -1064,6 +1632,8 @@ export class OutbreakSimulation {
           const wall = this.defenseWalls.find((w) => w.id === g.wallId);
           if (wall && !wall.breachedNotified) {
             wall.breachedNotified = true;
+            this.gridFlickerTimer = 2.6;
+            this.blackoutMaxZ = Math.max(this.blackoutMaxZ, wall.z);
             this.triggerAlert(`⚠ ${wall.label.toUpperCase()} BREACHED! FALL BACK!`, 'danger');
             if (this.onSound) this.onSound('siren', g.x, g.z);
           }
@@ -1075,7 +1645,15 @@ export class OutbreakSimulation {
     for (let wi = 0; wi < this.defenseWalls.length; wi++) {
       const w = this.defenseWalls[wi];
       const bucketCount = w.pyramidHeights.length;
-      const buckets: AgentData[][] = Array.from({ length: bucketCount }, () => []);
+      let buckets = this.pyramidBuckets[wi];
+      if (!buckets || buckets.length !== bucketCount) {
+        buckets = Array.from({ length: bucketCount }, () => []);
+        this.pyramidBuckets[wi] = buckets;
+      } else {
+        for (let b = 0; b < bucketCount; b++) {
+          buckets[b].length = 0;
+        }
+      }
 
       for (let i = 0; i < this.agents.length; i++) {
         const z = this.agents[i];
@@ -1134,6 +1712,8 @@ export class OutbreakSimulation {
             z.pathIndex = 0;
             if (!w.breachedNotified) {
               w.breachedNotified = true;
+              this.gridFlickerTimer = 2.6;
+              this.blackoutMaxZ = Math.max(this.blackoutMaxZ, w.z);
               this.triggerAlert(
                 `⚠ ${w.label.toUpperCase()} OVERRUN BY 3D ZOMBIE PYRAMID!`,
                 'danger'
@@ -1152,9 +1732,61 @@ export class OutbreakSimulation {
     }
   }
 
+  private handlePinnedOrStunned(a: AgentData): boolean {
+    if (a.pinnedById !== null) {
+      a.vx = 0;
+      a.vz = 0;
+      if (
+        a.stunnedTimer <= 0 &&
+        a.attackMode === 'neck_grapple' &&
+        (a.role === 'police' || a.bravery > 0.72) &&
+        a.attackCooldown <= 0
+      ) {
+        a.attackCooldown = 1.0;
+        if (this.rng.chance(a.role === 'police' ? 0.42 : 0.3)) {
+          const att = this.getAgentById(a.pinnedById);
+          if (att) {
+            const dx = att.x - a.x;
+            const dz = att.z - a.z;
+            const d = Math.hypot(dx, dz) || 1;
+            att.x += (dx / d) * 1.6;
+            att.z += (dz / d) * 1.6;
+            att.stunnedTimer = 0.95;
+            resolveWorldCollisions(
+              att,
+              0.55,
+              this.city,
+              this.defenseWalls,
+              this.blastGates,
+              att.climbY,
+              this.interiorDoors
+            );
+          }
+          this.releaseGrapple(a);
+          a.stunnedTimer = 0;
+          this.logAgentAction(a, 'Broke free from zombie grapple!');
+          if (a.role === 'civilian' && att) {
+            this.fleeFromThreat(a, att.x, att.z);
+          }
+          return true;
+        }
+      }
+      return true;
+    }
+
+    if (a.stunnedTimer > 0) {
+      a.vx *= 0.82;
+      a.vz *= 0.82;
+      return true;
+    }
+    return false;
+  }
+
   private updateMedic(m: AgentData, dt: number): void {
+    if (this.handlePinnedOrStunned(m)) return;
     if (m.perceptionCooldown <= 0) {
-      m.perceptionCooldown = 0.24 + (m.id % 5) * 0.03;
+      const crowdFactor = this.agents.length > 1400 ? 1.85 : this.agents.length > 800 ? 1.35 : 1.0;
+      m.perceptionCooldown = 0.24 * crowdFactor + (m.id % 7) * 0.035;
 
       const neighbors = this.spatial.queryRadius(m.x, m.z, m.awarenessRadius, this.neighborBuffer);
       let nearestZombie: AgentData | null = null;
@@ -1162,21 +1794,29 @@ export class OutbreakSimulation {
       let nearestPatient: AgentData | null = null;
       let bestPatientScore = Infinity;
 
-      for (let i = 0; i < neighbors.length; i++) {
+      const maxN = Math.min(neighbors.length, 32);
+      for (let i = 0; i < maxN; i++) {
         const other = neighbors[i];
         if (!other.isAlive || other.id === m.id) continue;
-        const d = Math.hypot(other.x - m.x, other.z - m.z);
+        const dx = other.x - m.x;
+        const dz = other.z - m.z;
+        const dSq = dx * dx + dz * dz;
 
         if (other.role === 'infected') {
-          if (d < nearestZombieDist) {
-            nearestZombieDist = d;
+          if (dSq < nearestZombieDist * nearestZombieDist) {
+            nearestZombieDist = Math.sqrt(dSq);
             nearestZombie = other;
           }
         } else if (
-          (other.isIncubating || other.civState === 'CONVULSING' || other.health < other.maxHealth * 0.8) &&
-          !other.isPlayerControlled
+          other.isIncubating ||
+          other.civState === 'CONVULSING' ||
+          other.health < other.maxHealth * 0.85
         ) {
-          const score = d - (other.isIncubating || other.civState === 'CONVULSING' ? 40 : 0);
+          const d = Math.sqrt(dSq);
+          const score =
+            d -
+            (other.isIncubating || other.civState === 'CONVULSING' ? 40 : 0) -
+            (other.isPlayerControlled ? 55 : 0);
           if (score < bestPatientScore) {
             bestPatientScore = score;
             nearestPatient = other;
@@ -1356,7 +1996,7 @@ export class OutbreakSimulation {
       a.health = Math.max(15, (a.incubationTimer / a.maxIncubationTime) * 100);
       if (a.incubationTimer <= 0) {
         if (a.civState === 'SHELTERED' && a.shelterBuildingId) {
-          const b = this.city.buildings.find((bld) => bld.id === a.shelterBuildingId);
+          const b = this.city.buildingById.get(a.shelterBuildingId);
           if (b && b.shelteredAgentIds.length > 1) {
             for (const occId of [...b.shelteredAgentIds]) {
               if (occId === a.id) continue;
@@ -1369,6 +2009,7 @@ export class OutbreakSimulation {
               }
             }
             b.doorIntegrity = 0;
+            if (!b.hasUpperBreach && b.height >= 11) this.triggerWindowBreach(b);
             this.addEventLog(
               'infection',
               `SHELTER OUTBREAK: Infected carrier turned inside ${b.name}! Occupants fleeing!`,
@@ -1388,8 +2029,10 @@ export class OutbreakSimulation {
       }
     }
 
+    if (this.handlePinnedOrStunned(a)) return;
+
     if (a.civState === 'SHELTERED') {
-      const b = this.city.buildings.find((bld) => bld.id === a.shelterBuildingId);
+      const b = a.shelterBuildingId ? this.city.buildingById.get(a.shelterBuildingId) : undefined;
       if (!b || b.doorIntegrity <= 0) {
         this.removeAgentFromShelter(a);
         a.civState = 'FLEEING';
@@ -1399,34 +2042,48 @@ export class OutbreakSimulation {
     }
 
     if (a.perceptionCooldown <= 0) {
-      a.perceptionCooldown = 0.24 + (a.id % 5) * 0.03;
+      const crowdFactor = this.agents.length > 1400 ? 1.85 : this.agents.length > 800 ? 1.35 : 1.0;
+      a.perceptionCooldown = 0.24 * crowdFactor + (a.id % 7) * 0.035;
 
       const neighbors = this.spatial.queryRadius(a.x, a.z, a.awarenessRadius, this.neighborBuffer);
       let nearestThreat: AgentData | null = null;
       let nearestThreatDist = Infinity;
+      let nearestThreatDistSq = Infinity;
       let threatCount = 0;
       let nearestPanicking: AgentData | null = null;
 
-      for (let i = 0; i < neighbors.length; i++) {
+      const maxN = Math.min(neighbors.length, 32);
+      for (let i = 0; i < maxN; i++) {
         const other = neighbors[i];
         if (other.id === a.id || !other.isAlive) continue;
 
-        const dist = Math.hypot(other.x - a.x, other.z - a.z);
+        const dx = other.x - a.x;
+        const dz = other.z - a.z;
+        const dSq = dx * dx + dz * dz;
         if (other.role === 'infected' || other.civState === 'CONVULSING') {
-          if (
-            dist < 6.5 ||
-            hasLineOfSight(a.x, a.z, other.x, other.z, this.city, this.defenseWalls, this.blastGates)
+          if (dSq < 42.25) {
+            threatCount++;
+            if (dSq < nearestThreatDistSq) {
+              nearestThreatDistSq = dSq;
+              nearestThreatDist = Math.sqrt(dSq);
+              nearestThreat = other;
+            }
+          } else if (
+            (dSq < nearestThreatDistSq || threatCount < 4) &&
+            hasLineOfSight(a.x, a.z, other.x, other.z, this.city, this.defenseWalls, this.blastGates, this.interiorDoors)
           ) {
             threatCount++;
-            if (dist < nearestThreatDist) {
-              nearestThreatDist = dist;
+            if (dSq < nearestThreatDistSq) {
+              nearestThreatDistSq = dSq;
+              nearestThreatDist = Math.sqrt(dSq);
               nearestThreat = other;
             }
           }
         } else if (
+          !nearestPanicking &&
           other.role === 'civilian' &&
           (other.civState === 'FLEEING' || other.civState === 'BEING_ATTACKED') &&
-          dist < 10.0
+          dSq < 100.0
         ) {
           nearestPanicking = other;
         }
@@ -1460,22 +2117,18 @@ export class OutbreakSimulation {
           ) {
             const shelter = this.findNearestAvailableShelter(a.x, a.z, 36);
             if (shelter) {
-              a.civState = 'SEEKING_SHELTER';
-              a.shelterBuildingId = shelter.id;
-              a.destinationLabel = `Shelter: ${shelter.name}`;
-              a.path = this.city.findPath(
-                a.x,
-                a.z,
-                shelter.doorX,
-                shelter.doorZ,
-                this.roadblocks,
-                this.defenseWalls,
-                this.blastGates,
-                false
-              );
-              a.pathIndex = 0;
-              a.repathCooldown = 1.1;
-              this.logAgentAction(a, `Running for shelter at ${shelter.name}.`);
+              const path = this.requestPath(a.x, a.z, shelter.doorX, shelter.doorZ, false);
+              if (path) {
+                a.civState = 'SEEKING_SHELTER';
+                a.shelterBuildingId = shelter.id;
+                a.destinationLabel = `Shelter: ${shelter.name}`;
+                a.path = path;
+                a.pathIndex = 0;
+                a.repathCooldown = 1.1;
+                this.logAgentAction(a, `Running for shelter at ${shelter.name}.`);
+              } else {
+                this.fleeFromThreat(a, nearestThreat.x, nearestThreat.z);
+              }
             } else {
               this.fleeFromThreat(a, nearestThreat.x, nearestThreat.z);
             }
@@ -1495,7 +2148,8 @@ export class OutbreakSimulation {
             nearestPanicking.z,
             this.city,
             this.defenseWalls,
-            this.blastGates
+            this.blastGates,
+            this.interiorDoors
           )
         ) {
           if (a.bravery > 0.72 && a.civState !== 'INVESTIGATING') {
@@ -1571,7 +2225,7 @@ export class OutbreakSimulation {
       }
 
       case 'SEEKING_SHELTER': {
-        const shelter = this.city.buildings.find((b) => b.id === a.shelterBuildingId);
+        const shelter = a.shelterBuildingId ? this.city.buildingById.get(a.shelterBuildingId) : undefined;
         if (
           !shelter ||
           shelter.doorIntegrity <= 0 ||
@@ -1691,21 +2345,67 @@ export class OutbreakSimulation {
   }
 
   private updateInfected(z: AgentData, dt: number): void {
+    if (z.fallY > 0 || z.stunnedTimer > 0) {
+      z.vx *= 0.6;
+      z.vz *= 0.6;
+      return;
+    }
+
+    if (z.grappleTargetId !== null) {
+      const victim = this.getAgentById(z.grappleTargetId);
+      if (
+        !victim ||
+        !victim.isAlive ||
+        victim.isEvacuated ||
+        victim.role === 'infected' ||
+        victim.civState === 'CONVULSING' ||
+        z.pinTimer <= 0 ||
+        victim.pinnedById !== z.id
+      ) {
+        this.releaseGrapple(z);
+      } else {
+        z.zombieState = 'FEEDING';
+        z.vx = 0;
+        z.vz = 0;
+        const dx = victim.x - z.x;
+        const dz = victim.z - z.z;
+        const d = Math.hypot(dx, dz) || 0.01;
+        z.rotationY = Math.atan2(dx, dz);
+        const targetGap = z.attackMode === 'tackle_pin' ? 0.52 : 0.78;
+        const pull = Math.min(1, dt * 10);
+        z.x += (victim.x - (dx / d) * targetGap - z.x) * pull;
+        z.z += (victim.z - (dz / d) * targetGap - z.z) * pull;
+        z.destinationLabel =
+          z.attackMode === 'tackle_pin'
+            ? `Pinning & Mauling ${victim.name}`
+            : `Grappling ${victim.name}`;
+        if (z.attackCooldown <= 0) {
+          z.attackCooldown = z.attackMode === 'tackle_pin' ? 0.82 : 0.9;
+          this.applySustainedBite(z, victim);
+        }
+        return;
+      }
+    }
+
     if (z.perceptionCooldown <= 0) {
-      z.perceptionCooldown = 0.24 + (z.id % 5) * 0.03;
+      const crowdFactor = this.agents.length > 1400 ? 1.85 : this.agents.length > 800 ? 1.35 : 1.0;
+      z.perceptionCooldown = 0.24 * crowdFactor + (z.id % 7) * 0.035;
 
       const neighbors = this.spatial.queryRadius(z.x, z.z, z.awarenessRadius + 6, this.neighborBuffer);
       let bestTarget: AgentData | null = null;
       let bestScore = Infinity;
       let nearbyZombies = 0;
 
-      for (let i = 0; i < neighbors.length; i++) {
+      const maxN = Math.min(neighbors.length, 32);
+      for (let i = 0; i < maxN; i++) {
         const candidate = neighbors[i];
         if (!candidate.isAlive) continue;
-        const dist = Math.hypot(candidate.x - z.x, candidate.z - z.z);
+        const dx = candidate.x - z.x;
+        const dz = candidate.z - z.z;
+        const dSq = dx * dx + dz * dz;
 
         if (candidate.role === 'infected') {
-          if (dist < 8.0) nearbyZombies++;
+          if (dSq < 64.0) nearbyZombies++;
           continue;
         }
         if (candidate.civState === 'CONVULSING') continue;
@@ -1713,18 +2413,21 @@ export class OutbreakSimulation {
         const isLoud =
           candidate.civState === 'FLEEING' ||
           candidate.policeState === 'ENGAGING' ||
-          dist < 7.0;
+          dSq < 49.0;
 
-        if (dist <= z.awarenessRadius || isLoud) {
+        if (dSq <= z.awarenessRadius * z.awarenessRadius || isLoud) {
+          const dist = Math.sqrt(dSq);
+          const score =
+            dist +
+            (candidate.isIncubating ? 10.0 : 0) +
+            (candidate.pinnedById !== null ? 14.0 : 0);
           if (
-            dist < 6.0 ||
-            hasLineOfSight(z.x, z.z, candidate.x, candidate.z, this.city, this.defenseWalls, this.blastGates)
+            score < bestScore &&
+            (dSq < 36.0 ||
+              hasLineOfSight(z.x, z.z, candidate.x, candidate.z, this.city, this.defenseWalls, this.blastGates, this.interiorDoors))
           ) {
-            const score = dist + (candidate.isIncubating ? 24.0 : 0);
-            if (score < bestScore) {
-              bestScore = score;
-              bestTarget = candidate;
-            }
+            bestScore = score;
+            bestTarget = candidate;
           }
         }
       }
@@ -1733,7 +2436,7 @@ export class OutbreakSimulation {
       z.targetAgentId = bestTarget ? bestTarget.id : null;
     }
 
-    const hordeFrenzy = z.perceivedThreats >= 4 ? 1.22 : 1.0;
+    const hordeFrenzy = z.perceivedThreats >= 4 ? 1.1 : 1.0;
     const breachMult = z.zombieVariant === 'brute' ? 3.0 : 1.0;
 
     // Roadblock collision & breaching
@@ -1761,6 +2464,128 @@ export class OutbreakSimulation {
           );
         }
         return;
+      }
+    }
+
+    // Locked Train Inter-Car Bulkhead Glass Door pounding & shattering
+    if (this.expressTrain.active && this.expressTrain.state === 'DOCKED') {
+      const tr = this.expressTrain;
+      for (let tdi = 0; tdi < tr.doors.length; tdi++) {
+        const td = tr.doors[tdi];
+        if (!td.isLocked || td.isBroken) continue;
+        const doorX = tr.x + td.localX;
+        if (Math.hypot(z.x - doorX, z.z - tr.z) < 2.2) {
+          z.zombieState = 'BREACHING';
+          z.destinationLabel = `Pounding ${td.label}`;
+          z.rotationY = Math.atan2(doorX - z.x, tr.z - z.z);
+          z.vx = 0;
+          z.vz = 0;
+          const prevTick = Math.floor(td.lastHitTime / 0.55);
+          td.integrity -= dt * 15 * hordeFrenzy * breachMult;
+          td.lastHitTime = this.simTime;
+          if (Math.floor(this.simTime / 0.55) !== prevTick) {
+            this.effects.push({
+              type: 'door_pound',
+              x: doorX,
+              y: 1.4,
+              z: tr.z,
+              age: 0,
+              duration: 0.42
+            });
+            if (this.onSound) this.onSound('door_pound', doorX, tr.z);
+          }
+          if (td.integrity <= 0) {
+            td.integrity = 0;
+            td.isBroken = true;
+            td.isLocked = false;
+            this.effects.push({
+              type: 'window_shatter',
+              x: doorX,
+              y: 1.5,
+              z: tr.z,
+              dirX: 1,
+              dirZ: 0,
+              age: 0,
+              duration: 0.75
+            });
+            if (this.onSound) this.onSound('window_shatter', doorX, tr.z);
+            this.triggerAlert(`⚠ SHATTERED: Infected broke through ${td.label}!`, 'danger');
+          }
+          return;
+        }
+      }
+    }
+
+    // Locked Interior Door pounding & shattering
+    for (let di = 0; di < this.interiorDoors.length; di++) {
+      const door = this.interiorDoors[di];
+      if (!door.isLocked || door.isBroken) continue;
+      const distDoor = Math.hypot(z.x - door.x, z.z - door.z);
+      if (distDoor < 2.35) {
+        const bld = this.city.buildingById.get(door.buildingId);
+        const zombieInside = Boolean(
+          bld && z.x > bld.minX && z.x < bld.maxX && z.z > bld.minZ && z.z < bld.maxZ
+        );
+        if (zombieInside) continue;
+        const fpInside =
+          this.firstPerson.active && this.firstPerson.insideBuildingId === door.buildingId;
+        const tgt = this.getAgentById(z.targetAgentId);
+        const targetInside = Boolean(
+          bld &&
+            tgt &&
+            tgt.isAlive &&
+            tgt.x > bld.minX &&
+            tgt.x < bld.maxX &&
+            tgt.z > bld.minZ &&
+            tgt.z < bld.maxZ
+        );
+        if (fpInside || targetInside) {
+          z.zombieState = 'BREACHING';
+          z.destinationLabel = `Pounding ${door.label}`;
+          z.rotationY = Math.atan2(door.x - z.x, door.z - z.z);
+          z.vx = 0;
+          z.vz = 0;
+          const prevTick = Math.floor(door.lastHitTime / 0.55);
+          door.integrity -= dt * 13 * hordeFrenzy * breachMult;
+          door.lastHitTime = this.simTime;
+          if (Math.floor(this.simTime / 0.55) !== prevTick) {
+            this.effects.push({
+              type: 'door_pound',
+              x: door.x,
+              y: 1.4,
+              z: door.z,
+              age: 0,
+              duration: 0.42
+            });
+            if (this.onSound) this.onSound('door_pound', door.x, door.z);
+          }
+          if (door.integrity <= 0) {
+            door.integrity = 0;
+            door.isBroken = true;
+            door.isLocked = false;
+            const dX = door.side === 'E' ? 1 : door.side === 'W' ? -1 : 0;
+            const dZ = door.side === 'S' ? 1 : door.side === 'N' ? -1 : 0;
+            this.effects.push({
+              type: 'window_shatter',
+              x: door.x,
+              y: 1.5,
+              z: door.z,
+              dirX: dX,
+              dirZ: dZ,
+              age: 0,
+              duration: 1.1
+            });
+            if (this.onSound) this.onSound('window_shatter', door.x, door.z);
+            this.addEventLog(
+              'infection',
+              `DOOR SHATTERED: Infected broke through ${door.label}!`,
+              door.x,
+              door.z
+            );
+            this.triggerAlert(`${door.label} SHATTERED!`, 'danger');
+          }
+          return;
+        }
       }
     }
 
@@ -1800,6 +2625,33 @@ export class OutbreakSimulation {
     }
 
     if (currentTarget && targetDist < z.awarenessRadius + 10) {
+      if (currentTarget.isPlayerControlled) {
+        if (
+          targetDist > 8.5 &&
+          !hasLineOfSight(
+            z.x,
+            z.z,
+            currentTarget.x,
+            currentTarget.z,
+            this.city,
+            this.defenseWalls,
+            this.blastGates,
+            this.interiorDoors
+          )
+        ) {
+          z.stateTimer += dt;
+          if (z.stateTimer >= 2.6) {
+            z.stateTimer = 0;
+            z.targetAgentId = null;
+            z.zombieState = 'WANDERING';
+            z.destinationLabel = 'Lost Sight';
+            return;
+          }
+        } else {
+          z.stateTimer = 0;
+        }
+      }
+
       z.zombieState = 'PURSUING';
       z.destinationLabel = `Pursuing ${currentTarget.name}`;
 
@@ -1830,8 +2682,11 @@ export class OutbreakSimulation {
           this.performZombieAttack(z, currentTarget);
         }
       } else {
-        const lungeBoost = (targetDist < 7.0 ? 1.24 : 1.12) * hordeFrenzy;
-        this.steerTowards(z, currentTarget.x, currentTarget.z, z.baseSpeed * lungeBoost, dt);
+        const lungeBoost = (targetDist < 5.0 ? 1.12 : 1.05) * hordeFrenzy;
+        const maxChaseSpeed =
+          z.zombieVariant === 'runner' ? 6.1 : z.zombieVariant === 'brute' ? 4.3 : 4.95;
+        const chaseSpeed = Math.min(z.baseSpeed * lungeBoost, maxChaseSpeed);
+        this.steerTowards(z, currentTarget.x, currentTarget.z, chaseSpeed, dt);
       }
       return;
     }
@@ -1849,6 +2704,7 @@ export class OutbreakSimulation {
           if (dDoor < 1.6) {
             b.doorIntegrity -= dt * 12 * hordeFrenzy * breachMult;
             if (b.doorIntegrity <= 0) {
+              if (!b.hasUpperBreach && b.height >= 11) this.triggerWindowBreach(b);
               this.addEventLog(
                 'infection',
                 `SHELTER BREACHED: Infected broke into ${b.name}!`,
@@ -1860,6 +2716,27 @@ export class OutbreakSimulation {
           return;
         }
       }
+    }
+
+    let nearestAlarm: { x: number; z: number } | null = null;
+    let bestAlarmDist = 26.0;
+    for (const alarm of this.carAlarms.values()) {
+      const d = Math.hypot(alarm.x - z.x, alarm.z - z.z);
+      if (d < bestAlarmDist) {
+        bestAlarmDist = d;
+        nearestAlarm = alarm;
+      }
+    }
+    if (nearestAlarm) {
+      z.zombieState = 'PURSUING';
+      z.destinationLabel = 'Drawn to Car Alarm';
+      if (bestAlarmDist > 2.4) {
+        this.steerTowards(z, nearestAlarm.x, nearestAlarm.z, z.baseSpeed * 1.12 * hordeFrenzy, dt);
+      } else {
+        z.vx *= 0.3;
+        z.vz *= 0.3;
+      }
+      return;
     }
 
     z.zombieState = 'WANDERING';
@@ -1878,68 +2755,47 @@ export class OutbreakSimulation {
       } else {
         goalNode = this.rng.pick(this.city.navNodes);
       }
-      z.path = this.city.findPath(
-        z.x,
-        z.z,
-        goalNode.x,
-        goalNode.z,
-        this.roadblocks,
-        this.defenseWalls,
-        this.blastGates,
-        true
-      );
-      z.pathIndex = 0;
-      z.repathCooldown = 1.0;
+      const path = this.requestPath(z.x, z.z, goalNode.x, goalNode.z, true);
+      if (path) {
+        z.path = path;
+        z.pathIndex = 0;
+        z.repathCooldown = 1.0;
+      } else {
+        z.repathCooldown = 0.35;
+      }
     }
   }
 
-  private performZombieAttack(zombie: AgentData, victim: AgentData): void {
-    this.effects.push({
-      type: 'bite',
-      x: victim.x,
-      z: victim.z,
-      age: 0,
-      duration: 0.55
-    });
-    if (this.onSound) this.onSound('bite', victim.x, victim.z);
-
-    const isBrute = zombie.zombieVariant === 'brute';
-    const baseDmg = isBrute ? 48 : 34;
-
-    if (victim.isSwat) {
-      victim.health -= isBrute ? 28 : 16;
-      if (!isBrute) {
-        const dx = zombie.x - victim.x;
-        const dz = zombie.z - victim.z;
-        const len = Math.hypot(dx, dz) || 1;
-        zombie.x += (dx / len) * 1.4;
-        zombie.z += (dz / len) * 1.4;
-        this.logAgentAction(victim, `Repelled zombie lunge with SWAT shield!`);
-      }
-    } else {
-      victim.health -= baseDmg;
-    }
-
-    if (victim.role === 'civilian') {
-      if (!victim.isPlayerControlled) {
-        victim.civState = 'BEING_ATTACKED';
-        victim.stateTimer = 4.0;
-      }
-
-      if (!victim.isIncubating && victim.health > 0) {
-        victim.isIncubating = true;
-        victim.incubationTimer = this.config.incubationSeconds;
-        victim.maxIncubationTime = this.config.incubationSeconds;
-        this.logAgentAction(victim, `Bitten by ${zombie.name}! Infection incubating...`);
-        this.logAgentAction(zombie, `Attacked and infected ${victim.name}.`);
-        if (!victim.isPlayerControlled) {
-          this.fleeFromThreat(victim, zombie.x, zombie.z);
+  private releaseGrapple(agent: AgentData): void {
+    if (agent.grappleTargetId !== null) {
+      const victim = this.getAgentById(agent.grappleTargetId);
+      if (victim && victim.pinnedById === agent.id) {
+        victim.pinnedById = null;
+        victim.attackMode = 'none';
+        victim.pinTimer = 0;
+        if (victim.isAlive && victim.role !== 'infected' && victim.civState !== 'CONVULSING') {
+          victim.stunnedTimer = Math.max(victim.stunnedTimer, 0.35);
         }
       }
-    } else if (victim.role === 'police' && !victim.isSwat) {
-      this.logAgentAction(victim, `Ambushed in close quarters by ${zombie.name}!`);
+      agent.grappleTargetId = null;
+      agent.pinTimer = 0;
+      agent.attackMode = 'none';
     }
+    if (agent.pinnedById !== null) {
+      const attacker = this.getAgentById(agent.pinnedById);
+      if (attacker && attacker.grappleTargetId === agent.id) {
+        attacker.grappleTargetId = null;
+        attacker.pinTimer = 0;
+        attacker.attackMode = 'none';
+        attacker.zombieState = 'WANDERING';
+      }
+      agent.pinnedById = null;
+      agent.attackMode = 'none';
+      agent.pinTimer = 0;
+    }
+  }
 
+  private checkVictimCollapseOrDeath(victim: AgentData): void {
     for (let i = 0; i < this.vehicles.length; i++) {
       const v = this.vehicles[i];
       if (!v.isAbandoned && Math.hypot(v.x - victim.x, v.z - victim.z) < 7.5) {
@@ -1949,6 +2805,7 @@ export class OutbreakSimulation {
     }
 
     if (victim.health <= 0) {
+      this.releaseGrapple(victim);
       if (victim.role === 'civilian' && this.rng.chance(0.8)) {
         victim.isIncubating = false;
         victim.civState = 'CONVULSING';
@@ -1967,11 +2824,244 @@ export class OutbreakSimulation {
     }
   }
 
+  private applySustainedBite(zombie: AgentData, victim: AgentData, customDmg?: number): void {
+    this.pushEffect({
+      type: 'bite',
+      x: victim.x,
+      z: victim.z,
+      age: 0,
+      duration: 0.55
+    });
+    if (this.onSound) this.onSound('bite', victim.x, victim.z);
+
+    const dmg =
+      customDmg ??
+      (zombie.attackMode === 'tackle_pin' ? this.rng.range(18, 22) : this.rng.range(16, 20));
+    victim.health -= dmg;
+    victim.biteCount++;
+
+    if (victim.role === 'civilian') {
+      if (!victim.isPlayerControlled) {
+        victim.civState = 'BEING_ATTACKED';
+        victim.stateTimer = 4.0;
+      }
+      if (!victim.isIncubating && victim.health > 0 && (victim.biteCount >= 2 || victim.health <= 55)) {
+        victim.isIncubating = true;
+        victim.incubationTimer = this.config.incubationSeconds;
+        victim.maxIncubationTime = this.config.incubationSeconds;
+        this.logAgentAction(victim, `Mauled and infected by ${zombie.name}!`);
+        this.logAgentAction(zombie, `Infected pinned victim ${victim.name}.`);
+      }
+    }
+
+    this.checkVictimCollapseOrDeath(victim);
+  }
+
+  private performZombieAttack(zombie: AgentData, victim: AgentData): void {
+    const isBrute = zombie.zombieVariant === 'brute';
+
+    // Mode 4: Alpha Brute Heavy Ground Slam + Knockback
+    if (isBrute) {
+      if (victim.isPlayerControlled && this.fpGraceTimer > 0) {
+        zombie.attackCooldown = 0.7;
+        return;
+      }
+      if (victim.isPlayerControlled) {
+        this.fpGraceTimer = 1.05;
+      }
+      zombie.attackMode = 'brute_slam';
+      zombie.attackCooldown = 1.45;
+      this.pushEffect({ type: 'bite', x: victim.x, z: victim.z, age: 0, duration: 0.65 });
+      this.pushEffect({ type: 'door_pound', x: victim.x, y: 0.9, z: victim.z, age: 0, duration: 0.45 });
+      if (this.onSound) this.onSound('body_thud', victim.x, victim.z);
+
+      this.releaseGrapple(victim);
+      victim.health -= victim.isSwat ? 24 : victim.isPlayerControlled ? 26 : 42;
+      victim.biteCount++;
+      const dx = victim.x - zombie.x;
+      const dz = victim.z - zombie.z;
+      const d = Math.hypot(dx, dz) || 1;
+      const pushDist = victim.isPlayerControlled ? 2.1 : 2.6;
+      victim.x += (dx / d) * pushDist;
+      victim.z += (dz / d) * pushDist;
+      resolveWorldCollisions(
+        victim,
+        0.55,
+        this.city,
+        this.defenseWalls,
+        this.blastGates,
+        victim.climbY,
+        this.interiorDoors
+      );
+      victim.stunnedTimer = Math.max(victim.stunnedTimer, victim.isPlayerControlled ? 0.35 : 1.15);
+
+      if (victim.role === 'civilian') {
+        if (!victim.isPlayerControlled) {
+          victim.civState = 'BEING_ATTACKED';
+          victim.stateTimer = 4.0;
+        }
+        const canInfect = victim.isPlayerControlled
+          ? victim.health <= 28 || victim.biteCount >= 5
+          : this.rng.chance(0.65);
+        if (!victim.isIncubating && victim.health > 0 && canInfect) {
+          victim.isIncubating = true;
+          const incub = victim.isPlayerControlled
+            ? Math.max(18.0, this.config.incubationSeconds)
+            : this.config.incubationSeconds;
+          victim.incubationTimer = incub;
+          victim.maxIncubationTime = incub;
+          this.logAgentAction(victim, `Crushed & infected by ${zombie.name}!`);
+        } else {
+          this.logAgentAction(victim, `Slammed to the pavement by Alpha Brute!`);
+        }
+      }
+      this.checkVictimCollapseOrDeath(victim);
+      return;
+    }
+
+    // SWAT ballistic riot shield repel against non-Brute infected
+    if (victim.isSwat) {
+      zombie.attackMode = 'claw_swipe';
+      zombie.attackCooldown = 1.1;
+      this.pushEffect({ type: 'bite', x: victim.x, z: victim.z, age: 0, duration: 0.45 });
+      if (this.onSound) this.onSound('bite', victim.x, victim.z);
+      victim.health -= 14;
+      const dx = zombie.x - victim.x;
+      const dz = zombie.z - victim.z;
+      const len = Math.hypot(dx, dz) || 1;
+      zombie.x += (dx / len) * 1.5;
+      zombie.z += (dz / len) * 1.5;
+      zombie.stunnedTimer = Math.max(zombie.stunnedTimer, 0.65);
+      this.logAgentAction(victim, `Repelled zombie lunge with SWAT shield!`);
+      this.checkVictimCollapseOrDeath(victim);
+      return;
+    }
+
+    // First-person player: fair damage, grace frames, 18s incubation only when badly mauled
+    if (victim.isPlayerControlled) {
+      if (this.fpGraceTimer > 0) {
+        zombie.attackCooldown = 0.65;
+        return;
+      }
+      this.fpGraceTimer = 1.05;
+      this.pushEffect({ type: 'bite', x: victim.x, z: victim.z, age: 0, duration: 0.55 });
+      if (this.onSound) this.onSound('bite', victim.x, victim.z);
+      const r = this.rng.next();
+      let dmg = 12;
+      if (r < 0.45) {
+        zombie.attackMode = 'claw_swipe';
+        zombie.attackCooldown = 1.05;
+      } else if (r < 0.75) {
+        zombie.attackMode = 'neck_grapple';
+        zombie.attackCooldown = 1.25;
+        victim.stunnedTimer = Math.max(victim.stunnedTimer, 0.28);
+        dmg = 16;
+      } else {
+        zombie.attackMode = 'tackle_pin';
+        zombie.attackCooldown = 1.35;
+        victim.stunnedTimer = Math.max(victim.stunnedTimer, 0.38);
+        this.firstPerson.stamina = Math.max(0, this.firstPerson.stamina - 14);
+        dmg = 20;
+      }
+      victim.health -= dmg;
+      victim.biteCount++;
+      if (!victim.isIncubating && victim.health > 0 && (victim.health <= 28 || victim.biteCount >= 5)) {
+        victim.isIncubating = true;
+        const fpIncub = Math.max(18.0, this.config.incubationSeconds);
+        victim.incubationTimer = fpIncub;
+        victim.maxIncubationTime = fpIncub;
+        this.logAgentAction(victim, `Severely mauled by ${zombie.name}! Seek an Antiviral Medkit or Paramedic!`);
+        this.triggerAlert('⚠ INFECTED (18s): Grab a green Antiviral Kit or find a Medic!', 'danger');
+      }
+      this.checkVictimCollapseOrDeath(victim);
+      return;
+    }
+
+    // AI Civilians / Police / Medics: Tackle-Pin Mauling, Neck Grapple, or Claw Swipe
+    if (victim.pinnedById === null) {
+      const r = this.rng.next();
+      const pinThresh = zombie.zombieVariant === 'runner' ? 0.65 : 0.55;
+      const grappleThresh = pinThresh + (zombie.zombieVariant === 'runner' ? 0.2 : 0.3);
+
+      if (r < pinThresh) {
+        // Mode 1: Tackle-Pin Ground Mauling (3.2-4.8s continuous lock)
+        zombie.attackMode = 'tackle_pin';
+        victim.attackMode = 'tackle_pin';
+        zombie.grappleTargetId = victim.id;
+        victim.pinnedById = zombie.id;
+        zombie.zombieState = 'FEEDING';
+        const dur = this.rng.range(3.2, 4.8);
+        zombie.pinTimer = dur;
+        victim.pinTimer = dur;
+        zombie.attackCooldown = 0.78;
+        victim.vx = 0;
+        victim.vz = 0;
+        if (victim.role === 'civilian') victim.civState = 'BEING_ATTACKED';
+        victim.destinationLabel = `Pinned down by ${zombie.name}!`;
+        this.logAgentAction(zombie, `Tackled and pinned ${victim.name} to the ground!`);
+        this.logAgentAction(victim, `Tackled and pinned by ${zombie.name}!`);
+        this.applySustainedBite(zombie, victim, 15);
+      } else if (r < grappleThresh) {
+        // Mode 2: Upright Neck Grapple Clinch (2.4-3.6s continuous clinch)
+        zombie.attackMode = 'neck_grapple';
+        victim.attackMode = 'neck_grapple';
+        zombie.grappleTargetId = victim.id;
+        victim.pinnedById = zombie.id;
+        zombie.zombieState = 'FEEDING';
+        const dur = this.rng.range(2.4, 3.6);
+        zombie.pinTimer = dur;
+        victim.pinTimer = dur;
+        zombie.attackCooldown = 0.85;
+        victim.vx = 0;
+        victim.vz = 0;
+        if (victim.role === 'civilian') victim.civState = 'BEING_ATTACKED';
+        victim.destinationLabel = `Grappled by ${zombie.name}!`;
+        this.logAgentAction(zombie, `Grappled ${victim.name} in a neck clinch!`);
+        this.logAgentAction(victim, `Grabbed in close quarters by ${zombie.name}!`);
+        this.applySustainedBite(zombie, victim, 17);
+      } else {
+        // Mode 3: Fast Claw Swipe Scratch (35% infect chance, victim flees!)
+        zombie.attackMode = 'claw_swipe';
+        zombie.attackCooldown = 0.95;
+        this.pushEffect({ type: 'bite', x: victim.x, z: victim.z, age: 0, duration: 0.5 });
+        if (this.onSound) this.onSound('bite', victim.x, victim.z);
+        victim.health -= 17;
+        victim.biteCount++;
+        if (victim.role === 'civilian') {
+          victim.civState = 'BEING_ATTACKED';
+          victim.stateTimer = 4.0;
+          if (!victim.isIncubating && victim.health > 0 && this.rng.chance(0.35)) {
+            victim.isIncubating = true;
+            victim.incubationTimer = this.config.incubationSeconds;
+            victim.maxIncubationTime = this.config.incubationSeconds;
+            this.logAgentAction(victim, `Deeply slashed & infected by ${zombie.name}!`);
+          } else {
+            this.logAgentAction(victim, `Slashed by ${zombie.name}, scrambling away!`);
+          }
+          if (victim.health > 0) {
+            this.fleeFromThreat(victim, zombie.x, zombie.z);
+          }
+        } else {
+          this.logAgentAction(victim, `Slashed in close quarters by ${zombie.name}!`);
+        }
+        this.checkVictimCollapseOrDeath(victim);
+      }
+    } else {
+      // Pile-on bite while another zombie pins this victim
+      zombie.attackMode = 'claw_swipe';
+      zombie.attackCooldown = 1.05;
+      this.applySustainedBite(zombie, victim, 14);
+    }
+  }
+
   public convertToInfected(agent: AgentData): void {
+    this.releaseGrapple(agent);
     const oldRole = agent.role;
     agent.role = 'infected';
     agent.isSwat = false;
     agent.isIncubating = false;
+    agent.attackMode = 'none';
+    agent.biteCount = 0;
     agent.zombieState = 'WANDERING';
     agent.targetAgentId = null;
 
@@ -2045,26 +3135,31 @@ export class OutbreakSimulation {
         p.ammo = p.maxAmmo;
       }
     }
+    if (this.handlePinnedOrStunned(p)) return;
 
     if (p.perceptionCooldown <= 0) {
-      p.perceptionCooldown = 0.22 + (p.id % 5) * 0.03;
+      const crowdFactor = this.agents.length > 1400 ? 1.85 : this.agents.length > 800 ? 1.35 : 1.0;
+      p.perceptionCooldown = 0.22 * crowdFactor + (p.id % 7) * 0.035;
 
       const neighbors = this.spatial.queryRadius(p.x, p.z, p.awarenessRadius, this.neighborBuffer);
       let nearestZombie: AgentData | null = null;
-      let nearestDist = Infinity;
+      let nearestDistSq = Infinity;
       let closeThreats = 0;
 
-      for (let i = 0; i < neighbors.length; i++) {
+      const maxN = Math.min(neighbors.length, 32);
+      for (let i = 0; i < maxN; i++) {
         const other = neighbors[i];
         if (!other.isAlive || other.role !== 'infected') continue;
-        const dist = Math.hypot(other.x - p.x, other.z - p.z);
-        if (dist < 4.2) closeThreats++;
+        const dx = other.x - p.x;
+        const dz = other.z - p.z;
+        const dSq = dx * dx + dz * dz;
+        if (dSq < 17.64) closeThreats++;
 
         if (
-          dist < nearestDist &&
-          hasLineOfSight(p.x, p.z, other.x, other.z, this.city, this.defenseWalls, this.blastGates)
+          dSq < nearestDistSq &&
+          hasLineOfSight(p.x, p.z, other.x, other.z, this.city, this.defenseWalls, this.blastGates, this.interiorDoors)
         ) {
-          nearestDist = dist;
+          nearestDistSq = dSq;
           nearestZombie = other;
         }
       }
@@ -2156,7 +3251,7 @@ export class OutbreakSimulation {
       officer.reloadTimer = officer.isSwat ? 1.55 : 2.15;
     }
 
-    this.effects.push({
+    this.pushEffect({
       type: 'gunshot',
       x: officer.x,
       z: officer.z,
@@ -2180,6 +3275,7 @@ export class OutbreakSimulation {
     target.health -= damage;
 
     if (target.health <= 0 && target.isAlive) {
+      this.releaseGrapple(target);
       target.isAlive = false;
       this.totalDeceased++;
       officer.kills++;
@@ -2277,16 +3373,14 @@ export class OutbreakSimulation {
     fleeX = Math.max(-halfX + 4, Math.min(halfX - 4, fleeX));
     fleeZ = Math.max(-halfZ + 4, Math.min(halfZ - 4, fleeZ));
     const targetNode = this.city.findNearestNode(fleeX, fleeZ);
-    a.path = this.city.findPath(
-      a.x,
-      a.z,
-      targetNode.x,
-      targetNode.z,
-      this.roadblocks,
-      this.defenseWalls,
-      this.blastGates,
-      false
-    );
+    const fleePath = this.requestPath(a.x, a.z, targetNode.x, targetNode.z, false);
+    if (fleePath) {
+      a.path = fleePath;
+      a.repathCooldown = 1.1;
+    } else {
+      a.path = [{ x: targetNode.x, z: targetNode.z }];
+      a.repathCooldown = 0.4;
+    }
     a.pathIndex = 0;
     a.destinationLabel = `Fleeing towards ${targetNode.district}`;
   }
@@ -2294,18 +3388,15 @@ export class OutbreakSimulation {
   private startEvacuating(a: AgentData, ez: EvacZoneData): void {
     if (a.civState === 'EVACUATING') return;
     a.civState = 'EVACUATING';
-    a.repathCooldown = 1.1;
     a.destinationLabel = 'Evacuation Zone';
-    a.path = this.city.findPath(
-      a.x,
-      a.z,
-      ez.x,
-      ez.z,
-      this.roadblocks,
-      this.defenseWalls,
-      this.blastGates,
-      false
-    );
+    const evacPath = this.requestPath(a.x, a.z, ez.x, ez.z, false);
+    if (evacPath) {
+      a.path = evacPath;
+      a.repathCooldown = 1.1;
+    } else {
+      a.path = [{ x: ez.x, z: ez.z }];
+      a.repathCooldown = 0.4;
+    }
     a.pathIndex = 0;
     this.logAgentAction(a, `Heading to designated Evacuation Zone.`);
   }
@@ -2328,7 +3419,7 @@ export class OutbreakSimulation {
   private findNearestAvailableShelter(x: number, z: number, maxDist: number): BuildingData | null {
     let best: BuildingData | null = null;
     let bestDist = maxDist;
-    const candidates = this.city.getBuildingsNearPos(x, z, this.buildingBuffer);
+    const candidates = this.city.getBuildingsNearPos(x, z, this.buildingBuffer, maxDist);
     for (let i = 0; i < candidates.length; i++) {
       const b = candidates[i];
       if (!b.isShelterCapable || b.doorIntegrity <= 0) continue;
@@ -2344,7 +3435,7 @@ export class OutbreakSimulation {
 
   private removeAgentFromShelter(a: AgentData): void {
     if (!a.shelterBuildingId) return;
-    const b = this.city.buildings.find((bld) => bld.id === a.shelterBuildingId);
+    const b = this.city.buildingById.get(a.shelterBuildingId);
     if (b) {
       const idx = b.shelteredAgentIds.indexOf(a.id);
       if (idx !== -1) b.shelteredAgentIds.splice(idx, 1);
@@ -2397,25 +3488,28 @@ export class OutbreakSimulation {
 
   private applyCrowdSeparationAndCollisions(dt: number): void {
     const minSep = 0.78;
+    const minSepSq = minSep * minSep;
     const boundX = this.city.cityHalfX + 5;
     const boundZ = this.city.cityHalfZ + 5;
+    const sepCap = this.agents.length > 1200 ? 6 : 10;
 
     for (let i = 0; i < this.agents.length; i++) {
       const a = this.agents[i];
       if (!a.isAlive || a.isEvacuated || a.civState === 'SHELTERED') continue;
 
-      if (!a.isPlayerControlled) {
+      if (!a.isPlayerControlled && a.pinnedById === null && a.grappleTargetId === null) {
         const nearby = this.spatial.queryRadius(a.x, a.z, minSep * 1.4, this.neighborBuffer);
         let pushX = 0;
         let pushZ = 0;
-        const limit = Math.min(nearby.length, 10);
+        const limit = Math.min(nearby.length, sepCap);
         for (let j = 0; j < limit; j++) {
           const b = nearby[j];
-          if (b.id === a.id) continue;
+          if (b.id === a.id || a.grappleTargetId === b.id || a.pinnedById === b.id) continue;
           const dx = a.x - b.x;
           const dz = a.z - b.z;
-          const d = Math.hypot(dx, dz);
-          if (d > 0.001 && d < minSep) {
+          const dSq = dx * dx + dz * dz;
+          if (dSq > 1e-6 && dSq < minSepSq) {
+            const d = Math.sqrt(dSq);
             const overlap = (minSep - d) / d;
             pushX += dx * overlap * 3.5;
             pushZ += dz * overlap * 3.5;
@@ -2438,7 +3532,12 @@ export class OutbreakSimulation {
         }
       }
 
-      resolveWorldCollisions(a, 0.55, this.city, this.defenseWalls, this.blastGates, a.climbY);
+      if (a.fallY <= 0.25) {
+        resolveWorldCollisions(a, 0.55, this.city, this.defenseWalls, this.blastGates, a.climbY, this.interiorDoors);
+        if (a.climbY <= 0.2) {
+          this.resolveTrainCollisions(a, 0.55);
+        }
+      }
 
       a.x = Math.max(-boundX, Math.min(boundX, a.x));
       a.z = Math.max(-boundZ, Math.min(boundZ, a.z));
@@ -2604,7 +3703,300 @@ export class OutbreakSimulation {
   // FIRST-PERSON UNARMED SURVIVOR ESCAPE MODE
   // ============================================================================
 
-  public enterFirstPerson(): AgentData {
+  private pickDynamicSafeSpawn(): { x: number; z: number; yaw: number; label: string } {
+    if (this.config.mapId === 'citadel_express') {
+      const candidates: Array<{ x: number; z: number; yaw: number; label: string; scenic?: number }> = [
+        { x: -52.0, z: -102.0, yaw: Math.PI, label: 'West Blvd Expressway Approach', scenic: 24 },
+        { x: -52.0, z: -42.0, yaw: Math.PI, label: 'Sector 2 Commercial Canyon', scenic: 22 },
+        { x: 26.0, z: -102.0, yaw: Math.PI, label: 'Midtown Overpass Approach', scenic: 20 },
+        { x: -34.0, z: -157.5, yaw: Math.PI, label: '24H Avenue Mart Floor', scenic: 14 },
+        { x: -34.0, z: -135.0, yaw: Math.PI, label: 'Northgate Brick Clinic', scenic: 12 },
+        { x: -52.0, z: -172.0, yaw: Math.PI, label: 'Sector 1 West Blvd', scenic: 10 },
+        { x: 56.0, z: -64.0, yaw: Math.PI, label: 'Midtown East Parking Lot', scenic: 8 },
+        { x: -16.0, z: 32.0, yaw: Math.PI, label: 'Midtown Canal Bridgehead', scenic: 8 }
+      ];
+      const scored = candidates.map((c) => {
+        const near = this.spatial.queryRadius(c.x, c.z, 32, this.neighborBuffer);
+        let zNear = 0;
+        let minD = 999;
+        for (let i = 0; i < near.length; i++) {
+          const a = near[i];
+          if (!a.isAlive || a.role !== 'infected') continue;
+          zNear++;
+          const d = Math.hypot(a.x - c.x, a.z - c.z);
+          if (d < minD) minD = d;
+        }
+        const score = minD * 2.5 - zNear * 9.0 + (c.scenic ?? 0);
+        return { ...c, minD, score };
+      });
+      const safePool = scored.filter((s) => s.minD >= 14.0);
+      const ranked = (safePool.length > 0 ? safePool : scored).sort((a, b) => b.score - a.score);
+      const topSlice = ranked.slice(0, Math.min(2, ranked.length));
+      return this.rng.pick(topSlice);
+    }
+
+    const step = Math.max(1, Math.floor(this.city.navNodes.length / 12));
+    const scoredNodes: Array<{ x: number; z: number; yaw: number; label: string; minD: number; score: number }> = [];
+    for (let i = 0; i < this.city.navNodes.length; i += step) {
+      const n = this.city.navNodes[i];
+      const near = this.spatial.queryRadius(n.x, n.z, 32, this.neighborBuffer);
+      let zNear = 0;
+      let minD = 999;
+      for (let j = 0; j < near.length; j++) {
+        const a = near[j];
+        if (!a.isAlive || a.role !== 'infected') continue;
+        zNear++;
+        const d = Math.hypot(a.x - n.x, a.z - n.z);
+        if (d < minD) minD = d;
+      }
+      const ez = this.evacZones[0];
+      const distGoal = ez ? Math.hypot(n.x - ez.x, n.z - ez.z) : 80;
+      const rangeBonus = distGoal >= 65 && distGoal <= 190 ? 14 : 0;
+      scoredNodes.push({
+        x: n.x,
+        z: n.z,
+        yaw: Math.PI,
+        label: n.district,
+        minD,
+        score: minD * 2.5 - zNear * 9.0 + rangeBonus
+      });
+    }
+    const safeNodes = scoredNodes.filter((s) => s.minD >= 14.0);
+    const ranked = (safeNodes.length > 0 ? safeNodes : scoredNodes).sort((a, b) => b.score - a.score);
+    const pick = ranked[Math.floor(this.rng.next() * Math.min(3, ranked.length))];
+    return pick ?? { x: 0, z: -this.city.cityHalfZ + 36, yaw: Math.PI, label: 'City Street' };
+  }
+
+  private computeEscapeWaypoint(px: number, pz: number): { x: number; z: number; label: string } {
+    let nextWall: DefenseWallData | null = null;
+    for (let i = 0; i < this.defenseWalls.length; i++) {
+      const w = this.defenseWalls[i];
+      if (w.z > pz - 1.5 && (!nextWall || w.z < nextWall.z)) {
+        nextWall = w;
+      }
+    }
+    if (nextWall) {
+      let bestGate: BlastGateData | null = null;
+      let bestScore = Infinity;
+      for (let gi = 0; gi < this.blastGates.length; gi++) {
+        const g = this.blastGates[gi];
+        if (g.wallId !== nextWall.id) continue;
+        const passBonus = g.isOpen || g.breached ? 0 : 45;
+        const score = Math.abs(g.x - px) + passBonus;
+        if (score < bestScore) {
+          bestScore = score;
+          bestGate = g;
+        }
+      }
+      if (bestGate) {
+        return {
+          x: bestGate.x,
+          z: bestGate.z + 2.0,
+          label: `${bestGate.label}${bestGate.isOpen || bestGate.breached ? '' : ' (Sealed — [E] Open)'}`
+        };
+      }
+    }
+
+    if (this.city.hasExpressRail) {
+      const tr = this.expressTrain;
+      const carNum = this.getTrainCarForPos(px, pz);
+      if (tr.state === 'DOCKED') {
+        if (carNum === 3) {
+          return { x: tr.x - 7.5, z: tr.z, label: 'KTX Car 3 → Push East through Car 2' };
+        }
+        if (carNum === 2) {
+          return { x: tr.x + 7.5, z: tr.z, label: 'KTX Car 2 → Lock Doors & Push to Car 1' };
+        }
+        if (carNum === 1) {
+          return { x: tr.x + tr.cabinSwitchLocalX, z: tr.z, label: 'Car 1 Safe Cabin Console [E]' };
+        }
+        return {
+          x: tr.stationX + tr.boardingDoorLocalX,
+          z: tr.stationZ - 2.35,
+          label: 'KTX Car 3 Boarding Door'
+        };
+      }
+      return {
+        x: tr.stationX,
+        z: tr.stationZ - 5.8,
+        label: tr.state === 'COOLDOWN' ? 'Wait in Concourse / Platform' : 'KTX Express Platform'
+      };
+    }
+    const ez = this.findNearestEvacZone(px, pz, 500);
+    if (ez) {
+      return { x: ez.x, z: ez.z, label: 'Evacuation Zone' };
+    }
+    return { x: 0, z: this.city.cityHalfZ - 12, label: 'South Perimeter' };
+  }
+
+  private isVaultLandingSafe(ex: number, ez: number): boolean {
+    const boundX = this.city.cityHalfX + 3.5;
+    const boundZ = this.city.cityHalfZ + 3.5;
+    if (Math.abs(ex) > boundX || Math.abs(ez) > boundZ) return false;
+    if (this.city.isPointInOpenWater(ex, ez, 0.7)) return false;
+
+    for (let wi = 0; wi < this.defenseWalls.length; wi++) {
+      const w = this.defenseWalls[wi];
+      if (Math.abs(ez - w.z) < w.thickness * 0.5 + 0.75) {
+        let openGate = false;
+        for (let gi = 0; gi < this.blastGates.length; gi++) {
+          const g = this.blastGates[gi];
+          if (g.wallId === w.id && (g.isOpen || g.breached) && Math.abs(ex - g.x) <= g.width * 0.5 - 0.65) {
+            openGate = true;
+            break;
+          }
+        }
+        if (!openGate) return false;
+      }
+    }
+
+    const nearBlds = this.city.getBuildingsNearPos(ex, ez, this.buildingBuffer, 2.0);
+    for (let i = 0; i < nearBlds.length; i++) {
+      const b = nearBlds[i];
+      if (!b.interior) {
+        if (ex >= b.minX - 0.68 && ex <= b.maxX + 0.68 && ez >= b.minZ - 0.68 && ez <= b.maxZ + 0.68) {
+          return false;
+        }
+      } else if (ex >= b.minX - 1.0 && ex <= b.maxX + 1.0 && ez >= b.minZ - 1.0 && ez <= b.maxZ + 1.0) {
+        for (let w = 0; w < b.interior.walls.length; w++) {
+          const iw = b.interior.walls[w];
+          if (ex >= iw.minX - 0.55 && ex <= iw.maxX + 0.55 && ez >= iw.minZ - 0.55 && ez <= iw.maxZ + 0.55) {
+            return false;
+          }
+        }
+        for (let p = 0; p < b.interior.props.length; p++) {
+          const ip = b.interior.props[p];
+          if (ex >= ip.minX - 0.5 && ex <= ip.maxX + 0.5 && ez >= ip.minZ - 0.5 && ez <= ip.maxZ + 0.5) {
+            return false;
+          }
+        }
+      }
+    }
+
+    const obsBuf: typeof this.city.staticObstacles = [];
+    const nearObs = this.city.getObstaclesNearPos(ex, ez, obsBuf, 1.5);
+    for (let i = 0; i < nearObs.length; i++) {
+      const o = nearObs[i];
+      const dx = ex - o.x;
+      const dz = ez - o.z;
+      const cosR = o.cosR ?? Math.cos(o.rotationY);
+      const sinR = o.sinR ?? Math.sin(o.rotationY);
+      const lx = dx * cosR - dz * sinR;
+      const lz = dx * sinR + dz * cosR;
+      if (Math.abs(lx) < o.width * 0.5 + 0.55 && Math.abs(lz) < o.depth * 0.5 + 0.55) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private findVaultTarget(
+    player: AgentData,
+    yaw: number
+  ): { endX: number; endZ: number; peakY: number; label: string } | null {
+    const fX = -Math.sin(yaw);
+    const fZ = -Math.cos(yaw);
+    const obsBuf: typeof this.city.staticObstacles = [];
+    const nearObs = this.city.getObstaclesNearPos(player.x + fX * 1.4, player.z + fZ * 1.4, obsBuf, 3.0);
+
+    let best: { endX: number; endZ: number; peakY: number; label: string; dist: number } | null = null;
+    const consider = (
+      ox: number,
+      oz: number,
+      hw: number,
+      hd: number,
+      cosR: number,
+      sinR: number,
+      height: number,
+      label: string
+    ) => {
+      const rx = ox - player.x;
+      const rz = oz - player.z;
+      const projFwd = rx * fX + rz * fZ;
+      if (projFwd < 0.25 || projFwd > 3.1) return;
+
+      const latOffset = Math.abs(-rx * fZ + rz * fX);
+      const halfSpanFwd = Math.abs(fX * cosR - fZ * sinR) * hw + Math.abs(fX * sinR + fZ * cosR) * hd;
+      const halfSpanLat = Math.abs(-fZ * cosR - fX * sinR) * hw + Math.abs(-fZ * sinR + fX * cosR) * hd;
+      if (latOffset > halfSpanLat + 0.65) return;
+
+      const surfaceDist = projFwd - halfSpanFwd;
+      if (surfaceDist > 1.75 || surfaceDist < -0.35) return;
+
+      const landDist = Math.max(2.3, Math.min(4.8, projFwd + halfSpanFwd + 0.92));
+      const endX = player.x + fX * landDist;
+      const endZ = player.z + fZ * landDist;
+      if (!this.isVaultLandingSafe(endX, endZ)) return;
+
+      if (!best || surfaceDist < best.dist) {
+        best = {
+          endX,
+          endZ,
+          peakY: Math.min(1.42, Math.max(0.75, height + 0.28)),
+          label,
+          dist: surfaceDist
+        };
+      }
+    };
+
+    for (let i = 0; i < nearObs.length; i++) {
+      const o = nearObs[i];
+      if (o.height > 1.65) continue;
+      const lbl =
+        o.kind === 'parkour_fence'
+          ? 'Parkour Fence'
+          : o.kind === 'dumpster'
+          ? 'Alley Dumpster'
+          : o.kind === 'jersey_barrier'
+          ? 'Concrete Barrier'
+          : o.kind === 'taxi'
+          ? 'Yellow Taxi'
+          : o.kind === 'van'
+          ? 'Delivery Van'
+          : 'Parked Car';
+      consider(
+        o.x,
+        o.z,
+        o.width * 0.5,
+        o.depth * 0.5,
+        o.cosR ?? Math.cos(o.rotationY),
+        o.sinR ?? Math.sin(o.rotationY),
+        o.height,
+        lbl
+      );
+    }
+
+    const nearBlds = this.city.getBuildingsNearPos(player.x, player.z, this.buildingBuffer, 2.5);
+    for (let bi = 0; bi < nearBlds.length; bi++) {
+      const b = nearBlds[bi];
+      if (!b.interior) continue;
+      for (let pi = 0; pi < b.interior.props.length; pi++) {
+        const p = b.interior.props[pi];
+        if (p.height > 1.45) continue;
+        const lbl = p.kind === 'counter' ? 'Store Counter' : p.kind === 'bed' ? 'Clinic Bed' : 'Bench';
+        consider(
+          (p.minX + p.maxX) * 0.5,
+          (p.minZ + p.maxZ) * 0.5,
+          (p.maxX - p.minX) * 0.5,
+          (p.maxZ - p.minZ) * 0.5,
+          1,
+          0,
+          p.height,
+          lbl
+        );
+      }
+    }
+
+    for (let ri = 0; ri < this.roadblocks.length; ri++) {
+      const rb = this.roadblocks[ri];
+      if (!rb.active) continue;
+      consider(rb.x, rb.z, rb.radius * 0.8, 0.55, Math.cos(rb.rotationY), Math.sin(rb.rotationY), 1.2, 'Barricade');
+    }
+
+    return best;
+  }
+
+  public enterFirstPerson(spawnPreset: 'city' | 'ktx_terminal' = 'city'): AgentData {
     // Release any previous player flag
     if (this.firstPerson.playerId !== null) {
       const prev = this.getAgentById(this.firstPerson.playerId);
@@ -2612,7 +4004,50 @@ export class OutbreakSimulation {
     }
 
     let player: AgentData | null = null;
-    if (this.selectedAgentId !== null) {
+    let spawnLabel = 'Selected Civilian';
+    let initialYaw = Math.PI;
+    const isKtxPreset = spawnPreset === 'ktx_terminal' && this.city.hasExpressRail;
+
+    if (isKtxPreset) {
+      spawnLabel = 'KTX Platform 1 (Car 3 Boarding)';
+      initialYaw = Math.PI;
+      player = this.createAgent(
+        'civilian',
+        this.expressTrain.stationX + this.expressTrain.boardingDoorLocalX,
+        189.2,
+        false
+      );
+      resolveWorldCollisions(player, 0.68, this.city, this.defenseWalls, this.blastGates, 0, this.interiorDoors);
+      player.name = `${player.name} (You)`;
+      player.destinationLabel = 'Board KTX Car 3 → Car 1';
+      this.pushAgent(player);
+
+      this.expressTrain.state = 'DOCKED';
+      this.expressTrain.x = this.expressTrain.stationX;
+      this.expressTrain.timer = Math.max(this.expressTrain.timer, 36.0);
+      this.expressTrain.playerDeparting = false;
+      this.expressTrain.departRideTimer = 0;
+      for (const td of this.expressTrain.doors) {
+        td.isLocked = false;
+        td.isBroken = false;
+        td.integrity = td.maxIntegrity;
+        td.lastHitTime = -99;
+      }
+
+      // Seed infected inside Car 2 aisle (charging toward Car 3 <-> Car 2 glass door) & pounding outside windows
+      const seeds: Array<[number, number, ZombieVariant]> = [
+        [-3.6, 196.0, 'standard'],
+        [-9.2, 193.0, 'standard'],
+        [-1.8, 193.0, 'runner'],
+        [-24.0, 186.5, 'runner'],
+        [-19.0, 185.0, 'standard']
+      ];
+      for (const [sx, sz, variant] of seeds) {
+        const zmb = this.createAgent('infected', sx, sz, false, variant);
+        zmb.rotationY = sz >= 195.5 ? -Math.PI * 0.5 : sz > 190 ? 0 : Math.PI * 0.25;
+        this.pushAgent(zmb);
+      }
+    } else if (this.selectedAgentId !== null) {
       const sel = this.getAgentById(this.selectedAgentId);
       if (
         sel &&
@@ -2623,23 +4058,16 @@ export class OutbreakSimulation {
         sel.civState !== 'CONVULSING'
       ) {
         player = sel;
+        spawnLabel = sel.name;
       }
     }
 
     if (!player) {
-      let spawnX = 0;
-      let spawnZ = -this.city.cityHalfZ + 36;
-      if (this.config.mapId === 'citadel_express') {
-        spawnX = -52.5;
-        spawnZ = -172;
-      } else {
-        const roadXs =
-          this.city.roadXs.length > 0 ? this.city.roadXs : this.city.roadCoords;
-        const roadX = roadXs.length > 0 ? this.rng.pick(roadXs) : 0;
-        spawnX = roadX;
-      }
-      player = this.createAgent('civilian', spawnX, spawnZ, false);
-      resolveWorldCollisions(player, 0.68, this.city, this.defenseWalls, this.blastGates, 0);
+      const pick = this.pickDynamicSafeSpawn();
+      spawnLabel = pick.label;
+      initialYaw = pick.yaw;
+      player = this.createAgent('civilian', pick.x, pick.z, false);
+      resolveWorldCollisions(player, 0.68, this.city, this.defenseWalls, this.blastGates, 0, this.interiorDoors);
       player.name = `${player.name} (You)`;
       player.destinationLabel = 'Fleeing to Extraction';
       this.pushAgent(player);
@@ -2648,31 +4076,62 @@ export class OutbreakSimulation {
     player.isPlayerControlled = true;
     this.selectedAgentId = player.id;
 
-    // Ensure clean panoramic West Blvd opening frame (relocate zombies hugging immediate spawn < 14m)
+    // Clear breathing pocket around spawn (18m outdoor city spawn, or 8.5m on KTX platform while keeping window bangers outside train!)
+    const clearR = isKtxPreset ? 8.5 : 18.0;
     for (let i = 0; i < this.agents.length; i++) {
       const a = this.agents[i];
       if (!a.isAlive || a.role !== 'infected') continue;
-      if (Math.hypot(a.x - player.x, a.z - player.z) < 14.5) {
-        a.x = -52.5 + this.rng.range(-5.5, 5.5);
-        a.z = player.z + this.rng.range(18, 32);
-        resolveWorldCollisions(a, 0.55, this.city, this.defenseWalls, this.blastGates, a.climbY);
+      if (Math.hypot(a.x - player.x, a.z - player.z) < clearR) {
+        a.x = player.x + this.rng.range(-12, 12);
+        a.z = Math.max(-this.city.cityHalfZ + 8, player.z - this.rng.range(24, 34));
+        a.targetAgentId = null;
+        resolveWorldCollisions(a, 0.55, this.city, this.defenseWalls, this.blastGates, a.climbY, this.interiorDoors);
       }
     }
 
+    this.fpVaultActive = false;
+    this.fpVaultTimer = 0;
+    this.fpGraceTimer = 2.5;
+    this.fpSafeTimer = 0;
+    this.windowBreachCooldown = 2.4;
+
+    const wp = this.computeEscapeWaypoint(player.x, player.z);
     this.firstPerson = {
       active: true,
       playerId: player.id,
-      yaw: Math.PI, // face South toward Defense Lines / Express Station
+      yaw: initialYaw,
       pitch: 0,
       stamina: 100,
       maxStamina: 100,
       sprinting: false,
       nearestZombieDist: 999,
       nearbyGateId: null,
+      nearbyDoorId: null,
+      insideBuildingId: null,
+      pursuers: 0,
+      shoveCooldown: 0,
+      decoyCooldown: 0,
+      adrenalineTimer: 0,
+      vaultY: 0,
+      vaultRoll: 0,
+      nearbyVaultLabel: null,
+      nearbyCarId: null,
+      nearbyPickupId: null,
+      nearbyTrainDoorId: null,
+      nearTrainCabinConsole: false,
+      insideTrainCar: 0,
+      waypointX: wp.x,
+      waypointZ: wp.z,
+      waypointLabel: wp.label,
+      spawnLabel,
       outcome: 'PLAYING',
       survivalTime: 0
     };
 
+    this.triggerAlert(
+      `📍 ESCAPE START: ${spawnLabel} — [Space] Vault/Shove • [Q] Decoy • [E] Doors/Cars/Loot`,
+      'info'
+    );
     return player;
   }
 
@@ -2683,6 +4142,7 @@ export class OutbreakSimulation {
         player.isPlayerControlled = false;
       }
     }
+    this.fpVaultActive = false;
     this.firstPerson.active = false;
     this.firstPerson.outcome = null;
   }
@@ -2693,6 +4153,8 @@ export class OutbreakSimulation {
     moveRight: number,
     wantSprint: boolean,
     interactPressed: boolean,
+    spacePressed: boolean,
+    decoyPressed: boolean,
     yaw: number,
     pitch: number
   ): AgentData | null {
@@ -2712,77 +4174,244 @@ export class OutbreakSimulation {
       return player;
     }
 
-    this.firstPerson.survivalTime += dt;
-
-    const isMoving = moveForward !== 0 || moveRight !== 0;
-    if (wantSprint && isMoving && this.firstPerson.stamina > 2) {
-      this.firstPerson.sprinting = true;
-      this.firstPerson.stamina = Math.max(0, this.firstPerson.stamina - dt * 24);
-    } else {
-      this.firstPerson.sprinting = false;
-      this.firstPerson.stamina = Math.min(100, this.firstPerson.stamina + dt * 16);
+    if (this.expressTrain.playerDeparting) {
+      this.firstPerson.survivalTime += dt;
+      this.firstPerson.insideTrainCar = 1;
+      this.expressTrain.playerInsideCar = 1;
+      this.firstPerson.nearbyTrainDoorId = null;
+      this.firstPerson.nearTrainCabinConsole = false;
+      this.firstPerson.nearbyPickupId = null;
+      this.firstPerson.nearbyDoorId = null;
+      this.firstPerson.nearbyGateId = null;
+      this.firstPerson.nearbyCarId = null;
+      this.firstPerson.nearbyVaultLabel = null;
+      return player;
     }
 
-    const speed = this.firstPerson.sprinting ? 6.3 : 3.3;
-    if (isMoving) {
+    this.firstPerson.survivalTime += dt;
+    if (this.firstPerson.shoveCooldown > 0) {
+      this.firstPerson.shoveCooldown = Math.max(0, this.firstPerson.shoveCooldown - dt);
+    }
+    if (this.firstPerson.decoyCooldown > 0) {
+      this.firstPerson.decoyCooldown = Math.max(0, this.firstPerson.decoyCooldown - dt);
+    }
+    if (this.firstPerson.adrenalineTimer > 0) {
+      this.firstPerson.adrenalineTimer = Math.max(0, this.firstPerson.adrenalineTimer - dt);
+    }
+
+    if (this.fpVaultActive) {
+      this.fpVaultTimer += dt;
+      const t = Math.min(1, this.fpVaultTimer / this.fpVaultDuration);
+      player.x = this.fpVaultStartX + (this.fpVaultEndX - this.fpVaultStartX) * t;
+      player.z = this.fpVaultStartZ + (this.fpVaultEndZ - this.fpVaultStartZ) * t;
+      player.animPhase += 12 * dt;
+      this.firstPerson.vaultY = Math.sin(t * Math.PI) * this.fpVaultPeakY;
+      this.firstPerson.vaultRoll = Math.sin(t * Math.PI) * 0.085;
+      if (t >= 1) {
+        this.fpVaultActive = false;
+        this.firstPerson.vaultY = 0;
+        this.firstPerson.vaultRoll = 0;
+        this.firstPerson.adrenalineTimer = Math.max(this.firstPerson.adrenalineTimer, 1.2);
+        resolveWorldCollisions(player, 0.68, this.city, this.defenseWalls, this.blastGates, 0, this.interiorDoors);
+        this.resolveTrainCollisions(player, 0.62);
+      }
+    } else {
+      const isMoving = moveForward !== 0 || moveRight !== 0;
+      const unlimitedStamina = this.firstPerson.adrenalineTimer > 0;
+      if (wantSprint && isMoving && (unlimitedStamina || this.firstPerson.stamina > 2)) {
+        this.firstPerson.sprinting = true;
+        if (!unlimitedStamina) {
+          this.firstPerson.stamina = Math.max(0, this.firstPerson.stamina - dt * 13);
+        }
+      } else {
+        this.firstPerson.sprinting = false;
+        const recRate = isMoving ? 22 : 34;
+        this.firstPerson.stamina = Math.min(100, this.firstPerson.stamina + dt * recRate);
+      }
+
+      const baseSpeed = this.firstPerson.sprinting ? 8.5 : 5.2;
+      const rushMult = unlimitedStamina ? 1.18 : 1.0;
+      const speed = baseSpeed * rushMult * (player.stunnedTimer > 0 ? 0.65 : 1.0);
+      if (isMoving) {
+        const fX = -Math.sin(yaw);
+        const fZ = -Math.cos(yaw);
+        const rX = Math.cos(yaw);
+        const rZ = -Math.sin(yaw);
+        let dx = fX * moveForward + rX * moveRight;
+        let dz = fZ * moveForward + rZ * moveRight;
+        const len = Math.hypot(dx, dz) || 1;
+        dx /= len;
+        dz /= len;
+
+        player.vx = dx * speed;
+        player.vz = dz * speed;
+        player.x += player.vx * dt;
+        player.z += player.vz * dt;
+        player.rotationY = Math.atan2(dx, dz);
+        player.animPhase += speed * dt * 3.2;
+
+        resolveWorldCollisions(player, 0.68, this.city, this.defenseWalls, this.blastGates, 0, this.interiorDoors);
+        this.resolveTrainCollisions(player, 0.62);
+        const boundX = this.city.cityHalfX + 4;
+        const boundZ = this.city.cityHalfZ + 4;
+        player.x = Math.max(-boundX, Math.min(boundX, player.x));
+        player.z = Math.max(-boundZ, Math.min(boundZ, player.z));
+      } else {
+        player.vx = 0;
+        player.vz = 0;
+      }
+
+      // Prevent agents & vehicles from clipping into first-person camera near plane
+      for (let i = 0; i < this.agents.length; i++) {
+        const other = this.agents[i];
+        if (!other.isAlive || other.id === player.id || other.civState === 'SHELTERED') continue;
+        const minGap =
+          other.role === 'infected'
+            ? other.zombieVariant === 'brute'
+              ? 2.18
+              : 1.88
+            : 1.35;
+        const dx = other.x - player.x;
+        const dz = other.z - player.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 0.001 && dist < minGap) {
+          const push = (minGap - dist) / dist;
+          other.x += dx * push;
+          other.z += dz * push;
+        }
+      }
+      for (let i = 0; i < this.vehicles.length; i++) {
+        const v = this.vehicles[i];
+        const dx = player.x - v.x;
+        const dz = player.z - v.z;
+        const dist = Math.hypot(dx, dz);
+        const minCarGap = v.type === 'truck' ? 3.4 : 2.65;
+        if (dist > 0.001 && dist < minCarGap) {
+          const push = (minCarGap - dist) / dist;
+          player.x += dx * push;
+          player.z += dz * push;
+        }
+      }
+    }
+
+    // Check Parkour Vault target ahead
+    const vaultTarget = !this.fpVaultActive ? this.findVaultTarget(player, yaw) : null;
+    this.firstPerson.nearbyVaultLabel = vaultTarget ? vaultTarget.label : null;
+
+    if (spacePressed && !this.fpVaultActive) {
+      if (vaultTarget) {
+        this.fpVaultActive = true;
+        this.fpVaultTimer = 0;
+        this.fpVaultStartX = player.x;
+        this.fpVaultStartZ = player.z;
+        this.fpVaultEndX = vaultTarget.endX;
+        this.fpVaultEndZ = vaultTarget.endZ;
+        this.fpVaultPeakY = vaultTarget.peakY;
+        this.firstPerson.stamina = Math.max(0, this.firstPerson.stamina - 10);
+        if (this.onSound) this.onSound('body_thud', player.x, player.z);
+      } else if (this.firstPerson.shoveCooldown <= 0) {
+        // Emergency Shove: clear up to 3 infected around/ahead + escape grapple
+        this.firstPerson.shoveCooldown = 1.6;
+        this.fpGraceTimer = Math.max(this.fpGraceTimer, 0.55);
+        this.firstPerson.stamina = Math.max(0, this.firstPerson.stamina - 12);
+        this.releaseGrapple(player);
+        const fX = -Math.sin(yaw);
+        const fZ = -Math.cos(yaw);
+        const near = this.spatial.queryRadius(player.x, player.z, 3.6, this.neighborBuffer);
+        let shoved = 0;
+        for (let i = 0; i < near.length && shoved < 3; i++) {
+          const z = near[i];
+          if (!z.isAlive || z.role !== 'infected') continue;
+          const dx = z.x - player.x;
+          const dz = z.z - player.z;
+          const d = Math.hypot(dx, dz) || 0.01;
+          const dot = (dx / d) * fX + (dz / d) * fZ;
+          if (d < 1.85 || dot > 0.15) {
+            this.releaseGrapple(z);
+            z.x += (dx / d) * 3.6;
+            z.z += (dz / d) * 3.6;
+            z.stunnedTimer = Math.max(z.stunnedTimer, 1.55);
+            resolveWorldCollisions(z, 0.55, this.city, this.defenseWalls, this.blastGates, z.climbY, this.interiorDoors);
+            shoved++;
+          }
+        }
+        this.pushEffect({
+          type: 'door_pound',
+          x: player.x + fX * 1.1,
+          y: 1.2,
+          z: player.z + fZ * 1.1,
+          age: 0,
+          duration: 0.42
+        });
+        if (this.onSound) this.onSound('body_thud', player.x, player.z);
+      }
+    }
+
+    if (decoyPressed && this.firstPerson.decoyCooldown <= 0) {
+      this.firstPerson.decoyCooldown = 8.0;
       const fX = -Math.sin(yaw);
       const fZ = -Math.cos(yaw);
-      const rX = Math.cos(yaw);
-      const rZ = -Math.sin(yaw);
-      let dx = fX * moveForward + rX * moveRight;
-      let dz = fZ * moveForward + rZ * moveRight;
-      const len = Math.hypot(dx, dz) || 1;
-      dx /= len;
-      dz /= len;
-
-      player.vx = dx * speed;
-      player.vz = dz * speed;
-      player.x += player.vx * dt;
-      player.z += player.vz * dt;
-      player.rotationY = Math.atan2(dx, dz);
-      player.animPhase += speed * dt * 3.2;
-
-      resolveWorldCollisions(player, 0.68, this.city, this.defenseWalls, this.blastGates, 0);
-      const boundX = this.city.cityHalfX + 4;
-      const boundZ = this.city.cityHalfZ + 4;
-      player.x = Math.max(-boundX, Math.min(boundX, player.x));
-      player.z = Math.max(-boundZ, Math.min(boundZ, player.z));
-    } else {
-      player.vx = 0;
-      player.vz = 0;
+      let dxPos = player.x + fX * 15.0;
+      let dzPos = player.z + fZ * 15.0;
+      const boundX = this.city.cityHalfX - 2;
+      const boundZ = this.city.cityHalfZ - 2;
+      dxPos = Math.max(-boundX, Math.min(boundX, dxPos));
+      dzPos = Math.max(-boundZ, Math.min(boundZ, dzPos));
+      this.lureFlares.push({
+        id: this.nextEntityId++,
+        x: dxPos,
+        z: dzPos,
+        radius: 24,
+        remaining: 9.5,
+        maxDuration: 9.5,
+        active: true
+      });
+      if (this.onSound) this.onSound('window_shatter', dxPos, dzPos);
+      this.triggerAlert('🍾 NOISE DECOY THROWN — Luring nearby infected!', 'info');
     }
 
-    // Prevent agents & vehicles from clipping into first-person camera near plane
-    for (let i = 0; i < this.agents.length; i++) {
-      const other = this.agents[i];
-      if (!other.isAlive || other.id === player.id || other.civState === 'SHELTERED') continue;
-      const minGap =
-        other.role === 'infected'
-          ? other.zombieVariant === 'brute'
-            ? 2.18
-            : 1.88
-          : 1.35;
-      const dx = other.x - player.x;
-      const dz = other.z - player.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist > 0.001 && dist < minGap) {
-        const push = (minGap - dist) / dist;
-        other.x += dx * push;
-        other.z += dz * push;
+    let insideId: string | null = null;
+    const nearBlds = this.city.getBuildingsNearPos(player.x, player.z, this.buildingBuffer);
+    for (let bi = 0; bi < nearBlds.length; bi++) {
+      const b = nearBlds[bi];
+      if (
+        b.interior &&
+        player.x > b.minX &&
+        player.x < b.maxX &&
+        player.z > b.minZ &&
+        player.z < b.maxZ
+      ) {
+        insideId = b.id;
+        break;
       }
     }
-    for (let i = 0; i < this.vehicles.length; i++) {
-      const v = this.vehicles[i];
-      const dx = player.x - v.x;
-      const dz = player.z - v.z;
-      const dist = Math.hypot(dx, dz);
-      const minCarGap = v.type === 'truck' ? 3.4 : 2.65;
-      if (dist > 0.001 && dist < minCarGap) {
-        const push = (minCarGap - dist) / dist;
-        player.x += dx * push;
-        player.z += dz * push;
+    this.firstPerson.insideBuildingId = insideId;
+
+    let nearPickupId: number | null = null;
+    let bestPickupDist = 2.6;
+    for (let pi = 0; pi < this.supplyPickups.length; pi++) {
+      const p = this.supplyPickups[pi];
+      if (p.collected) continue;
+      const d = Math.hypot(p.x - player.x, p.z - player.z);
+      if (d < bestPickupDist) {
+        bestPickupDist = d;
+        nearPickupId = p.id;
       }
     }
+    this.firstPerson.nearbyPickupId = nearPickupId;
+
+    let nearDoorId: number | null = null;
+    let bestDoorDist = 3.2;
+    for (let di = 0; di < this.interiorDoors.length; di++) {
+      const door = this.interiorDoors[di];
+      if (door.isBroken) continue;
+      const d = Math.hypot(door.x - player.x, door.z - player.z);
+      if (d < bestDoorDist) {
+        bestDoorDist = d;
+        nearDoorId = door.id;
+      }
+    }
+    this.firstPerson.nearbyDoorId = nearDoorId;
 
     // Check nearest Blast Gate within 11 units for [E] toggle
     let nearGateId: number | null = null;
@@ -2798,34 +4427,170 @@ export class OutbreakSimulation {
     }
     this.firstPerson.nearbyGateId = nearGateId;
 
-    if (interactPressed && nearGateId !== null) {
-      this.toggleBlastGate(nearGateId);
+    let nearCarId: number | null = null;
+    let bestCarDist = 3.8;
+    const obsBuf: typeof this.city.staticObstacles = [];
+    const carCandidates = this.city.getObstaclesNearPos(player.x, player.z, obsBuf, 4.2);
+    for (let ci = 0; ci < carCandidates.length; ci++) {
+      const obs = carCandidates[ci];
+      if (obs.kind !== 'car' && obs.kind !== 'taxi' && obs.kind !== 'van') continue;
+      if (this.carAlarms.has(obs.id)) continue;
+      const d = Math.hypot(obs.x - player.x, obs.z - player.z);
+      if (d < bestCarDist) {
+        bestCarDist = d;
+        nearCarId = obs.id;
+      }
+    }
+    this.firstPerson.nearbyCarId = nearCarId;
+
+    const currentCar = this.getTrainCarForPos(player.x, player.z);
+    this.firstPerson.insideTrainCar = currentCar;
+    this.expressTrain.playerInsideCar = currentCar;
+
+    let nearTrainDoorId: number | null = null;
+    let bestTrainDoorDist = 2.65;
+    if (this.expressTrain.active && this.expressTrain.state === 'DOCKED') {
+      for (let tdi = 0; tdi < this.expressTrain.doors.length; tdi++) {
+        const td = this.expressTrain.doors[tdi];
+        if (td.isBroken) continue;
+        const d = Math.hypot(player.x - (this.expressTrain.x + td.localX), player.z - this.expressTrain.z);
+        if (d < bestTrainDoorDist) {
+          bestTrainDoorDist = d;
+          nearTrainDoorId = td.id;
+        }
+      }
+    }
+    this.firstPerson.nearbyTrainDoorId = nearTrainDoorId;
+
+    const nearCabinConsole =
+      this.expressTrain.active &&
+      this.expressTrain.state === 'DOCKED' &&
+      currentCar === 1 &&
+      Math.hypot(
+        player.x - (this.expressTrain.x + this.expressTrain.cabinSwitchLocalX),
+        player.z - this.expressTrain.z
+      ) < 3.4;
+    this.firstPerson.nearTrainCabinConsole = nearCabinConsole;
+
+    if (interactPressed) {
+      if (nearCabinConsole) {
+        this.expressTrain.state = 'DEPARTING';
+        this.expressTrain.timer = 5.5;
+        this.expressTrain.playerDeparting = true;
+        this.expressTrain.departRideTimer = 1.6;
+        if (this.onSound) this.onSound('train_horn', this.expressTrain.stationX, this.expressTrain.stationZ);
+        this.triggerAlert('🚄 KTX-101 EMERGENCY DEPARTURE INITIATED — HANG ON!', 'info');
+        return player;
+      } else if (nearTrainDoorId !== null) {
+        const td = this.expressTrain.doors.find((d) => d.id === nearTrainDoorId && !d.isBroken);
+        if (td) {
+          td.isLocked = !td.isLocked;
+          if (this.onSound) this.onSound('gate_slam', this.expressTrain.x + td.localX, this.expressTrain.z);
+          this.triggerAlert(
+            td.isLocked ? `🔒 SEALED ${td.label}!` : `🔓 UNLOCKED ${td.label}`,
+            td.isLocked ? 'warn' : 'info'
+          );
+          if (td.isLocked) {
+            this.resolveTrainCollisions(player, 0.62);
+          }
+        }
+      } else if (nearPickupId !== null) {
+        const pickup = this.supplyPickups.find((p) => p.id === nearPickupId && !p.collected);
+        if (pickup) {
+          pickup.collected = true;
+          if (pickup.kind === 'energy_drink') {
+            this.firstPerson.stamina = 100;
+            this.firstPerson.adrenalineTimer = 8.0;
+            if (this.onSound) this.onSound('cure', pickup.x, pickup.z);
+            this.triggerAlert('⚡ ENERGY DRINK: 8s Unlimited Sprint Surge!', 'info');
+          } else if (pickup.kind === 'antiviral_kit') {
+            player.health = Math.min(player.maxHealth, player.health + 65);
+            player.isIncubating = false;
+            player.incubationTimer = 0;
+            player.biteCount = 0;
+            if (this.onSound) this.onSound('cure', pickup.x, pickup.z);
+            this.triggerAlert('💉 ANTIVIRAL MEDKIT: +65 HP & Infection Cured!', 'info');
+          } else {
+            player.health = Math.min(player.maxHealth, player.health + 40);
+            this.firstPerson.stamina = Math.min(100, this.firstPerson.stamina + 60);
+            this.firstPerson.decoyCooldown = 0;
+            if (this.onSound) this.onSound('cure', pickup.x, pickup.z);
+            this.triggerAlert('🎒 EMERGENCY PACK: +40 HP • +60 Stamina • Decoy Refreshed!', 'info');
+          }
+        }
+      } else if (nearDoorId !== null) {
+        const door = this.interiorDoors.find((d) => d.id === nearDoorId);
+        if (door && !door.isBroken) {
+          door.isLocked = !door.isLocked;
+          if (this.onSound) this.onSound('gate_slam', door.x, door.z);
+          if (door.isLocked) {
+            resolveWorldCollisions(
+              player,
+              0.68,
+              this.city,
+              this.defenseWalls,
+              this.blastGates,
+              0,
+              this.interiorDoors
+            );
+          }
+        }
+      } else if (nearGateId !== null) {
+        this.toggleBlastGate(nearGateId);
+      } else if (nearCarId !== null) {
+        const car = carCandidates.find((o) => o.id === nearCarId);
+        if (car) {
+          this.carAlarms.set(car.id, {
+            x: car.x,
+            z: car.z,
+            remaining: 18,
+            beepTimer: 0.1
+          });
+          if (this.onSound) this.onSound('car_alarm', car.x, car.z);
+          this.triggerAlert('🚨 CAR ALARM TRIGGERED — Distracting nearby horde!', 'warn');
+        }
+      }
     }
 
-    // Check nearest zombie distance for danger heartbeat vignette
-    const nearZ = this.spatial.queryRadius(player.x, player.z, 24, this.neighborBuffer);
+    // Check nearest zombie distance, pursuer count & out-of-combat light recovery
+    const nearZ = this.spatial.queryRadius(player.x, player.z, 32, this.neighborBuffer);
     let minZDist = 999;
+    let pursuers = 0;
     for (let i = 0; i < nearZ.length; i++) {
       const other = nearZ[i];
       if (other.isAlive && other.role === 'infected') {
         const d = Math.hypot(other.x - player.x, other.z - player.z);
         if (d < minZDist) minZDist = d;
+        if (other.targetAgentId === player.id) pursuers++;
       }
     }
     this.firstPerson.nearestZombieDist = minZDist;
+    this.firstPerson.pursuers = pursuers;
 
-    // Check extraction victory (Express Train DOCKED or active Evac Zone)
-    if (
-      this.expressTrain.active &&
-      this.expressTrain.state === 'DOCKED' &&
-      Math.hypot(player.x - this.expressTrain.stationX, player.z - (this.expressTrain.stationZ - 5.5)) <= 14.0
-    ) {
-      player.isEvacuated = true;
-      this.totalEvacuated++;
-      this.expressTrain.boardedTotal++;
-      this.firstPerson.outcome = 'ESCAPED';
-      this.logAgentAction(player, `Escaped aboard the KTX Express Evacuation Train!`);
-      return player;
+    if (minZDist > 9.5 && !player.isIncubating && player.health < 70) {
+      this.fpSafeTimer += dt;
+      if (this.fpSafeTimer >= 3.5) {
+        player.health = Math.min(70, player.health + dt * 3.0);
+      }
+    } else {
+      this.fpSafeTimer = 0;
+    }
+
+    const wp = this.computeEscapeWaypoint(player.x, player.z);
+    this.firstPerson.waypointX = wp.x;
+    this.firstPerson.waypointZ = wp.z;
+    this.firstPerson.waypointLabel = wp.label;
+
+    // Speed up Express Train only while waiting on platform; escape triggers inside walkable 3-car KTX (Car 1 [E] or riding out)
+    if (this.expressTrain.active) {
+      const distStation = Math.hypot(
+        player.x - this.expressTrain.stationX,
+        player.z - (this.expressTrain.stationZ - 5.5)
+      );
+      if (distStation <= 18.0 && this.expressTrain.state === 'COOLDOWN' && this.expressTrain.timer > 2.5) {
+        this.expressTrain.timer = 2.5;
+        this.triggerAlert('🚄 EMERGENCY EXPRESS DISPATCHED — Train arriving in 7.5s!', 'info');
+      }
     }
 
     const ez = this.findNearestEvacZone(player.x, player.z, 20);

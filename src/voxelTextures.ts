@@ -21,24 +21,57 @@ export interface BuildingFacadeBundle {
   emissiveMap: THREE.CanvasTexture;
 }
 
-export type NeonSignLabel = 'CLINIC' | '24H MART' | 'MART' | 'HOTEL' | 'PHARMACY' | 'METRO';
+export type NeonSignLabel =
+  | 'CLINIC'
+  | '24H MART'
+  | 'MART'
+  | 'HOTEL'
+  | 'PHARMACY'
+  | 'METRO'
+  | 'RAMEN'
+  | 'CAFE'
+  | 'SUBWAY';
 
 const PIXEL_FONT_5X5: Record<string, string[]> = {
   A: ['01110', '10001', '11111', '10001', '10001'],
+  B: ['11110', '10001', '11110', '10001', '11110'],
   C: ['01111', '10000', '10000', '10000', '01111'],
+  D: ['11110', '10001', '10001', '10001', '11110'],
   E: ['11111', '10000', '11110', '10000', '11111'],
+  F: ['11111', '10000', '11110', '10000', '10000'],
+  G: ['01111', '10000', '10111', '10001', '01111'],
   H: ['10001', '10001', '11111', '10001', '10001'],
   I: ['11111', '00100', '00100', '00100', '11111'],
+  J: ['00111', '00010', '00010', '10010', '01100'],
+  K: ['10001', '10010', '11100', '10010', '10001'],
   L: ['10000', '10000', '10000', '10000', '11111'],
   M: ['10001', '11011', '10101', '10001', '10001'],
   N: ['10001', '11001', '10101', '10011', '10001'],
   O: ['01110', '10001', '10001', '10001', '01110'],
   P: ['11110', '10001', '11110', '10000', '10000'],
+  Q: ['01110', '10001', '10001', '10010', '01101'],
   R: ['11110', '10001', '11110', '10100', '10010'],
+  S: ['01111', '10000', '01110', '00001', '11110'],
   T: ['11111', '00100', '00100', '00100', '00100'],
+  U: ['10001', '10001', '10001', '10001', '01110'],
+  V: ['10001', '10001', '10001', '01010', '00100'],
+  W: ['10001', '10001', '10101', '11011', '10001'],
+  X: ['10001', '01010', '00100', '01010', '10001'],
   Y: ['10001', '10001', '01110', '00100', '00100'],
+  Z: ['11111', '00010', '00100', '01000', '11111'],
+  '0': ['01110', '10011', '10101', '11001', '01110'],
+  '1': ['00100', '01100', '00100', '00100', '01110'],
   '2': ['11110', '00001', '01110', '10000', '11111'],
+  '3': ['11110', '00001', '01110', '00001', '11110'],
   '4': ['10010', '10010', '11111', '00010', '00010'],
+  '5': ['11111', '10000', '11110', '00001', '11110'],
+  '6': ['01111', '10000', '11110', '10001', '01110'],
+  '7': ['11111', '00001', '00010', '00100', '00100'],
+  '8': ['01110', '10001', '01110', '10001', '01110'],
+  '9': ['01110', '10001', '01111', '00001', '11110'],
+  '-': ['00000', '00000', '11111', '00000', '00000'],
+  ':': ['00000', '00100', '00000', '00100', '00000'],
+  '/': ['00001', '00010', '00100', '01000', '10000'],
   ' ': ['00000', '00000', '00000', '00000', '00000']
 };
 
@@ -768,6 +801,43 @@ export class VoxelTextureStudio {
     return tex;
   }
 
+  private drawPixelText(
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    startX: number,
+    startY: number,
+    px: number,
+    color: string,
+    vertical = false
+  ): void {
+    const chars = text.split('');
+    ctx.fillStyle = color;
+    for (let ci = 0; ci < chars.length; ci++) {
+      const glyph = PIXEL_FONT_5X5[chars[ci]] ?? PIXEL_FONT_5X5[' '];
+      const gx = vertical ? startX : startX + ci * 6 * px;
+      const gy = vertical ? startY + ci * 6 * px : startY;
+      for (let r = 0; r < 5; r++) {
+        for (let c = 0; c < 5; c++) {
+          if (glyph[r][c] === '1') {
+            ctx.fillRect(gx + c * px, gy + r * px, px, px);
+          }
+        }
+      }
+    }
+  }
+
+  private getSignColors(label: NeonSignLabel): [string, string] {
+    if (label === 'CLINIC') return ['#22d3ee', '#f87171'];
+    if (label === '24H MART') return ['#22d3ee', '#fb7185'];
+    if (label === 'HOTEL') return ['#ec4899', '#fbcfe8'];
+    if (label === 'PHARMACY') return ['#10b981', '#d1fae5'];
+    if (label === 'METRO') return ['#f59e0b', '#fef08a'];
+    if (label === 'RAMEN') return ['#f97316', '#fde68a'];
+    if (label === 'CAFE') return ['#fb7185', '#fef3c7'];
+    if (label === 'SUBWAY') return ['#84cc16', '#ecfccb'];
+    return ['#38bdf8', '#e0f2fe'];
+  }
+
   public getNeonSignTexture(label: NeonSignLabel): THREE.CanvasTexture {
     const key = `sign-${label}`;
     const cached = this.texCache.get(key);
@@ -777,51 +847,126 @@ export class VoxelTextureStudio {
     ctx.fillStyle = '#0b101b';
     ctx.fillRect(0, 0, 128, 36);
 
-    let borderHex = '#38bdf8';
-    let textHex = '#e0f2fe';
-    if (label === 'CLINIC') {
-      borderHex = '#22d3ee';
-      textHex = '#f87171';
-    } else if (label === '24H MART') {
-      borderHex = '#22d3ee';
-      textHex = '#fb7185';
-    } else if (label === 'HOTEL') {
-      borderHex = '#ec4899';
-      textHex = '#fbcfe8';
-    } else if (label === 'PHARMACY') {
-      borderHex = '#10b981';
-      textHex = '#d1fae5';
-    } else if (label === 'METRO') {
-      borderHex = '#f59e0b';
-      textHex = '#fef08a';
-    }
-
+    const [borderHex, textHex] = this.getSignColors(label);
     ctx.fillStyle = borderHex;
     ctx.fillRect(0, 0, 128, 3);
     ctx.fillRect(0, 33, 128, 3);
     ctx.fillRect(0, 0, 3, 36);
     ctx.fillRect(125, 0, 3, 36);
 
-    const chars = label.split('');
     const px = 3;
-    const totalW = chars.length * (6 * px) - px;
+    const totalW = label.length * (6 * px) - px;
     const startX = Math.floor((128 - totalW) / 2);
-    const startY = 10;
+    this.drawPixelText(ctx, label, startX, 10, px, textHex, false);
 
-    ctx.fillStyle = textHex;
-    for (let ci = 0; ci < chars.length; ci++) {
-      const glyph = PIXEL_FONT_5X5[chars[ci]] ?? PIXEL_FONT_5X5[' '];
-      const gx = startX + ci * 6 * px;
-      for (let r = 0; r < 5; r++) {
-        for (let c = 0; c < 5; c++) {
-          if (glyph[r][c] === '1') {
-            ctx.fillRect(gx + c * px, startY + r * px, px, px);
-          }
-        }
-      }
+    const tex = this.finalizeTexture(canvas, { nearestMin: true });
+    this.texCache.set(key, tex);
+    return tex;
+  }
+
+  public getVerticalNeonSignTexture(label: NeonSignLabel): THREE.CanvasTexture {
+    const key = `vsign-${label}`;
+    const cached = this.texCache.get(key);
+    if (cached) return cached;
+
+    const chars = label.replace(/\s+/g, '').slice(0, 8);
+    const [canvas, ctx] = this.makeCanvas(36, 144);
+    const [borderHex, textHex] = this.getSignColors(label);
+
+    ctx.fillStyle = '#090d16';
+    ctx.fillRect(0, 0, 36, 144);
+    ctx.fillStyle = borderHex;
+    ctx.fillRect(0, 0, 36, 3);
+    ctx.fillRect(0, 141, 36, 3);
+    ctx.fillRect(0, 0, 3, 144);
+    ctx.fillRect(33, 0, 3, 144);
+
+    const px = chars.length > 6 ? 2 : 3;
+    const totalH = chars.length * (6 * px) - px;
+    const startX = Math.floor((36 - 5 * px) / 2);
+    const startY = Math.max(6, Math.floor((144 - totalH) / 2));
+    this.drawPixelText(ctx, chars, startX, startY, px, textHex, true);
+
+    const tex = this.finalizeTexture(canvas, { nearestMin: true });
+    this.texCache.set(key, tex);
+    return tex;
+  }
+
+  public getHighwayGantrySignTexture(line1 = 'NORTH EXPWY', line2 = 'CITADEL EXIT'): THREE.CanvasTexture {
+    const key = `hwy-sign-${line1}-${line2}`;
+    const cached = this.texCache.get(key);
+    if (cached) return cached;
+
+    const [canvas, ctx] = this.makeCanvas(192, 64);
+    ctx.fillStyle = '#0f5132';
+    ctx.fillRect(0, 0, 192, 64);
+    ctx.fillStyle = '#e2e8f0';
+    ctx.fillRect(3, 3, 186, 2);
+    ctx.fillRect(3, 59, 186, 2);
+    ctx.fillRect(3, 3, 2, 58);
+    ctx.fillRect(187, 3, 2, 58);
+
+    const px = 2;
+    const w1 = line1.length * 6 * px - px;
+    const w2 = line2.length * 6 * px - px;
+    this.drawPixelText(ctx, line1, Math.floor((192 - w1) / 2), 10, px, '#f8fafc', false);
+    this.drawPixelText(ctx, line2, Math.floor((192 - w2) / 2), 26, px, '#fde047', false);
+
+    // Downward lane arrows
+    for (const ax of [52, 136]) {
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillRect(ax, 42, 4, 8);
+      ctx.fillRect(ax - 3, 47, 10, 3);
+      ctx.fillRect(ax - 1, 50, 6, 3);
     }
 
     const tex = this.finalizeTexture(canvas, { nearestMin: true });
+    this.texCache.set(key, tex);
+    return tex;
+  }
+
+  public getKtxBoardTexture(): THREE.CanvasTexture {
+    const key = 'ktx-board';
+    const cached = this.texCache.get(key);
+    if (cached) return cached;
+
+    const [canvas, ctx] = this.makeCanvas(192, 64);
+    ctx.fillStyle = '#070b14';
+    ctx.fillRect(0, 0, 192, 64);
+    ctx.fillStyle = '#22d3ee';
+    ctx.fillRect(0, 0, 192, 3);
+    ctx.fillRect(0, 61, 192, 3);
+
+    this.drawPixelText(ctx, 'KTX-101 BUSAN', 16, 12, 2, '#38bdf8', false);
+    this.drawPixelText(ctx, 'PLATFORM 1', 16, 28, 2, '#f8fafc', false);
+    this.drawPixelText(ctx, 'BOARDING', 16, 44, 2, '#4ade80', false);
+
+    const tex = this.finalizeTexture(canvas, { nearestMin: true });
+    this.texCache.set(key, tex);
+    return tex;
+  }
+
+  public getTrainFloorTexture(): THREE.CanvasTexture {
+    const key = 'ktx-floor';
+    const cached = this.texCache.get(key);
+    if (cached) return cached;
+
+    const [canvas, ctx] = this.makeCanvas(64, 64);
+    ctx.fillStyle = '#202836';
+    ctx.fillRect(0, 0, 64, 64);
+    for (let y = 0; y < 64; y += 8) {
+      for (let x = 0; x < 64; x += 8) {
+        const alt = ((x / 8 + y / 8) | 0) % 2 === 0;
+        ctx.fillStyle = alt ? '#2a3446' : '#222b3a';
+        ctx.fillRect(x + 1, y + 1, 7, 7);
+      }
+    }
+    // Crisp central aisle pale edge trim matching concept artwork
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillRect(0, 18, 64, 2);
+    ctx.fillRect(0, 44, 64, 2);
+
+    const tex = this.finalizeTexture(canvas, { repeatX: 5, repeatY: 1 });
     this.texCache.set(key, tex);
     return tex;
   }
@@ -1088,6 +1233,276 @@ export class VoxelTextureStudio {
     ctx.fillRect(0, 29, 64, 3);
     ctx.fillRect(0, 0, 3, 32);
     ctx.fillRect(61, 0, 3, 32);
+
+    const tex = this.finalizeTexture(canvas, { nearestMin: true });
+    this.texCache.set(key, tex);
+    return tex;
+  }
+
+  public getInteriorFloorTexture(
+    theme: 'mart' | 'clinic' | 'hospital' | 'terminal',
+    repeatX = 4,
+    repeatY = 3
+  ): THREE.CanvasTexture {
+    const key = `int-floor-${theme}-${repeatX}-${repeatY}`;
+    const cached = this.texCache.get(key);
+    if (cached) return cached;
+
+    const [canvas, ctx] = this.makeCanvas(64, 64);
+    for (let y = 0; y < 64; y += 8) {
+      for (let x = 0; x < 64; x += 8) {
+        const isDarkCell = (x / 8 + y / 8) % 2 === 0;
+        const n = this.hash(x, y, 911);
+        if (theme === 'mart') {
+          ctx.fillStyle = isDarkCell
+            ? n < 0.4
+              ? '#232833'
+              : '#2b313e'
+            : n < 0.4
+            ? '#b7c0cc'
+            : '#cbd5e1';
+        } else if (theme === 'clinic') {
+          ctx.fillStyle = isDarkCell ? '#3d4c5c' : '#4a5a6b';
+        } else if (theme === 'hospital') {
+          ctx.fillStyle = isDarkCell ? '#8b99ab' : '#9aa8b8';
+        } else {
+          ctx.fillStyle = isDarkCell ? '#202632' : '#2a3242';
+        }
+        ctx.fillRect(x, y, 8, 8);
+        ctx.fillStyle = 'rgba(10, 12, 18, 0.28)';
+        ctx.fillRect(x, y, 8, 1);
+        ctx.fillRect(x, y, 1, 8);
+      }
+    }
+    if (theme === 'terminal') {
+      ctx.fillStyle = '#0ea5e9';
+      ctx.fillRect(0, 29, 64, 4);
+    }
+
+    const tex = this.finalizeTexture(canvas, { repeatX, repeatY });
+    this.texCache.set(key, tex);
+    return tex;
+  }
+
+  public getShelfStockTexture(): THREE.CanvasTexture {
+    const key = 'shelf-stock';
+    const cached = this.texCache.get(key);
+    if (cached) return cached;
+
+    const [canvas, ctx] = this.makeCanvas(64, 64);
+    ctx.fillStyle = '#334155';
+    ctx.fillRect(0, 0, 64, 64);
+
+    const itemColors = ['#dc2626', '#eab308', '#2563eb', '#16a34a', '#ea580c', '#cbd5e1', '#d97706'];
+    for (let row = 0; row < 4; row++) {
+      const sy = row * 16;
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(0, sy + 12, 64, 4);
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, sy, 64, 2);
+      for (let bx = 2; bx < 62; bx += 7) {
+        const idx = Math.floor(this.hash(bx, row, 933) * itemColors.length);
+        const h = 7 + (idx % 3);
+        ctx.fillStyle = itemColors[idx];
+        ctx.fillRect(bx, sy + 12 - h, 5, h);
+        ctx.fillStyle = '#f8fafc';
+        ctx.fillRect(bx + 1, sy + 14 - h, 3, 2);
+      }
+    }
+
+    const tex = this.finalizeTexture(canvas, { repeatX: 2, repeatY: 1 });
+    this.texCache.set(key, tex);
+    return tex;
+  }
+
+  public getBeverageCoolerTexture(): {
+    map: THREE.CanvasTexture;
+    emissiveMap: THREE.CanvasTexture;
+  } {
+    const key = 'beverage-cooler';
+    const eKey = 'beverage-cooler-emissive';
+    const cachedMap = this.texCache.get(key);
+    const cachedEmissive = this.texCache.get(eKey);
+    if (cachedMap && cachedEmissive) {
+      return { map: cachedMap, emissiveMap: cachedEmissive };
+    }
+
+    const [canvas, ctx] = this.makeCanvas(64, 64);
+    const [eCanvas, eCtx] = this.makeCanvas(64, 64);
+
+    ctx.fillStyle = '#0b111c';
+    ctx.fillRect(0, 0, 64, 64);
+    eCtx.fillStyle = '#000000';
+    eCtx.fillRect(0, 0, 64, 64);
+
+    const doorCols = [
+      [3, 18],
+      [23, 39],
+      [44, 60]
+    ];
+    const drinkColors = ['#38bdf8', '#ef4444', '#f59e0b', '#22c55e', '#e2e8f0'];
+
+    for (const [x0, x1] of doorCols) {
+      const w = x1 - x0;
+      ctx.fillStyle = '#0c2735';
+      ctx.fillRect(x0, 5, w, 53);
+      eCtx.fillStyle = '#14495c';
+      eCtx.fillRect(x0, 5, w, 53);
+
+      for (let row = 0; row < 4; row++) {
+        const sy = 14 + row * 12;
+        ctx.fillStyle = '#111827';
+        ctx.fillRect(x0, sy, w, 2);
+        eCtx.fillStyle = '#000000';
+        eCtx.fillRect(x0, sy, w, 2);
+
+        for (let bx = x0 + 1; bx <= x1 - 3; bx += 3) {
+          const ci = Math.floor(this.hash(bx, row, 409) * drinkColors.length);
+          ctx.fillStyle = drinkColors[ci];
+          ctx.fillRect(bx, sy - 7, 2, 7);
+          ctx.fillStyle = '#e2e8f0';
+          ctx.fillRect(bx, sy - 8, 2, 1);
+        }
+      }
+
+      // Vertical door mullion handle
+      ctx.fillStyle = '#64748b';
+      ctx.fillRect(x1 - 2, 24, 1, 13);
+      eCtx.fillStyle = '#000000';
+      eCtx.fillRect(x1 - 2, 24, 1, 13);
+    }
+
+    const map = this.finalizeTexture(canvas, { nearestMin: true });
+    const emissiveMap = this.finalizeTexture(eCanvas, { nearestMin: true, srgb: false });
+    this.texCache.set(key, map);
+    this.texCache.set(eKey, emissiveMap);
+    return { map, emissiveMap };
+  }
+
+  public getCardboardBoxTexture(): THREE.CanvasTexture {
+    const key = 'cardboard-box';
+    const cached = this.texCache.get(key);
+    if (cached) return cached;
+
+    const [canvas, ctx] = this.makeCanvas(32, 32);
+    for (let y = 0; y < 32; y++) {
+      for (let x = 0; x < 32; x++) {
+        const n = this.hash(x, y, 701);
+        ctx.fillStyle = n < 0.35 ? '#784d2c' : n < 0.8 ? '#855834' : '#91623d';
+        ctx.fillRect(x, y, 1, 1);
+      }
+    }
+    // Outer seam edges
+    ctx.fillStyle = '#4e321c';
+    ctx.fillRect(0, 0, 32, 1);
+    ctx.fillRect(0, 31, 32, 1);
+    ctx.fillRect(0, 0, 1, 32);
+    ctx.fillRect(31, 0, 1, 32);
+    // Packing tape band
+    ctx.fillStyle = '#b89164';
+    ctx.fillRect(1, 14, 30, 4);
+    // Shipping label
+    ctx.fillStyle = '#cbd5e1';
+    ctx.fillRect(5, 5, 8, 6);
+    ctx.fillStyle = '#1e293b';
+    ctx.fillRect(6, 7, 6, 1);
+    ctx.fillRect(6, 9, 4, 1);
+
+    const tex = this.finalizeTexture(canvas, { nearestMin: true });
+    this.texCache.set(key, tex);
+    return tex;
+  }
+
+  public getExitSignTexture(): THREE.CanvasTexture {
+    const key = 'exit-sign';
+    const cached = this.texCache.get(key);
+    if (cached) return cached;
+
+    const [canvas, ctx] = this.makeCanvas(64, 24);
+    ctx.fillStyle = '#09110d';
+    ctx.fillRect(0, 0, 64, 24);
+    ctx.fillStyle = '#16a34a';
+    ctx.fillRect(0, 0, 64, 2);
+    ctx.fillRect(0, 22, 64, 2);
+    ctx.fillRect(0, 0, 2, 24);
+    ctx.fillRect(62, 0, 2, 24);
+
+    const label = 'EXIT';
+    const px = 2;
+    const startX = 11;
+    const startY = 7;
+    ctx.fillStyle = '#4ade80';
+    for (let ci = 0; ci < label.length; ci++) {
+      const glyph = PIXEL_FONT_5X5[label[ci]];
+      if (!glyph) continue;
+      const gx = startX + ci * 12;
+      for (let r = 0; r < 5; r++) {
+        for (let c = 0; c < 5; c++) {
+          if (glyph[r][c] === '1') {
+            ctx.fillRect(gx + c * px, startY + r * px, px, px);
+          }
+        }
+      }
+    }
+
+    const tex = this.finalizeTexture(canvas, { nearestMin: true });
+    this.texCache.set(key, tex);
+    return tex;
+  }
+
+  public getDoorGlassTexture(damageStage: 0 | 1 | 2): THREE.CanvasTexture {
+    const key = `door-glass-${damageStage}`;
+    const cached = this.texCache.get(key);
+    if (cached) return cached;
+
+    const [canvas, ctx] = this.makeCanvas(64, 96);
+    ctx.fillStyle = 'rgba(34, 46, 62, 0.30)';
+    ctx.fillRect(0, 0, 64, 96);
+
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
+    ctx.fillRect(0, 0, 64, 4);
+    ctx.fillRect(0, 92, 64, 4);
+    ctx.fillRect(0, 0, 3, 96);
+    ctx.fillRect(61, 0, 3, 96);
+    ctx.fillRect(0, 52, 64, 3);
+
+    if (damageStage >= 1) {
+      ctx.fillStyle = 'rgba(17, 24, 39, 0.85)';
+      const cracks = [
+        [32, 40, 18, 22],
+        [32, 40, 48, 24],
+        [32, 40, 20, 58],
+        [32, 40, 50, 62]
+      ];
+      for (const [x0, y0, x1, y1] of cracks) {
+        const steps = 10;
+        for (let s = 0; s <= steps; s++) {
+          const px = Math.round(x0 + ((x1 - x0) * s) / steps);
+          const py = Math.round(y0 + ((y1 - y0) * s) / steps + (s % 2 === 0 ? 1 : -1));
+          ctx.fillRect(px, py, 2, 2);
+        }
+      }
+    }
+    if (damageStage >= 2) {
+      ctx.fillStyle = 'rgba(9, 12, 18, 0.92)';
+      const extra = [
+        [24, 34, 6, 12],
+        [40, 46, 58, 78],
+        [30, 52, 10, 84],
+        [36, 30, 56, 14]
+      ];
+      for (const [x0, y0, x1, y1] of extra) {
+        const steps = 12;
+        for (let s = 0; s <= steps; s++) {
+          const px = Math.round(x0 + ((x1 - x0) * s) / steps);
+          const py = Math.round(y0 + ((y1 - y0) * s) / steps + ((s % 3) - 1));
+          ctx.fillRect(px, py, 2, 2);
+        }
+      }
+      ctx.fillStyle = 'rgba(110, 14, 18, 0.72)';
+      ctx.fillRect(20, 46, 10, 8);
+      ctx.fillRect(36, 56, 8, 12);
+    }
 
     const tex = this.finalizeTexture(canvas, { nearestMin: true });
     this.texCache.set(key, tex);

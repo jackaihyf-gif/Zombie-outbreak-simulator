@@ -166,8 +166,8 @@ export class AgentRenderer {
         archetype: arch,
         maxCount,
         activeCount: 0,
-        headInst: makeInst(headGeo, mats.headMats, maxCount, true),
-        torsoInst: makeInst(torsoGeo, mats.torsoMats, maxCount, true),
+        headInst: makeInst(headGeo, mats.headMats, maxCount, false),
+        torsoInst: makeInst(torsoGeo, mats.torsoMats, maxCount, false),
         leftArmInst: makeInst(armGeo, mats.armMat, maxCount, false),
         rightArmInst: makeInst(armGeo, mats.armMat, maxCount, false),
         leftLegInst: makeInst(legGeo, mats.legMat, maxCount, false),
@@ -357,7 +357,8 @@ export class AgentRenderer {
           ? 1.12
           : 1.0;
 
-      const speed = Math.hypot(a.vx, a.vz);
+      const speedSq = a.vx * a.vx + a.vz * a.vz;
+      const speed = speedSq > 1e-6 ? Math.sqrt(speedSq) : 0;
       const isConvulsing = a.role === 'civilian' && a.civState === 'CONVULSING';
       const isClimbing = a.role === 'infected' && a.climbY > 0.25;
 
@@ -399,11 +400,70 @@ export class AgentRenderer {
         rArmRoll = -0.45;
         lLegPitch = -0.55;
         rLegPitch = 0.25;
+      } else if (a.role !== 'infected' && a.pinnedById !== null) {
+        const str = simTime * 22 + a.id;
+        if (a.attackMode === 'tackle_pin') {
+          rootPitch = -1.42;
+          rootRoll = Math.sin(str) * 0.22;
+          headPitch = -0.25;
+          headRoll = Math.cos(str * 1.3) * 0.35;
+          lArmPitch = -1.6 + Math.sin(str) * 0.7;
+          rArmPitch = -1.6 - Math.cos(str) * 0.7;
+          lArmRoll = 0.35;
+          rArmRoll = -0.35;
+          lLegPitch = Math.sin(str * 1.2) * 0.45;
+          rLegPitch = -Math.sin(str * 1.2) * 0.45;
+        } else {
+          rootPitch = -0.24;
+          rootRoll = Math.sin(str * 1.1) * 0.14;
+          headPitch = -0.35;
+          headRoll = Math.sin(str * 1.4) * 0.24;
+          lArmPitch = -1.35 + Math.sin(str) * 0.25;
+          rArmPitch = -1.35 - Math.sin(str) * 0.25;
+          lArmRoll = 0.22;
+          rArmRoll = -0.22;
+          lLegPitch = 0.15;
+          rLegPitch = -0.18;
+        }
+      } else if (a.role !== 'infected' && a.stunnedTimer > 0.4) {
+        const rec = 1 - Math.min(1, a.stunnedTimer / 1.15);
+        rootPitch = -1.25 * (1 - rec) - 0.15 * rec;
+        rootRoll = Math.sin(simTime * 16 + a.id) * 0.24 * (1 - rec);
+        lArmPitch = -1.1;
+        rArmPitch = -0.9;
+        lArmRoll = 0.4;
+        rArmRoll = -0.4;
       } else if (a.role === 'infected') {
         const neckSign = a.id % 2 === 0 ? 1 : -1;
         const baseNeckTilt = neckSign * (0.24 + ((a.id * 19) % 24) * 0.01);
 
-        if (isClimbing) {
+        if (a.fallY > 0.05) {
+          // Mid-air window-breach tumbling & flailing limbs
+          const flail = simTime * 22 + a.id;
+          rootPitch = a.fallRoll;
+          rootRoll = a.fallRoll * 0.55;
+          headPitch = -0.35;
+          headRoll = baseNeckTilt + Math.sin(flail) * 0.35;
+          lArmPitch = -2.1 + Math.sin(flail) * 1.1;
+          rArmPitch = -2.1 - Math.cos(flail) * 1.1;
+          lArmRoll = 0.55;
+          rArmRoll = -0.55;
+          lLegPitch = Math.sin(flail * 1.2) * 0.95;
+          rLegPitch = -Math.sin(flail * 1.2) * 0.95;
+        } else if (a.stunnedTimer > 0) {
+          // Ground/car-hood impact sprawl snapping grotesquely back upright
+          const rec = 1 - Math.min(1, a.stunnedTimer / 0.65);
+          rootPitch = (1 - rec) * 1.32 + rec * 0.38;
+          rootRoll = Math.sin(simTime * 28 + a.id) * 0.28 * (1 - rec);
+          headPitch = -0.42;
+          headRoll = Math.sin(simTime * 35 + a.id) * 0.45;
+          lArmPitch = -1.6 + (1 - rec) * 0.5;
+          rArmPitch = -1.4 - (1 - rec) * 0.5;
+          lArmRoll = 0.35;
+          rArmRoll = -0.35;
+          lLegPitch = (1 - rec) * 0.45;
+          rLegPitch = -(1 - rec) * 0.35;
+        } else if (isClimbing) {
           const climbCycle = simTime * 15 + a.id * 1.7;
           rootPitch = -0.22;
           rootRoll = Math.sin(climbCycle * 0.7) * 0.16;
@@ -415,21 +475,74 @@ export class AgentRenderer {
           rArmRoll = -0.22;
           lLegPitch = -Math.sin(climbCycle) * 0.85;
           rLegPitch = Math.sin(climbCycle) * 0.85;
+        } else if (a.zombieState === 'FEEDING') {
+          const biteT = simTime * 20 + a.id;
+          if (a.attackMode === 'tackle_pin') {
+            rootPitch = 1.08;
+            rootRoll = Math.sin(biteT * 0.6) * 0.14;
+            headPitch = 0.32 + Math.sin(biteT) * 0.42;
+            headRoll = baseNeckTilt * 0.8 + Math.cos(biteT * 0.8) * 0.25;
+            lArmPitch = -1.35 + Math.sin(biteT * 0.5) * 0.22;
+            rArmPitch = -1.35 - Math.sin(biteT * 0.5) * 0.22;
+            lArmRoll = 0.25;
+            rArmRoll = -0.25;
+            lLegPitch = -0.85;
+            rLegPitch = -0.65;
+          } else {
+            rootPitch = 0.38;
+            rootRoll = Math.sin(biteT * 0.7) * 0.12;
+            headPitch = 0.2 + Math.sin(biteT * 0.9) * 0.25;
+            headRoll = baseNeckTilt;
+            lArmPitch = -1.55;
+            rArmPitch = -1.55;
+            lArmYaw = -0.35;
+            rArmYaw = 0.35;
+            lLegPitch = 0.25;
+            rLegPitch = -0.22;
+          }
         } else if (a.zombieState === 'ATTACKING' || a.attackCooldown > 0.32) {
-          // Feral lunge bite
-          const lungePhase = simTime * 18 + a.id;
-          rootPitch = 0.62;
-          rootRoll = Math.sin(lungePhase) * 0.18;
-          headPitch = -0.24;
-          headRoll = baseNeckTilt * 1.15;
-          lArmPitch = -1.75 + Math.sin(lungePhase) * 0.52;
-          rArmPitch = -1.75 - Math.cos(lungePhase) * 0.52;
-          lArmYaw = -0.25;
-          rArmYaw = 0.25;
-          lArmRoll = 0.24;
-          rArmRoll = -0.24;
-          lLegPitch = 0.48;
-          rLegPitch = -0.42;
+          if (a.attackMode === 'brute_slam') {
+            const smash = Math.sin(simTime * 14 + a.id);
+            rootPitch = 0.45 + smash * 0.32;
+            rootRoll = Math.cos(simTime * 10 + a.id) * 0.12;
+            headPitch = -0.18;
+            lArmPitch = -1.45 - smash * 1.1;
+            rArmPitch = -1.45 - smash * 1.1;
+            lArmRoll = 0.28;
+            rArmRoll = -0.28;
+            lLegPitch = 0.35;
+            rLegPitch = -0.3;
+          } else if (a.attackMode === 'claw_swipe') {
+            const lungePhase = simTime * 22 + a.id;
+            rootPitch = 0.52;
+            rootYawOffset = Math.sin(lungePhase) * 0.42;
+            rootRoll = Math.sin(lungePhase) * 0.22;
+            headPitch = -0.22;
+            headRoll = baseNeckTilt * 1.2;
+            lArmPitch = -1.6 + Math.sin(lungePhase) * 0.95;
+            rArmPitch = -1.6 - Math.sin(lungePhase) * 0.95;
+            lArmYaw = -0.45 + Math.cos(lungePhase) * 0.5;
+            rArmYaw = 0.45 - Math.cos(lungePhase) * 0.5;
+            lArmRoll = 0.36;
+            rArmRoll = -0.36;
+            lLegPitch = 0.48;
+            rLegPitch = -0.42;
+          } else {
+            // Feral lunge bite
+            const lungePhase = simTime * 18 + a.id;
+            rootPitch = 0.62;
+            rootRoll = Math.sin(lungePhase) * 0.18;
+            headPitch = -0.24;
+            headRoll = baseNeckTilt * 1.15;
+            lArmPitch = -1.75 + Math.sin(lungePhase) * 0.52;
+            rArmPitch = -1.75 - Math.cos(lungePhase) * 0.52;
+            lArmYaw = -0.25;
+            rArmYaw = 0.25;
+            lArmRoll = 0.24;
+            rArmRoll = -0.24;
+            lLegPitch = 0.48;
+            rLegPitch = -0.42;
+          }
         } else if (speed > 1.2) {
           // Terrifying World War Z / Busan rabid sprint
           const ph = a.animPhase * 1.15;
@@ -521,7 +634,26 @@ export class AgentRenderer {
       const jitterZ = isConvulsing ? Math.cos(simTime * 51 + a.id) * 0.12 : 0;
       const ax = a.x + jitterX;
       const az = a.z + jitterZ;
-      const ay = (isConvulsing ? -0.14 : 0.22) + a.climbY + strideBounce;
+      const pinnedDrop =
+        a.role !== 'infected' && a.pinnedById !== null && a.attackMode === 'tackle_pin'
+          ? 0.44
+          : 0;
+      const feedDrop =
+        a.role === 'infected' && a.zombieState === 'FEEDING' && a.attackMode === 'tackle_pin'
+          ? 0.34
+          : 0;
+      const stunDrop =
+        a.fallY <= 0.05 && a.stunnedTimer > 0
+          ? a.role === 'infected'
+            ? 0.48 * Math.min(1, a.stunnedTimer / 0.65)
+            : 0.42 * Math.min(1, a.stunnedTimer / 1.1)
+          : 0;
+      const ay =
+        (isConvulsing ? -0.14 : 0.22) +
+        a.climbY +
+        a.fallY +
+        strideBounce -
+        Math.max(stunDrop, pinnedDrop, feedDrop);
 
       this.computeBasis(
         this.rootBasis,
@@ -610,7 +742,7 @@ export class AgentRenderer {
         rLegRoll
       );
 
-      // Per-instance colors: civilian outfits/skin varied dynamically; archetypes stay true to pixel art
+      // Per-instance colors: civilian outfits/skin varied dynamically; other archetypes stay static white
       if (arch === 'civilian') {
         if (a.isIncubating) {
           this.tmpColor.setHex(0xb4b8a4); // Subtle pale sickly complexion without neon tinting
@@ -627,13 +759,6 @@ export class AgentRenderer {
         this.tmpColor.setHex(a.pantsColor);
         bucket.leftLegInst.setColorAt(slot, this.tmpColor);
         bucket.rightLegInst.setColorAt(slot, this.tmpColor);
-      } else {
-        bucket.headInst.setColorAt(slot, this.whiteColor);
-        bucket.torsoInst.setColorAt(slot, this.whiteColor);
-        bucket.leftArmInst.setColorAt(slot, this.whiteColor);
-        bucket.rightArmInst.setColorAt(slot, this.whiteColor);
-        bucket.leftLegInst.setColorAt(slot, this.whiteColor);
-        bucket.rightLegInst.setColorAt(slot, this.whiteColor);
       }
 
       // Grounded drop shadow
@@ -703,12 +828,14 @@ export class AgentRenderer {
         bucket.leftLegInst.instanceMatrix.needsUpdate = true;
         bucket.rightLegInst.instanceMatrix.needsUpdate = true;
 
-        if (bucket.headInst.instanceColor) bucket.headInst.instanceColor.needsUpdate = true;
-        if (bucket.torsoInst.instanceColor) bucket.torsoInst.instanceColor.needsUpdate = true;
-        if (bucket.leftArmInst.instanceColor) bucket.leftArmInst.instanceColor.needsUpdate = true;
-        if (bucket.rightArmInst.instanceColor) bucket.rightArmInst.instanceColor.needsUpdate = true;
-        if (bucket.leftLegInst.instanceColor) bucket.leftLegInst.instanceColor.needsUpdate = true;
-        if (bucket.rightLegInst.instanceColor) bucket.rightLegInst.instanceColor.needsUpdate = true;
+        if (bucket.archetype === 'civilian') {
+          if (bucket.headInst.instanceColor) bucket.headInst.instanceColor.needsUpdate = true;
+          if (bucket.torsoInst.instanceColor) bucket.torsoInst.instanceColor.needsUpdate = true;
+          if (bucket.leftArmInst.instanceColor) bucket.leftArmInst.instanceColor.needsUpdate = true;
+          if (bucket.rightArmInst.instanceColor) bucket.rightArmInst.instanceColor.needsUpdate = true;
+          if (bucket.leftLegInst.instanceColor) bucket.leftLegInst.instanceColor.needsUpdate = true;
+          if (bucket.rightLegInst.instanceColor) bucket.rightLegInst.instanceColor.needsUpdate = true;
+        }
       }
     }
 

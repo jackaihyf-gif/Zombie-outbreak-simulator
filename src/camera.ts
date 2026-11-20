@@ -26,6 +26,7 @@ export class CameraController {
   private lastMouseX = 0;
   private lastMouseY = 0;
   private keysPressed: Set<string> = new Set();
+  private pendingKeyPresses: Set<string> = new Set();
 
   public isFirstPerson = false;
   public fpYaw = Math.PI;
@@ -137,15 +138,24 @@ export class CameraController {
 
     window.addEventListener('keydown', (e) => {
       if (document.activeElement?.tagName === 'INPUT') return;
-      this.keysPressed.add(e.key.toLowerCase());
+      const k = e.code === 'Space' ? ' ' : e.key.toLowerCase();
+      if (this.isFirstPerson && k === ' ') {
+        e.preventDefault();
+      }
+      this.keysPressed.add(k);
+      if (!e.repeat) {
+        this.pendingKeyPresses.add(k);
+      }
     });
 
     window.addEventListener('keyup', (e) => {
-      this.keysPressed.delete(e.key.toLowerCase());
+      const k = e.code === 'Space' ? ' ' : e.key.toLowerCase();
+      this.keysPressed.delete(k);
     });
 
     window.addEventListener('blur', () => {
       this.keysPressed.clear();
+      this.pendingKeyPresses.clear();
       this.isOrbiting = false;
       this.isPanning = false;
       this.fpLooking = false;
@@ -204,7 +214,11 @@ export class CameraController {
     this.isOrbiting = false;
     this.isPanning = false;
     this.fpLooking = false;
+    this.pendingKeyPresses.clear();
     if (active) {
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
       this.fpYaw = initialYaw;
       this.fpPitch = -0.02;
       this.followAgentMode = false;
@@ -222,13 +236,24 @@ export class CameraController {
     return this.keysPressed.has(key.toLowerCase());
   }
 
+  public consumeKeyPress(key: string): boolean {
+    const k = key.toLowerCase();
+    if (this.pendingKeyPresses.has(k)) {
+      this.pendingKeyPresses.delete(k);
+      return true;
+    }
+    return false;
+  }
+
   public updateFirstPerson(
     x: number,
     z: number,
     dt: number,
     isMoving: boolean,
     sprinting: boolean,
-    time: number
+    time: number,
+    vaultY = 0,
+    vaultRoll = 0
   ): void {
     if (this.keysPressed.has('arrowleft')) this.fpYaw += 1.9 * dt;
     if (this.keysPressed.has('arrowright')) this.fpYaw -= 1.9 * dt;
@@ -238,9 +263,9 @@ export class CameraController {
     const roll = isMoving
       ? Math.cos(time * (sprinting ? 7 : 4.5)) * (sprinting ? 0.012 : 0.005)
       : 0;
-    this.camera.position.set(x, 1.68 + bob, z);
+    this.camera.position.set(x, 1.68 + bob + vaultY, z);
     this.camera.rotation.order = 'YXZ';
-    this.camera.rotation.set(this.fpPitch, this.fpYaw, roll);
+    this.camera.rotation.set(this.fpPitch, this.fpYaw, roll + vaultRoll);
   }
 
   public update(

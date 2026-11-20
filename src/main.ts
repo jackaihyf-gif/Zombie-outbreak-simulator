@@ -40,6 +40,9 @@ class ProjectOutbreakApp {
 
   private lastFrameTime = performance.now();
   private uiUpdateAccumulator = 0;
+  private fpsCounterEl = document.getElementById('fps-counter');
+  private fpsFrames = 0;
+  private fpsAccum = 0;
   private mouseDownPos = { x: 0, y: 0 };
   private textureStudio: VoxelTextureStudio;
   private flashlightRig!: THREE.Group;
@@ -60,7 +63,7 @@ class ProjectOutbreakApp {
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.applyOptimalPixelRatio(DEFAULT_CONFIG.population);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -99,6 +102,14 @@ class ProjectOutbreakApp {
         this.sound.playTrainHorn();
       } else if (type === 'gate_slam') {
         this.sound.playGateSlam();
+      } else if (type === 'window_shatter') {
+        this.sound.playWindowShatter(x, z, cx, cz, dist);
+      } else if (type === 'body_thud') {
+        this.sound.playBodyThud(x, z, cx, cz, dist);
+      } else if (type === 'door_pound') {
+        this.sound.playDoorPound(x, z, cx, cz, dist);
+      } else if (type === 'car_alarm') {
+        this.sound.playCarAlarm(x, z, cx, cz, dist);
       }
     };
 
@@ -134,8 +145,14 @@ class ProjectOutbreakApp {
     requestAnimationFrame((t) => this.animate(t));
   }
 
+  private applyOptimalPixelRatio(pop: number): void {
+    const maxDpr = pop >= 1500 ? 1.25 : 1.5;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxDpr));
+  }
+
   public resetSimulation(cfg: ScenarioConfig): void {
     this.agentRenderer.clearAll();
+    this.applyOptimalPixelRatio(cfg.population);
     this.sim.reset(cfg);
     this.cityRenderer.rebuildCity(this.sim.city);
     this.camController.setWorldBounds(this.sim.city.cityHalfX, this.sim.city.cityHalfZ);
@@ -281,6 +298,8 @@ class ProjectOutbreakApp {
   }
 
   private prevFpInteractDown = false;
+  private prevFpSpaceDown = false;
+  private prevFpDecoyDown = false;
 
   private handleViewportHover(clientX: number, clientY: number): void {
     if (this.sim.firstPerson.active) {
@@ -400,18 +419,34 @@ class ProjectOutbreakApp {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.applyOptimalPixelRatio(this.sim.config.population);
   }
 
   private animate(now: number): void {
     requestAnimationFrame((t) => this.animate(t));
 
-    const rawDt = Math.min(0.05, (now - this.lastFrameTime) / 1000);
+    const elapsedSec = Math.max(0.0001, (now - this.lastFrameTime) / 1000);
+    const rawDt = Math.min(0.05, elapsedSec);
     this.lastFrameTime = now;
+
+    this.fpsFrames++;
+    this.fpsAccum += elapsedSec;
+    if (this.fpsAccum >= 0.45) {
+      if (this.fpsCounterEl) {
+        const fps = Math.max(1, Math.round(this.fpsFrames / this.fpsAccum));
+        this.fpsCounterEl.textContent = `${fps} FPS`;
+        this.fpsCounterEl.style.color = fps >= 50 ? '#4ade80' : fps >= 30 ? '#fbbf24' : '#ef4444';
+      }
+      this.fpsFrames = 0;
+      this.fpsAccum = 0;
+    }
 
     if (!this.ui.isPaused) {
       const substeps = this.sim.firstPerson.active ? 1 : this.ui.simSpeed;
+      const budgetStart = performance.now();
       for (let s = 0; s < substeps; s++) {
         this.sim.step(rawDt);
+        if (performance.now() - budgetStart > 13) break;
       }
     }
 
@@ -434,8 +469,14 @@ class ProjectOutbreakApp {
       if (this.camController.isKeyDown('a')) moveRight -= 1;
       const wantSprint = this.camController.isKeyDown('shift');
       const eDown = this.camController.isKeyDown('e');
-      const interactPressed = eDown && !this.prevFpInteractDown;
+      const interactPressed = this.camController.consumeKeyPress('e') || (eDown && !this.prevFpInteractDown);
       this.prevFpInteractDown = eDown;
+      const spaceDown = this.camController.isKeyDown(' ');
+      const spacePressed = this.camController.consumeKeyPress(' ') || (spaceDown && !this.prevFpSpaceDown);
+      this.prevFpSpaceDown = spaceDown;
+      const qDown = this.camController.isKeyDown('q');
+      const decoyPressed = this.camController.consumeKeyPress('q') || (qDown && !this.prevFpDecoyDown);
+      this.prevFpDecoyDown = qDown;
 
       const player = !this.ui.isPaused
         ? this.sim.updateFirstPersonPlayer(
@@ -444,6 +485,8 @@ class ProjectOutbreakApp {
             moveRight,
             wantSprint,
             interactPressed,
+            spacePressed,
+            decoyPressed,
             this.camController.fpYaw,
             this.camController.fpPitch
           )
@@ -457,8 +500,17 @@ class ProjectOutbreakApp {
         player.isAlive &&
         !player.isEvacuated &&
         (moveForward !== 0 || moveRight !== 0);
-      const sprinting = isMoving && wantSprint && this.sim.firstPerson.stamina > 2;
-      this.camController.updateFirstPerson(px, pz, rawDt, isMoving, sprinting, this.sim.simTime);
+      const sprinting = isMoving && wantSprint && (this.sim.firstPerson.adrenalineTimer > 0 || this.sim.firstPerson.stamina > 2);
+      this.camController.updateFirstPerson(
+        px,
+        pz,
+        rawDt,
+        isMoving,
+        sprinting,
+        this.sim.simTime,
+        this.sim.firstPerson.vaultY,
+        this.sim.firstPerson.vaultRoll
+      );
 
       // Sway handheld voxel flashlight dynamically with sprint/breathing
       const swayRate = sprinting ? 14 : isMoving ? 9 : 2;
@@ -479,6 +531,8 @@ class ProjectOutbreakApp {
       }
     } else {
       this.prevFpInteractDown = false;
+      this.prevFpSpaceDown = false;
+      this.prevFpDecoyDown = false;
       const followedAgent = this.sim.getAgentById(this.sim.selectedAgentId);
       const hotspot = this.camController.autoDirectorMode ? this.sim.getHotspotPosition() : null;
       this.camController.update(rawDt, followedAgent, hotspot);
@@ -506,7 +560,14 @@ class ProjectOutbreakApp {
       this.sim.simTime,
       isFP,
       this.camera.position.x,
-      this.camera.position.z
+      this.camera.position.z,
+      this.sim.interiorDoors,
+      this.sim.brokenWindows,
+      this.sim.getActiveAlarmObstacleIds(),
+      this.sim.firstPerson.insideBuildingId,
+      this.sim.gridFlickerTimer,
+      this.sim.blackoutMaxZ,
+      this.sim.supplyPickups
     );
 
     this.renderer.render(this.scene, this.camera);

@@ -68,15 +68,15 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 6px;
+      gap: 4px;
       background: var(--bg-glass);
       backdrop-filter: blur(14px);
       border: 1px solid var(--border-subtle);
       border-radius: 10px;
-      padding: 4px 10px;
+      padding: 4px 8px;
       box-shadow: 0 6px 24px rgba(0, 0, 0, 0.42);
-      min-height: 40px;
-      flex-wrap: wrap;
+      min-height: 38px;
+      flex-wrap: nowrap;
     }
 
     .brand-group {
@@ -136,10 +136,10 @@
     .stats-inline {
       display: flex;
       align-items: center;
-      gap: 9px;
+      gap: 5px;
       background: rgba(15, 23, 42, 0.65);
       border: 1px solid rgba(148, 163, 184, 0.12);
-      padding: 3px 9px;
+      padding: 3px 6px;
       border-radius: 7px;
       white-space: nowrap;
     }
@@ -147,8 +147,8 @@
     .stat-item {
       display: flex;
       align-items: center;
-      gap: 4px;
-      font-size: 11px;
+      gap: 3px;
+      font-size: 10px;
     }
 
     .stat-dot {
@@ -181,14 +181,14 @@
       color: var(--text-main);
       border: 1px solid var(--border-subtle);
       border-radius: 6px;
-      padding: 3px 7px;
-      font-size: 11px;
+      padding: 3px 5px;
+      font-size: 10px;
       font-weight: 600;
       cursor: pointer;
       transition: all 0.14s ease;
       display: inline-flex;
       align-items: center;
-      gap: 3px;
+      gap: 2px;
     }
 
     .btn:hover {
@@ -216,11 +216,11 @@
 
     /* NON-BLOCKING CRISIS ALERT TOAST */
     .alert-toast {
-      position: absolute;
-      top: 60px;
+      position: fixed;
+      top: 74px;
       left: 50%;
       transform: translateX(-50%);
-      z-index: 30;
+      z-index: 45;
       pointer-events: none;
       padding: 7px 16px;
       border-radius: 8px;
@@ -283,11 +283,12 @@
       color: var(--text-muted);
       border: 1px solid transparent;
       border-radius: 6px;
-      padding: 4px 6px;
-      font-size: 11px;
+      padding: 4px 4px;
+      font-size: 10.5px;
       font-weight: 600;
       cursor: pointer;
       text-align: center;
+      white-space: nowrap;
       transition: all 0.14s;
     }
 
@@ -742,6 +743,7 @@
           <span>OUTBREAK</span>
         </div>
         <div id="sim-clock" class="sim-clock">08:00:00</div>
+        <span id="fps-counter" class="sim-clock" style="margin-left:4px;color:#4ade80;">60 FPS</span>
         <div id="outbreak-status-badge" class="status-badge status-normal">CITY NORMAL</div>
       </div>
 
@@ -790,6 +792,7 @@
         <button id="btn-speed-5" class="btn">5x</button>
         <button id="btn-find-infected" class="btn" title="Locate Active Infected">🔍 Infected</button>
         <button id="btn-fps-mode" class="btn" title="First-Person Unarmed Survivor Escape (F)">🏃 Escape</button>
+        <button id="btn-fps-ktx" class="btn" title="First-Person KTX Train Climax (Car 3 → Car 1)">🚄 KTX</button>
         <button id="btn-auto-cam" class="btn" title="Cinematic Auto-Director Camera">🎬 Auto</button>
         <button id="btn-audio" class="btn active" title="Toggle Sound Effects">🔊</button>
         <button id="btn-lighting" class="btn" title="Cycle Atmosphere: Dusk / Night / Day">🌆</button>
@@ -797,9 +800,6 @@
         <button id="btn-open-scenarios" class="btn btn-primary" title="Maps, Modes & Population Lab">⚙ Lab</button>
       </div>
     </header>
-
-    <!-- NON-BLOCKING CRISIS ALERT TOAST -->
-    <div id="alert-toast" class="alert-toast"></div>
 
     <!-- 2. SINGLE TABBED & COLLAPSIBLE TOP-RIGHT MINI-DRAWER -->
     <aside class="tactical-drawer interactive">
@@ -896,6 +896,9 @@
     </div>
   </div>
 
+  <!-- NON-BLOCKING CRISIS ALERT TOAST (VISIBLE IN BOTH COMMANDER & FP MODES) -->
+  <div id="alert-toast" class="alert-toast"></div>
+
   <!-- FIRST-PERSON UNARMED ESCAPE HUD -->
   <div id="fps-hud">
     <div id="fps-danger-vignette"></div>
@@ -914,7 +917,7 @@
         <div class="fps-bar-label"><span>STAMINA</span><span id="fps-stam-text">100</span></div>
         <div class="fps-bar-track"><div id="fps-stam-fill"></div></div>
       </div>
-      <div id="fps-controls-hint">WASD Move • Shift Sprint • Mouse/Drag Look • E Gate • F Exit</div>
+      <div id="fps-controls-hint">WASD Move • Shift Sprint • Space Vault/Shove • Q Decoy • E Door/Car/Loot • F Exit</div>
       <button id="btn-exit-fps" class="btn btn-danger" style="padding:5px 10px; font-size:11px;">Exit (F)</button>
     </div>
     <div id="fps-outcome-card">

@@ -37,6 +37,7 @@ export class UIController {
   private fpsObjectiveEl = document.getElementById('fps-objective')!;
   private fpsTrainStatusEl = document.getElementById('fps-train-status')!;
   private fpsInteractPromptEl = document.getElementById('fps-interact-prompt')!;
+  private fpsControlsHintEl = document.getElementById('fps-controls-hint')!;
   private fpsHpTextEl = document.getElementById('fps-hp-text')!;
   private fpsHpFillEl = document.getElementById('fps-hp-fill')!;
   private fpsStamTextEl = document.getElementById('fps-stam-text')!;
@@ -124,6 +125,10 @@ export class UIController {
 
     this.btnFpsMode.addEventListener('click', () => {
       this.toggleFirstPersonMode();
+    });
+    document.getElementById('btn-fps-ktx')?.addEventListener('click', () => {
+      this.sim.selectedAgentId = null;
+      this.enterFirstPersonMode('ktx_terminal');
     });
     document.getElementById('btn-exit-fps')!.addEventListener('click', () => {
       this.exitFirstPersonMode();
@@ -376,7 +381,7 @@ export class UIController {
     }
   }
 
-  public enterFirstPersonMode(): void {
+  public enterFirstPersonMode(preset: 'city' | 'ktx_terminal' = 'city'): void {
     this.modalEl.classList.add('hidden');
     if (this.isPaused) {
       this.togglePause();
@@ -386,8 +391,8 @@ export class UIController {
     document.getElementById('btn-speed-2')?.classList.remove('active');
     document.getElementById('btn-speed-5')?.classList.remove('active');
 
-    this.sim.enterFirstPerson();
-    this.cam.setFirstPersonMode(true, Math.PI);
+    this.sim.enterFirstPerson(preset);
+    this.cam.setFirstPersonMode(true, this.sim.firstPerson.yaw);
     this.hudLayerEl.classList.add('hidden');
     this.fpsHudEl.classList.add('active');
     this.btnFpsMode.classList.add('active');
@@ -514,9 +519,40 @@ export class UIController {
     const player = this.sim.getAgentById(fp.playerId);
 
     const station = this.sim.city.stationPos;
-    const targetZ = station ? station.z : this.sim.city.cityHalfZ - 10;
-    const targetX = station ? station.x : 0;
+    const targetZ = fp.waypointZ || (station ? station.z : this.sim.city.cityHalfZ - 10);
+    const targetX = fp.waypointX ?? (station ? station.x : 0);
     const distToGoal = player ? Math.round(Math.hypot(player.x - targetX, player.z - targetZ)) : 0;
+
+    let compassArrow = '⬆';
+    if (player) {
+      const dx = targetX - player.x;
+      const dz = targetZ - player.z;
+      const fX = -Math.sin(fp.yaw);
+      const fZ = -Math.cos(fp.yaw);
+      const rX = Math.cos(fp.yaw);
+      const rZ = -Math.sin(fp.yaw);
+      const ang = Math.atan2(dx * rX + dz * rZ, dx * fX + dz * fZ);
+      if (Math.abs(ang) < 0.35) compassArrow = '⬆';
+      else if (ang >= 0.35 && ang < 1.15) compassArrow = '↗';
+      else if (ang >= 1.15 && ang < 2.0) compassArrow = '➡';
+      else if (ang >= 2.0 && ang < 2.65) compassArrow = '↘';
+      else if (ang <= -0.35 && ang > -1.15) compassArrow = '↖';
+      else if (ang <= -1.15 && ang > -2.0) compassArrow = '⬅';
+      else if (ang <= -2.0 && ang > -2.65) compassArrow = '↙';
+      else compassArrow = '⬇';
+    }
+
+    const insideBld = fp.insideBuildingId
+      ? this.sim.city.buildingById.get(fp.insideBuildingId)
+      : undefined;
+    const locTag =
+      fp.insideTrainCar > 0
+        ? ` • Inside: KTX Car ${fp.insideTrainCar}`
+        : insideBld
+        ? ` • Inside: ${insideBld.name}`
+        : '';
+    const chaseTag = fp.pursuers > 0 ? ` • ⚠ ${fp.pursuers} CHASING` : ' • ✓ CLEAR';
+    const wpLabel = fp.waypointLabel || (this.sim.city.hasExpressRail ? 'South Express Station' : 'Evac Zone');
 
     if (this.sim.city.hasExpressRail && station) {
       const train = this.sim.expressTrain;
@@ -532,21 +568,30 @@ export class UIController {
         line3Status !== 'NONE'
           ? `L1 ${line1Status} / L2 ${line2Status} / L3 ${line3Status}`
           : `L1 ${line1Status} / L2 ${line2Status}`;
-      this.fpsObjectiveEl.textContent = `OBJECTIVE: Reach South Express Station (${distToGoal}m)`;
+      this.fpsObjectiveEl.textContent = `${compassArrow} ${wpLabel} (${distToGoal}m)${locTag}${chaseTag}`;
       this.fpsTrainStatusEl.textContent = `KTX Express: ${phaseLabel} • ${linesSummary}`;
     } else {
-      this.fpsObjectiveEl.textContent = `OBJECTIVE: Reach Evac Zone or Survive (${distToGoal}m)`;
-      this.fpsTrainStatusEl.textContent = `Unarmed Civilian Escape • Outbreak Spread Live`;
+      this.fpsObjectiveEl.textContent = `${compassArrow} ${wpLabel} (${distToGoal}m)${locTag}${chaseTag}`;
+      this.fpsTrainStatusEl.textContent = `Parkour Civilian Escape • Reach Evacuation Safely`;
     }
 
     const hpPct = player ? Math.max(0, Math.min(100, (player.health / player.maxHealth) * 100)) : 0;
-    this.fpsHpTextEl.textContent = `${Math.ceil(hpPct)}`;
+    this.fpsHpTextEl.textContent = player?.isIncubating
+      ? `${Math.ceil(hpPct)} (INF)`
+      : `${Math.ceil(hpPct)}`;
     this.fpsHpFillEl.style.width = `${hpPct}%`;
-    this.fpsHpFillEl.style.background = hpPct > 55 ? '#22c55e' : hpPct > 25 ? '#f59e0b' : '#ef4444';
+    this.fpsHpFillEl.style.background = player?.isIncubating
+      ? '#f97316'
+      : hpPct > 55
+      ? '#22c55e'
+      : hpPct > 25
+      ? '#f59e0b'
+      : '#ef4444';
 
     const stamPct = Math.max(0, Math.min(100, (fp.stamina / fp.maxStamina) * 100));
-    this.fpsStamTextEl.textContent = `${Math.round(stamPct)}`;
+    this.fpsStamTextEl.textContent = fp.adrenalineTimer > 0 ? '⚡MAX' : `${Math.round(stamPct)}`;
     this.fpsStamFillEl.style.width = `${stamPct}%`;
+    this.fpsStamFillEl.style.background = fp.adrenalineTimer > 0 ? '#22d3ee' : '#38bdf8';
 
     const danger =
       fp.nearestZombieDist < 8.5
@@ -554,19 +599,80 @@ export class UIController {
         : 0;
     this.fpsDangerVignetteEl.style.opacity = `${danger.toFixed(2)}`;
 
-    if (fp.nearbyGateId !== null) {
-      const gate = this.sim.blastGates.find((g) => g.id === fp.nearbyGateId);
-      if (gate && !gate.breached) {
-        this.fpsInteractPromptEl.textContent = gate.isOpen
-          ? `Press [E] to SEAL ${gate.label}`
-          : `Press [E] to OPEN ${gate.label}`;
-        this.fpsInteractPromptEl.style.display = 'block';
-      } else {
-        this.fpsInteractPromptEl.style.display = 'none';
-      }
+    const trainDoor =
+      fp.nearbyTrainDoorId !== null
+        ? this.sim.expressTrain.doors.find((d) => d.id === fp.nearbyTrainDoorId && !d.isBroken)
+        : undefined;
+    const pickup =
+      fp.nearbyPickupId !== null
+        ? this.sim.supplyPickups.find((p) => p.id === fp.nearbyPickupId && !p.collected)
+        : undefined;
+    const door =
+      fp.nearbyDoorId !== null
+        ? this.sim.interiorDoors.find((d) => d.id === fp.nearbyDoorId && !d.isBroken)
+        : undefined;
+    const gate =
+      fp.nearbyGateId !== null
+        ? this.sim.blastGates.find((g) => g.id === fp.nearbyGateId && !g.breached)
+        : undefined;
+
+    if (fp.nearTrainCabinConsole) {
+      this.fpsInteractPromptEl.textContent = 'Press [E] to TRIGGER KTX-101 EMERGENCY DEPARTURE (CAR 1)';
+      this.fpsInteractPromptEl.style.borderColor = '#22c55e';
+      this.fpsInteractPromptEl.style.color = '#bbf7d0';
+      this.fpsInteractPromptEl.style.display = 'block';
+    } else if (trainDoor) {
+      const pct = Math.max(1, Math.ceil((trainDoor.integrity / trainDoor.maxIntegrity) * 100));
+      this.fpsInteractPromptEl.textContent = trainDoor.isLocked
+        ? `Press [E] to UNLOCK ${trainDoor.label} (${pct}%)`
+        : `Press [E] to LOCK ${trainDoor.label} (${pct}%)`;
+      this.fpsInteractPromptEl.style.borderColor = '#f59e0b';
+      this.fpsInteractPromptEl.style.color = '#fde68a';
+      this.fpsInteractPromptEl.style.display = 'block';
+    } else if (pickup) {
+      this.fpsInteractPromptEl.textContent = `Press [E] to Grab ${pickup.label}`;
+      this.fpsInteractPromptEl.style.borderColor = '#22c55e';
+      this.fpsInteractPromptEl.style.color = '#bbf7d0';
+      this.fpsInteractPromptEl.style.display = 'block';
+    } else if (door) {
+      const pct = Math.max(1, Math.ceil((door.integrity / door.maxIntegrity) * 100));
+      this.fpsInteractPromptEl.textContent = door.isLocked
+        ? `Press [E] to UNLOCK ${door.label} (${pct}%)`
+        : `Press [E] to LOCK ${door.label} (${pct}%)`;
+      this.fpsInteractPromptEl.style.borderColor = '#f59e0b';
+      this.fpsInteractPromptEl.style.color = '#fde68a';
+      this.fpsInteractPromptEl.style.display = 'block';
+    } else if (gate) {
+      this.fpsInteractPromptEl.textContent = gate.isOpen
+        ? `Press [E] to SEAL ${gate.label}`
+        : `Press [E] to OPEN ${gate.label}`;
+      this.fpsInteractPromptEl.style.borderColor = '#f59e0b';
+      this.fpsInteractPromptEl.style.color = '#fde68a';
+      this.fpsInteractPromptEl.style.display = 'block';
+    } else if (fp.nearbyCarId !== null) {
+      this.fpsInteractPromptEl.textContent = `Press [E] to Trigger Car Alarm (Distract Horde)`;
+      this.fpsInteractPromptEl.style.borderColor = '#f59e0b';
+      this.fpsInteractPromptEl.style.color = '#fde68a';
+      this.fpsInteractPromptEl.style.display = 'block';
+    } else if (fp.nearbyVaultLabel) {
+      this.fpsInteractPromptEl.textContent = `Press [Space] to VAULT OVER ${fp.nearbyVaultLabel}`;
+      this.fpsInteractPromptEl.style.borderColor = '#38bdf8';
+      this.fpsInteractPromptEl.style.color = '#bae6fd';
+      this.fpsInteractPromptEl.style.display = 'block';
     } else {
       this.fpsInteractPromptEl.style.display = 'none';
     }
+
+    const spaceTag =
+      fp.nearbyVaultLabel !== null
+        ? 'Space Vault'
+        : fp.shoveCooldown > 0
+        ? `Shove ${fp.shoveCooldown.toFixed(1)}s`
+        : 'Space Vault/Shove Ready';
+    const decoyTag =
+      fp.decoyCooldown > 0 ? `Q Decoy ${Math.ceil(fp.decoyCooldown)}s` : 'Q Decoy Ready';
+    const rushTag = fp.adrenalineTimer > 0 ? ` • ⚡ Surge ${fp.adrenalineTimer.toFixed(1)}s` : '';
+    this.fpsControlsHintEl.textContent = `WASD Move • Shift Sprint • ${spaceTag} • ${decoyTag} • E Door/Car/Loot • F Exit${rushTag}`;
 
     if (fp.outcome && fp.outcome !== 'PLAYING') {
       this.fpsOutcomeCardEl.classList.add('active');
@@ -940,8 +1046,21 @@ export class UIController {
           : agent.zombieVariant === 'runner'
           ? 'RUNNER'
           : 'INFECTED';
-      stateStr = `${vLabel} • ${agent.zombieState}`;
+      const actionTag =
+        agent.zombieState === 'FEEDING'
+          ? agent.attackMode === 'tackle_pin'
+            ? 'PINNING & MAULING'
+            : 'NECK GRAPPLE'
+          : agent.zombieState === 'ATTACKING' && agent.attackMode === 'brute_slam'
+          ? 'BRUTE SLAM'
+          : agent.zombieState === 'ATTACKING' && agent.attackMode === 'claw_swipe'
+          ? 'CLAW SWIPE'
+          : agent.zombieState;
+      stateStr = `${vLabel} • ${actionTag}`;
       barColor = agent.zombieVariant === 'brute' ? '#d946ef' : '#ef4444';
+    } else if (agent.pinnedById !== null) {
+      stateStr = agent.attackMode === 'tackle_pin' ? 'PINNED ON GROUND!' : 'GRAPPLED!';
+      barColor = '#ef4444';
     } else if (agent.role === 'police') {
       stateStr = `${agent.isSwat ? 'SWAT' : 'POLICE'} • ${agent.policeState}`;
       barColor = agent.isSwat ? '#06b6d4' : '#3b82f6';

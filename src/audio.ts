@@ -8,6 +8,7 @@ export class SoundEngine {
   public enabled = true;
   private lastShotTime = 0;
   private lastBiteTime = 0;
+  private lastDoorPoundTime = 0;
   private heartbeatTimer = 0;
   private growlTimer = 0;
 
@@ -260,6 +261,119 @@ export class SoundEngine {
     gain.connect(ctx.destination);
     osc.start(t);
     osc.stop(t + 0.28);
+  }
+
+  public playWindowShatter(x: number, z: number, camX: number, camZ: number, camDist: number): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const gainVal = this.getSpatialGain(x, z, camX, camZ, camDist);
+    if (gainVal <= 0.01) return;
+
+    const t = ctx.currentTime;
+    const len = Math.floor(ctx.sampleRate * 0.24);
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) {
+      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.065));
+    }
+    const noise = ctx.createBufferSource();
+    noise.buffer = buf;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.setValueAtTime(2200, t);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(gainVal * 1.15, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    noise.start(t);
+
+    // Secondary brittle glass tinkle burst
+    const osc = ctx.createOscillator();
+    const oGain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(3400, t + 0.03);
+    osc.frequency.exponentialRampToValueAtTime(1600, t + 0.16);
+    oGain.gain.setValueAtTime(gainVal * 0.22, t + 0.03);
+    oGain.gain.exponentialRampToValueAtTime(0.001, t + 0.17);
+    osc.connect(oGain);
+    oGain.connect(ctx.destination);
+    osc.start(t + 0.03);
+    osc.stop(t + 0.18);
+  }
+
+  public playBodyThud(x: number, z: number, camX: number, camZ: number, camDist: number): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const gainVal = this.getSpatialGain(x, z, camX, camZ, camDist);
+    if (gainVal <= 0.01) return;
+
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(115, t);
+    osc.frequency.exponentialRampToValueAtTime(34, t + 0.19);
+    gain.gain.setValueAtTime(gainVal * 1.35, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.21);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + 0.22);
+  }
+
+  public playDoorPound(x: number, z: number, camX: number, camZ: number, camDist: number): void {
+    const nowMs = performance.now();
+    if (nowMs - this.lastDoorPoundTime < 320) return;
+    this.lastDoorPoundTime = nowMs;
+
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const gainVal = this.getSpatialGain(x, z, camX, camZ, camDist);
+    if (gainVal <= 0.01) return;
+
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(98, t);
+    osc.frequency.exponentialRampToValueAtTime(42, t + 0.12);
+    gain.gain.setValueAtTime(gainVal * 1.05, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + 0.14);
+  }
+
+  public playCarAlarm(x: number, z: number, camX: number, camZ: number, camDist: number): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const gainVal = this.getSpatialGain(x, z, camX, camZ, camDist);
+    if (gainVal <= 0.01) return;
+
+    const t = ctx.currentTime;
+    for (const freq of [440, 554.37]) {
+      const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(freq, t);
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(1600, t);
+      gain.gain.setValueAtTime(gainVal * 0.26, t);
+      gain.gain.setValueAtTime(gainVal * 0.24, t + 0.18);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.26);
+    }
   }
 
   public updateFirstPersonHorrorAudio(dt: number, nearestZombieDist: number): void {

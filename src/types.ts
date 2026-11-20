@@ -29,6 +29,13 @@ export type AgentRole = 'civilian' | 'infected' | 'police' | 'medic';
 
 export type ZombieVariant = 'standard' | 'runner' | 'brute';
 
+export type ZombieAttackMode =
+  | 'none'
+  | 'tackle_pin'
+  | 'neck_grapple'
+  | 'claw_swipe'
+  | 'brute_slam';
+
 export type CivilianState =
   | 'WALKING'
   | 'SOCIALIZING'
@@ -47,6 +54,7 @@ export type ZombieState =
   | 'WANDERING'
   | 'PURSUING'
   | 'ATTACKING'
+  | 'FEEDING'
   | 'BREACHING';
 
 export type PoliceState =
@@ -92,9 +100,53 @@ export interface StaticObstacleData {
   depth: number;
   height: number;
   rotationY: number;
-  kind: 'car' | 'taxi' | 'van' | 'truck_burning' | 'jersey_barrier' | 'container';
+  kind:
+    | 'car'
+    | 'taxi'
+    | 'van'
+    | 'truck_burning'
+    | 'bus'
+    | 'jersey_barrier'
+    | 'container'
+    | 'parkour_fence'
+    | 'dumpster';
   color: number;
   isBurning?: boolean;
+  cosR?: number;
+  sinR?: number;
+  boundR?: number;
+}
+
+export interface OverpassData {
+  axis: 'EW' | 'NS';
+  x: number;
+  z: number;
+  length: number;
+  width: number;
+  deckY: number;
+  pillarPositions: Array<{ x: number; z: number }>;
+  label: string;
+}
+
+export interface SkybridgeData {
+  axis: 'EW' | 'NS';
+  x: number;
+  z: number;
+  length: number;
+  width: number;
+  deckY: number;
+  label: string;
+}
+
+export interface TrainBulkheadDoorData {
+  id: number;
+  localX: number;
+  label: string;
+  isLocked: boolean;
+  isBroken: boolean;
+  integrity: number;
+  maxIntegrity: number;
+  lastHitTime: number;
 }
 
 export interface ParkingLotFeature {
@@ -142,6 +194,24 @@ export interface ExpressTrainData {
   stationX: number;
   stationZ: number;
   length: number;
+  carLength: number;
+  carWidth: number;
+  carHeight: number;
+  boardingDoorLocalX: number;
+  cabinSwitchLocalX: number;
+  doors: TrainBulkheadDoorData[];
+  playerInsideCar: 0 | 1 | 2 | 3;
+  playerDeparting: boolean;
+  departRideTimer: number;
+}
+
+export interface SupplyPickupData {
+  id: number;
+  x: number;
+  z: number;
+  kind: 'energy_drink' | 'antiviral_kit' | 'emergency_pack';
+  label: string;
+  collected: boolean;
 }
 
 export interface FirstPersonState {
@@ -154,6 +224,24 @@ export interface FirstPersonState {
   sprinting: boolean;
   nearestZombieDist: number;
   nearbyGateId: number | null;
+  nearbyDoorId: number | null;
+  insideBuildingId: string | null;
+  pursuers: number;
+  shoveCooldown: number;
+  decoyCooldown: number;
+  adrenalineTimer: number;
+  vaultY: number;
+  vaultRoll: number;
+  nearbyVaultLabel: string | null;
+  nearbyCarId: number | null;
+  nearbyPickupId: number | null;
+  nearbyTrainDoorId: number | null;
+  nearTrainCabinConsole: boolean;
+  insideTrainCar: 0 | 1 | 2 | 3;
+  waypointX: number;
+  waypointZ: number;
+  waypointLabel: string;
+  spawnLabel: string;
   outcome: 'PLAYING' | 'ESCAPED' | 'INFECTED' | null;
   survivalTime: number;
 }
@@ -172,6 +260,60 @@ export interface AlertBanner {
   text: string;
   severity: 'info' | 'warn' | 'danger';
   timestamp: number;
+}
+
+export interface InteriorBox {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  height: number;
+  kind:
+    | 'wall'
+    | 'shelf'
+    | 'counter'
+    | 'cooler'
+    | 'bed'
+    | 'pillar'
+    | 'bench'
+    | 'ticket_booth'
+    | 'turnstile'
+    | 'departure_board'
+    | 'escalator';
+  color?: number;
+}
+
+export interface InteriorDoorData {
+  id: number;
+  buildingId: string;
+  label: string;
+  side: 'N' | 'S' | 'E' | 'W';
+  x: number;
+  z: number;
+  width: number;
+  isGlass: boolean;
+  isLocked: boolean;
+  isBroken: boolean;
+  integrity: number;
+  maxIntegrity: number;
+  lastHitTime: number;
+}
+
+export interface BuildingInteriorData {
+  theme: 'mart' | 'clinic' | 'hospital' | 'terminal';
+  floorHeight: number;
+  walls: InteriorBox[];
+  props: InteriorBox[];
+  doorIds: number[];
+  lightFixtures: Array<{ x: number; z: number; flickerSeed: number }>;
+}
+
+export interface BrokenWindowData {
+  buildingId: string;
+  x: number;
+  y: number;
+  z: number;
+  rotY: number;
 }
 
 export interface BuildingData {
@@ -199,6 +341,9 @@ export interface BuildingData {
   shelteredAgentIds: number[];
   doorIntegrity: number;
   maxDoorIntegrity: number;
+  interior?: BuildingInteriorData;
+  hasUpperBreach?: boolean;
+  blackoutStage?: number;
 }
 
 export interface NavNode {
@@ -223,6 +368,15 @@ export interface AgentData {
   rotationY: number;
   climbY: number;
   convulseTimer: number;
+  fallY: number;
+  fallVy: number;
+  fallRoll: number;
+  stunnedTimer: number;
+  attackMode: ZombieAttackMode;
+  grappleTargetId: number | null;
+  pinnedById: number | null;
+  pinTimer: number;
+  biteCount: number;
   isPlayerControlled: boolean;
   health: number;
   maxHealth: number;
@@ -353,9 +507,15 @@ export interface VisualEffectEvent {
     | 'cure'
     | 'lure_pulse'
     | 'explosion'
-    | 'train_horn';
+    | 'train_horn'
+    | 'window_shatter'
+    | 'door_pound'
+    | 'car_alarm_pulse';
   x: number;
   z: number;
+  y?: number;
+  dirX?: number;
+  dirZ?: number;
   targetX?: number;
   targetZ?: number;
   age: number;

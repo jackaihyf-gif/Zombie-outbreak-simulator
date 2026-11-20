@@ -2,12 +2,17 @@ import {
   BlastGateData,
   BridgeSpan,
   BuildingData,
+  BuildingInteriorData,
   DefenseWallData,
+  InteriorBox,
+  InteriorDoorData,
   MapId,
   NavNode,
+  OverpassData,
   ParkingLotFeature,
   RiverChannel,
   RoadblockData,
+  SkybridgeData,
   StaticObstacleData,
   Vec2
 } from './types';
@@ -67,8 +72,11 @@ export class CityLayout {
   public plazas: ParkFeature[] = [];
   public parkingLots: ParkingLotFeature[] = [];
   public staticObstacles: StaticObstacleData[] = [];
+  public interiorDoors: InteriorDoorData[] = [];
   public evacSpawnPoints: Vec2[] = [];
   public occupiedBlockKeys = new Set<string>();
+  public overpasses: OverpassData[] = [];
+  public skybridges: SkybridgeData[] = [];
   public highwayZone: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
   public terminalPlaza: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
 
@@ -82,8 +90,12 @@ export class CityLayout {
   public precinctPos: Vec2 = { x: 0, z: -32 };
   public hospitalPos: Vec2 = { x: -32, z: 0 };
 
+  public buildingById: Map<string, BuildingData> = new Map();
+  public tallObstacles: StaticObstacleData[] = [];
   private nodeMap: Map<string, number> = new Map();
   private spatialCells: BuildingData[][][] = [];
+  private obstacleCells: StaticObstacleData[][][] = [];
+  private navCells: NavNode[][][] = [];
   private spatialCols = 0;
   private spatialRows = 0;
 
@@ -124,10 +136,16 @@ export class CityLayout {
     this.spatialRows = Math.ceil((this.cityHalfZ * 2 + 8) / SPATIAL_CELL_SIZE);
     for (let r = 0; r < this.spatialRows; r++) {
       const rowArr: BuildingData[][] = [];
+      const obsRow: StaticObstacleData[][] = [];
+      const navRow: NavNode[][] = [];
       for (let c = 0; c < this.spatialCols; c++) {
         rowArr.push([]);
+        obsRow.push([]);
+        navRow.push([]);
       }
       this.spatialCells.push(rowArr);
+      this.obstacleCells.push(obsRow);
+      this.navCells.push(navRow);
     }
 
     const rng = new SeededRNG(`${seed}-${mapId}-CITY`);
@@ -697,7 +715,7 @@ export class CityLayout {
     roofType: BuildingData['roofType'];
     isShelterCapable: boolean;
     shelterCapacity: number;
-  }): void {
+  }): BuildingData {
     const hw = params.width / 2;
     const hd = params.depth / 2;
     let doorX = params.x;
@@ -736,6 +754,7 @@ export class CityLayout {
     };
 
     this.buildings.push(bld);
+    this.buildingById.set(bld.id, bld);
 
     const maxCellC = Math.max(0, this.spatialCols - 1);
     const maxCellR = Math.max(0, this.spatialRows - 1);
@@ -760,23 +779,143 @@ export class CityLayout {
         this.spatialCells[r][c].push(bld);
       }
     }
+    return bld;
   }
 
-  public getBuildingsNearPos(x: number, z: number, out: BuildingData[]): BuildingData[] {
-    out.length = 0;
-    const col = Math.max(
-      0,
-      Math.min(this.spatialCols - 1, Math.floor((x + this.cityHalfX) / SPATIAL_CELL_SIZE))
-    );
-    const row = Math.max(
-      0,
-      Math.min(this.spatialRows - 1, Math.floor((z + this.cityHalfZ) / SPATIAL_CELL_SIZE))
-    );
+  private configureWalkableInterior(
+    b: BuildingData,
+    theme: BuildingInteriorData['theme'],
+    doorsSpec: Array<{
+      side: 'N' | 'S' | 'E' | 'W';
+      offset: number;
+      width: number;
+      isGlass: boolean;
+      label: string;
+    }>,
+    props: InteriorBox[],
+    lightFixtures: Array<{ x: number; z: number; flickerSeed: number }>
+  ): void {
+    const floorHeight = 4.0;
+    const t = 0.55;
+    const walls: InteriorBox[] = [];
+    const doorIds: number[] = [];
 
-    const minR = Math.max(0, row - 1);
-    const maxR = Math.min(this.spatialRows - 1, row + 1);
-    const minC = Math.max(0, col - 1);
-    const maxC = Math.min(this.spatialCols - 1, col + 1);
+    const doorsBySide: Record<'N' | 'S' | 'E' | 'W', typeof doorsSpec> = {
+      N: [],
+      S: [],
+      E: [],
+      W: []
+    };
+
+    for (const ds of doorsSpec) {
+      doorsBySide[ds.side].push(ds);
+      const id = this.interiorDoors.length + 1;
+      doorIds.push(id);
+      const dx =
+        ds.side === 'W'
+          ? b.minX + t * 0.5
+          : ds.side === 'E'
+          ? b.maxX - t * 0.5
+          : b.x + ds.offset;
+      const dz =
+        ds.side === 'N'
+          ? b.minZ + t * 0.5
+          : ds.side === 'S'
+          ? b.maxZ - t * 0.5
+          : b.z + ds.offset;
+      this.interiorDoors.push({
+        id,
+        buildingId: b.id,
+        label: ds.label,
+        side: ds.side,
+        x: dx,
+        z: dz,
+        width: ds.width,
+        isGlass: ds.isGlass,
+        isLocked: false,
+        isBroken: false,
+        integrity: 100,
+        maxIntegrity: 100,
+        lastHitTime: -10
+      });
+    }
+
+    const splitWallAxis = (
+      side: 'N' | 'S' | 'E' | 'W',
+      spanMin: number,
+      spanMax: number,
+      centerBase: number
+    ) => {
+      const list = doorsBySide[side]
+        .map((d) => ({
+          start: centerBase + d.offset - d.width * 0.5,
+          end: centerBase + d.offset + d.width * 0.5
+        }))
+        .sort((a, b) => a.start - b.start);
+
+      let cursor = spanMin;
+      const segments: Array<[number, number]> = [];
+      for (const cut of list) {
+        if (cut.start > cursor + 0.15) {
+          segments.push([cursor, Math.min(spanMax, cut.start)]);
+        }
+        cursor = Math.max(cursor, cut.end);
+      }
+      if (cursor < spanMax - 0.15) {
+        segments.push([cursor, spanMax]);
+      }
+
+      for (const [s0, s1] of segments) {
+        if (side === 'N') {
+          walls.push({ minX: s0, maxX: s1, minZ: b.minZ, maxZ: b.minZ + t, height: floorHeight, kind: 'wall' });
+        } else if (side === 'S') {
+          walls.push({ minX: s0, maxX: s1, minZ: b.maxZ - t, maxZ: b.maxZ, height: floorHeight, kind: 'wall' });
+        } else if (side === 'W') {
+          walls.push({ minX: b.minX, maxX: b.minX + t, minZ: s0, maxZ: s1, height: floorHeight, kind: 'wall' });
+        } else {
+          walls.push({ minX: b.maxX - t, maxX: b.maxX, minZ: s0, maxZ: s1, height: floorHeight, kind: 'wall' });
+        }
+      }
+    };
+
+    splitWallAxis('N', b.minX, b.maxX, b.x);
+    splitWallAxis('S', b.minX, b.maxX, b.x);
+    splitWallAxis('W', b.minZ + t, b.maxZ - t, b.z);
+    splitWallAxis('E', b.minZ + t, b.maxZ - t, b.z);
+
+    b.interior = {
+      theme,
+      floorHeight,
+      walls,
+      props,
+      doorIds,
+      lightFixtures
+    };
+  }
+
+  public getBuildingsNearPos(
+    x: number,
+    z: number,
+    out: BuildingData[],
+    margin = 2.2
+  ): BuildingData[] {
+    out.length = 0;
+    const minC = Math.max(
+      0,
+      Math.min(this.spatialCols - 1, Math.floor((x - margin + this.cityHalfX) / SPATIAL_CELL_SIZE))
+    );
+    const maxC = Math.max(
+      0,
+      Math.min(this.spatialCols - 1, Math.floor((x + margin + this.cityHalfX) / SPATIAL_CELL_SIZE))
+    );
+    const minR = Math.max(
+      0,
+      Math.min(this.spatialRows - 1, Math.floor((z - margin + this.cityHalfZ) / SPATIAL_CELL_SIZE))
+    );
+    const maxR = Math.max(
+      0,
+      Math.min(this.spatialRows - 1, Math.floor((z + margin + this.cityHalfZ) / SPATIAL_CELL_SIZE))
+    );
 
     for (let r = minR; r <= maxR; r++) {
       for (let c = minC; c <= maxC; c++) {
@@ -819,11 +958,79 @@ export class CityLayout {
     return out;
   }
 
+  public getObstaclesNearPos(
+    x: number,
+    z: number,
+    out: StaticObstacleData[],
+    margin = 1.6
+  ): StaticObstacleData[] {
+    out.length = 0;
+    const minC = Math.max(
+      0,
+      Math.min(this.spatialCols - 1, Math.floor((x - margin + this.cityHalfX) / SPATIAL_CELL_SIZE))
+    );
+    const maxC = Math.max(
+      0,
+      Math.min(this.spatialCols - 1, Math.floor((x + margin + this.cityHalfX) / SPATIAL_CELL_SIZE))
+    );
+    const minR = Math.max(
+      0,
+      Math.min(this.spatialRows - 1, Math.floor((z - margin + this.cityHalfZ) / SPATIAL_CELL_SIZE))
+    );
+    const maxR = Math.max(
+      0,
+      Math.min(this.spatialRows - 1, Math.floor((z + margin + this.cityHalfZ) / SPATIAL_CELL_SIZE))
+    );
+
+    for (let r = minR; r <= maxR; r++) {
+      for (let c = minC; c <= maxC; c++) {
+        const list = this.obstacleCells[r][c];
+        for (let i = 0; i < list.length; i++) {
+          out.push(list[i]);
+        }
+      }
+    }
+    return out;
+  }
+
   private addObstacle(obs: Omit<StaticObstacleData, 'id'>): void {
-    this.staticObstacles.push({
+    const cosR = Math.cos(obs.rotationY);
+    const sinR = Math.sin(obs.rotationY);
+    const boundR = Math.hypot(obs.width * 0.5, obs.depth * 0.5) + 0.25;
+    const fullObs: StaticObstacleData = {
       id: this.staticObstacles.length + 1,
-      ...obs
-    });
+      ...obs,
+      cosR,
+      sinR,
+      boundR
+    };
+    this.staticObstacles.push(fullObs);
+    if (fullObs.height >= 2.2) {
+      this.tallObstacles.push(fullObs);
+    }
+    const maxCellC = Math.max(0, this.spatialCols - 1);
+    const maxCellR = Math.max(0, this.spatialRows - 1);
+    const minC = Math.max(
+      0,
+      Math.min(maxCellC, Math.floor((obs.x - boundR + this.cityHalfX) / SPATIAL_CELL_SIZE))
+    );
+    const maxC = Math.max(
+      0,
+      Math.min(maxCellC, Math.floor((obs.x + boundR + this.cityHalfX) / SPATIAL_CELL_SIZE))
+    );
+    const minR = Math.max(
+      0,
+      Math.min(maxCellR, Math.floor((obs.z - boundR + this.cityHalfZ) / SPATIAL_CELL_SIZE))
+    );
+    const maxR = Math.max(
+      0,
+      Math.min(maxCellR, Math.floor((obs.z + boundR + this.cityHalfZ) / SPATIAL_CELL_SIZE))
+    );
+    for (let r = minR; r <= maxR; r++) {
+      for (let c = minC; c <= maxC; c++) {
+        this.obstacleCells[r][c].push(fullObs);
+      }
+    }
   }
 
   private addParkingLotVehicles(
@@ -1227,7 +1434,7 @@ export class CityLayout {
             // Screen-Left facing x = -52 Boulevard: Brick Shops with narrow dumpster alley!
             this.occupiedBlockKeys.add(`${r}:${c}`);
             if (r === 1) {
-              this.addBuilding({
+              const mart = this.addBuilding({
                 id: `BLD-${bIndex++}`,
                 name: '24H Avenue Mart',
                 district: 'Sector 1 • West Boulevard',
@@ -1245,8 +1452,39 @@ export class CityLayout {
                 isShelterCapable: true,
                 shelterCapacity: 16
               });
-              // Gap (-151..-140) is a narrow 11m->6m walkable brick alley with dumpsters!
-              this.addBuilding({
+              this.configureWalkableInterior(
+                mart,
+                'mart',
+                [
+                  {
+                    side: 'W',
+                    offset: 0,
+                    width: 3.4,
+                    isGlass: true,
+                    label: '24H Mart Front Glass Door'
+                  },
+                  {
+                    side: 'S',
+                    offset: 3.0,
+                    width: 3.0,
+                    isGlass: false,
+                    label: '24H Mart Alley Exit Door'
+                  }
+                ],
+                [
+                  { minX: -41.4, maxX: -39.6, minZ: -163.3, maxZ: -160.2, height: 1.15, kind: 'counter' },
+                  { minX: -37.2, maxX: -29.5, minZ: -160.4, maxZ: -159.4, height: 1.95, kind: 'shelf' },
+                  { minX: -37.2, maxX: -29.5, minZ: -155.8, maxZ: -154.8, height: 1.95, kind: 'shelf' },
+                  { minX: -26.3, maxX: -25.1, minZ: -162.8, maxZ: -153.5, height: 2.45, kind: 'cooler' }
+                ],
+                [
+                  { x: -38, z: -158, flickerSeed: 0.7 },
+                  { x: -32, z: -161.5, flickerSeed: 2.3 },
+                  { x: -31, z: -154, flickerSeed: 4.1 }
+                ]
+              );
+              // Gap (-151..-140) is a narrow 9.25m walkable brick alley with dumpsters!
+              const clinic = this.addBuilding({
                 id: `BLD-${bIndex++}`,
                 name: 'Northgate Brick Clinic',
                 district: 'Sector 1 • West Boulevard',
@@ -1264,6 +1502,44 @@ export class CityLayout {
                 isShelterCapable: true,
                 shelterCapacity: 18
               });
+              this.configureWalkableInterior(
+                clinic,
+                'clinic',
+                [
+                  {
+                    side: 'W',
+                    offset: 0,
+                    width: 3.2,
+                    isGlass: true,
+                    label: 'Clinic Front Glass Door'
+                  },
+                  {
+                    side: 'N',
+                    offset: 3.0,
+                    width: 3.0,
+                    isGlass: false,
+                    label: 'Clinic North Alley Door'
+                  },
+                  {
+                    side: 'S',
+                    offset: -2.0,
+                    width: 3.0,
+                    isGlass: false,
+                    label: 'Clinic South Exit Door'
+                  }
+                ],
+                [
+                  { minX: -39.5, maxX: -36.5, minZ: -139.2, maxZ: -138.1, height: 1.15, kind: 'counter' },
+                  { minX: -39.5, maxX: -35.8, minZ: -132.2, maxZ: -131.3, height: 0.72, kind: 'bench' },
+                  { minX: -28.2, maxX: -25.5, minZ: -139.5, maxZ: -137.8, height: 0.85, kind: 'bed' },
+                  { minX: -28.2, maxX: -25.5, minZ: -133.2, maxZ: -131.5, height: 0.85, kind: 'bed' }
+                ],
+                [
+                  { x: -38, z: -135, flickerSeed: 1.5 },
+                  { x: -30, z: -138, flickerSeed: 3.2 },
+                  { x: -30, z: -131.5, flickerSeed: 5.0 }
+                ]
+              );
             } else {
               populateOrganicBlock(r, c, x0, x1, z0, z1, 'Sector 1 • Outer Boulevard', 'ALLEY_PAIR');
             }
@@ -1306,7 +1582,7 @@ export class CityLayout {
           // St. Jude Medical Center right north of Line 2
           this.occupiedBlockKeys.add(`${r}:${c}`);
           this.hospitalPos = { x: -42, z: cz };
-          this.addBuilding({
+          const hosp = this.addBuilding({
             id: 'BLD-HOSP',
             name: 'St. Jude Medical Center',
             district: 'Sector 2 • Medical Plaza',
@@ -1324,6 +1600,38 @@ export class CityLayout {
             isShelterCapable: true,
             shelterCapacity: 48
           });
+          this.configureWalkableInterior(
+            hosp,
+            'hospital',
+            [
+              {
+                side: 'W',
+                offset: 0,
+                width: 3.8,
+                isGlass: true,
+                label: 'St. Jude Main Glass Door'
+              },
+              {
+                side: 'S',
+                offset: 0,
+                width: 3.4,
+                isGlass: true,
+                label: 'St. Jude South Lobby Door'
+              }
+            ],
+            [
+              { minX: cx + 1.0, maxX: cx + 4.4, minZ: cz - 1.2, maxZ: cz + 1.2, height: 1.2, kind: 'counter' },
+              { minX: cx - 5.6, maxX: cx - 4.5, minZ: cz - 4.8, maxZ: cz - 3.7, height: 4.0, kind: 'pillar' },
+              { minX: cx - 5.6, maxX: cx - 4.5, minZ: cz + 3.7, maxZ: cz + 4.8, height: 4.0, kind: 'pillar' },
+              { minX: cx + 5.2, maxX: cx + 6.3, minZ: cz - 4.8, maxZ: cz - 3.7, height: 4.0, kind: 'pillar' },
+              { minX: cx + 5.2, maxX: cx + 6.3, minZ: cz + 3.7, maxZ: cz + 4.8, height: 4.0, kind: 'pillar' }
+            ],
+            [
+              { x: cx - 4.5, z: cz, flickerSeed: 0.9 },
+              { x: cx + 4.5, z: cz - 3.5, flickerSeed: 2.1 },
+              { x: cx + 4.5, z: cz + 3.5, flickerSeed: 3.7 }
+            ]
+          );
           continue;
         }
 
@@ -1372,8 +1680,8 @@ export class CityLayout {
           continue;
         }
 
-        // Skyscraper Spine along West Side & Midtown Core
-        if (c === 0) {
+        // Varied West Perimeter & Midtown Core Skyline (keep West edge open around Overpass so vistas breathe!)
+        if (c === 0 && (r === 2 || r === 5 || r === 7)) {
           addSkyscraperPair(c, r, cx, cz, cellW - ROAD_WIDTH - 2, cellD - ROAD_WIDTH - 4);
           continue;
         }
@@ -1404,6 +1712,114 @@ export class CityLayout {
         );
       }
     }
+
+    // 3b. KTX South Terminal Walkable Concourse Hall (between Defense Line 3 z=168 and North Platform z=190)
+    const terminalHall = this.addBuilding({
+      id: 'BLD-KTX-HALL',
+      name: 'KTX Central Station Hall',
+      district: 'Line 3 • KTX Express Terminal',
+      blockRow: 10,
+      blockCol: 3,
+      x: 0,
+      z: 179.5,
+      width: 38,
+      depth: 11.5,
+      height: 7.4,
+      doorSide: 'N',
+      color: 0x334155,
+      accentColor: 0x22d3ee,
+      roofType: 'flat',
+      isShelterCapable: false,
+      shelterCapacity: 0
+    });
+    this.configureWalkableInterior(
+      terminalHall,
+      'terminal',
+      [
+        {
+          side: 'N',
+          offset: 0,
+          width: 4.2,
+          isGlass: true,
+          label: 'KTX Main Plaza Entrance'
+        },
+        {
+          side: 'S',
+          offset: -12,
+          width: 3.6,
+          isGlass: true,
+          label: 'KTX Platform Gate A (Train Car 3)'
+        },
+        {
+          side: 'S',
+          offset: 11,
+          width: 3.6,
+          isGlass: true,
+          label: 'KTX Platform Gate B'
+        }
+      ],
+      [
+        { minX: -16.8, maxX: -13.6, minZ: 177.2, maxZ: 181.2, height: 2.3, kind: 'ticket_booth' },
+        { minX: 13.6, maxX: 16.8, minZ: 177.2, maxZ: 181.2, height: 2.3, kind: 'ticket_booth' },
+        { minX: -2.4, maxX: 2.4, minZ: 178.9, maxZ: 179.6, height: 3.2, kind: 'departure_board' },
+        { minX: -10.5, maxX: -5.5, minZ: 179.0, maxZ: 179.7, height: 1.05, kind: 'turnstile' },
+        { minX: 5.5, maxX: 10.5, minZ: 179.0, maxZ: 179.7, height: 1.05, kind: 'turnstile' },
+        { minX: -8.6, maxX: -5.4, minZ: 181.8, maxZ: 182.7, height: 0.72, kind: 'bench' },
+        { minX: 5.4, maxX: 8.6, minZ: 181.8, maxZ: 182.7, height: 0.72, kind: 'bench' },
+        { minX: -12.6, maxX: -10.8, minZ: 176.2, maxZ: 181.2, height: 2.4, kind: 'escalator' },
+        { minX: 10.8, maxX: 12.6, minZ: 176.2, maxZ: 181.2, height: 2.4, kind: 'escalator' }
+      ],
+      [
+        { x: -10, z: 179.5, flickerSeed: 1.1 },
+        { x: 0, z: 179.5, flickerSeed: 2.7 },
+        { x: 10, z: 179.5, flickerSeed: 4.3 }
+      ]
+    );
+
+    // 3c. Layered Urban Infrastructure: Elevated Cross-Town Expressway + Pedestrian Skybridges
+    const overpassPillars = [-110, -72, -34, 6, 46, 84, 112].map((px) => ({ x: px, z: -80 }));
+    this.overpasses.push({
+      axis: 'EW',
+      x: 0,
+      z: -80,
+      length: 268,
+      width: 10.4,
+      deckY: 6.6,
+      pillarPositions: overpassPillars,
+      label: 'Midtown Elevated Expressway'
+    });
+    for (const p of overpassPillars) {
+      this.addObstacle({
+        x: p.x,
+        z: p.z,
+        width: 1.9,
+        depth: 1.9,
+        height: 6.6,
+        rotationY: 0,
+        kind: 'jersey_barrier',
+        color: 0x475569
+      });
+    }
+    this.skybridges.push(
+      {
+        axis: 'EW',
+        x: -52,
+        z: -25,
+        length: 16.5,
+        width: 3.2,
+        deckY: 4.8,
+        label: 'West Commercial Skybridge'
+      },
+      {
+        axis: 'EW',
+        x: 26,
+        z: 108,
+        length: 16.5,
+        width: 3.2,
+        deckY: 4.8,
+        label: 'Midtown Plaza Skybridge'
+      }
+    );
 
     // 4. Populate Dramatic Traffic Pileups, Burning Trucks & Shipping Containers!
     const wreckColors = [0x991b1b, 0x3b82f6, 0x64748b, 0xe2e8f0, 0x1e293b];
@@ -1630,6 +2046,93 @@ export class CityLayout {
         color: containerCols[i % containerCols.length]
       });
     }
+
+    // 4e. Urban Parkour Alley & Plaza Shortcuts (vaultable by FP survivor, solid detour for infected!)
+    const parkourObstacles: Array<{
+      x: number;
+      z: number;
+      width: number;
+      depth: number;
+      rotationY: number;
+      kind: 'parkour_fence' | 'dumpster';
+    }> = [
+      // Sector 1: 24H Mart <-> Northgate Clinic Brick Alley & West Blvd
+      { x: -38.5, z: -146.5, width: 3.4, depth: 1.75, rotationY: 0.08, kind: 'dumpster' },
+      { x: -26.5, z: -146.5, width: 4.8, depth: 0.42, rotationY: 0, kind: 'parkour_fence' },
+      { x: -60.5, z: -152.0, width: 5.2, depth: 0.42, rotationY: 0.25, kind: 'parkour_fence' },
+      { x: -46.5, z: -124.0, width: 4.6, depth: 0.42, rotationY: 0, kind: 'parkour_fence' },
+      { x: -60.0, z: -102.0, width: 3.4, depth: 1.75, rotationY: -0.14, kind: 'dumpster' },
+      // Sector 2: Midtown Canyon & East Midtown Parking Cut-Throughs
+      { x: -44.0, z: -64.0, width: 5.0, depth: 0.42, rotationY: 0, kind: 'parkour_fence' },
+      { x: -24.0, z: -56.0, width: 3.4, depth: 1.75, rotationY: 0.12, kind: 'dumpster' },
+      { x: 34.0, z: -64.0, width: 5.2, depth: 0.42, rotationY: 0, kind: 'parkour_fence' },
+      { x: 56.0, z: -48.0, width: 5.0, depth: 0.42, rotationY: Math.PI * 0.5, kind: 'parkour_fence' },
+      { x: -44.0, z: -18.0, width: 5.0, depth: 0.42, rotationY: 0, kind: 'parkour_fence' },
+      { x: 16.0, z: -20.0, width: 3.4, depth: 1.75, rotationY: 0, kind: 'dumpster' },
+      // Sector 3: Approach & Precinct Alley Shortcuts
+      { x: -44.0, z: 72.0, width: 5.2, depth: 0.42, rotationY: 0, kind: 'parkour_fence' },
+      { x: 18.0, z: 108.0, width: 4.8, depth: 0.42, rotationY: Math.PI * 0.5, kind: 'parkour_fence' },
+      { x: -24.0, z: 144.0, width: 3.4, depth: 1.75, rotationY: -0.1, kind: 'dumpster' }
+    ];
+    for (let i = 0; i < parkourObstacles.length; i++) {
+      const p = parkourObstacles[i];
+      this.addObstacle({
+        x: p.x,
+        z: p.z,
+        width: p.width,
+        depth: p.depth,
+        height: p.kind === 'dumpster' ? 1.28 : 1.32,
+        rotationY: p.rotationY,
+        kind: p.kind,
+        color: p.kind === 'dumpster' ? 0x1f3a2e : 0x334155
+      });
+    }
+
+    // 4f. Rush-Hour Gridlock Vehicles, Crashed Transit Buses & Checkpoint Evacuation Queues
+    const gridlockCars: Array<[number, number, number, 'car' | 'taxi' | 'van' | 'bus', boolean]> = [
+      // Stalled West Boulevard rush-hour pileup with tilted smoking transit buses (zig-zag corridors preserved!)
+      [-50.2, -32.0, 0.34, 'bus', true],
+      [-54.5, -52.0, -0.18, 'taxi', false],
+      [-49.8, -68.0, 0.22, 'car', false],
+      [-54.2, -96.0, 0.08, 'taxi', false],
+      [-49.4, -104.0, -0.12, 'van', false],
+      [-54.6, -129.0, 0.05, 'car', false],
+      // Midtown Avenue jammed commute & smoking bus near overpass
+      [24.4, -68.0, -0.42, 'bus', true],
+      [28.6, -54.0, 0.24, 'taxi', false],
+      [23.5, -34.0, -0.22, 'car', false],
+      [28.2, -22.0, 0.16, 'taxi', false],
+      [24.0, -110.0, 0.1, 'van', false],
+      // Defense Line checkpoint evacuation car queues
+      [-54.4, 34.0, 0.06, 'taxi', false],
+      [-49.5, 38.5, -0.05, 'car', false],
+      [23.6, -132.0, 0.04, 'car', false],
+      [28.5, -138.0, -0.08, 'taxi', false],
+      [-53.6, 72.0, 0.28, 'bus', true],
+      [-49.8, 152.0, 0.08, 'car', false],
+      [28.2, 154.0, -0.06, 'taxi', false]
+    ];
+    for (let i = 0; i < gridlockCars.length; i++) {
+      const [gx, gz, rot, kind, burn] = gridlockCars[i];
+      this.addObstacle({
+        x: gx,
+        z: gz,
+        width: kind === 'bus' ? 2.65 : kind === 'van' ? 1.95 : 1.85,
+        depth: kind === 'bus' ? 8.6 : kind === 'van' ? 4.1 : 3.7,
+        height: kind === 'bus' ? 2.85 : kind === 'van' ? 1.6 : 1.32,
+        rotationY: rot,
+        kind,
+        color:
+          kind === 'bus'
+            ? i % 2 === 0
+              ? 0xf59e0b
+              : 0xe2e8f0
+            : kind === 'taxi'
+            ? 0xeab308
+            : wreckColors[i % wreckColors.length],
+        isBurning: burn
+      });
+    }
   }
 
   private getOrCreateNode(x: number, z: number, isCorner: boolean): number {
@@ -1769,7 +2272,19 @@ export class CityLayout {
     for (let i = 0; i < this.buildings.length; i++) {
       const b = this.buildings[i];
       if (x >= b.minX - pad && x <= b.maxX + pad && z >= b.minZ - pad && z <= b.maxZ + pad) {
-        return true;
+        if (!b.interior) return true;
+        for (let wi = 0; wi < b.interior.walls.length; wi++) {
+          const w = b.interior.walls[wi];
+          if (x >= w.minX - pad && x <= w.maxX + pad && z >= w.minZ - pad && z <= w.maxZ + pad) {
+            return true;
+          }
+        }
+        for (let pi = 0; pi < b.interior.props.length; pi++) {
+          const p = b.interior.props[pi];
+          if (x >= p.minX - pad && x <= p.maxX + pad && z >= p.minZ - pad && z <= p.maxZ + pad) {
+            return true;
+          }
+        }
       }
     }
     for (let i = 0; i < this.staticObstacles.length; i++) {
@@ -1865,6 +2380,23 @@ export class CityLayout {
       }
     }
 
+    // 6. Walkable 1st-Floor Landmarks: exterior doorway apron, threshold & interior corridor anchors
+    for (const door of this.interiorDoors) {
+      const nx = door.side === 'W' ? -1 : door.side === 'E' ? 1 : 0;
+      const nz = door.side === 'N' ? -1 : door.side === 'S' ? 1 : 0;
+      addSafeNode(door.x + nx * 1.8, door.z + nz * 1.8, false);
+      addSafeNode(door.x, door.z, false);
+      addSafeNode(door.x - nx * 1.8, door.z - nz * 1.8, false);
+    }
+    for (const b of this.buildings) {
+      if (!b.interior) continue;
+      for (const ox of [-b.width * 0.28, 0, b.width * 0.28]) {
+        for (const oz of [-b.depth * 0.22, 0, b.depth * 0.22]) {
+          addSafeNode(b.x + ox, b.z + oz, false);
+        }
+      }
+    }
+
     // Connect all mutually reachable local corridor nodes (dist <= 27m, clear of water/buildings/pileups)
     const count = this.navNodes.length;
     for (let i = 0; i < count; i++) {
@@ -1894,6 +2426,26 @@ export class CityLayout {
     this.seenStamp = new Uint32Array(count);
     this.closedStamp = new Uint32Array(count);
     this.openList = [];
+
+    for (let r = 0; r < this.spatialRows; r++) {
+      for (let c = 0; c < this.spatialCols; c++) {
+        this.navCells[r][c].length = 0;
+      }
+    }
+    const maxCellC = Math.max(0, this.spatialCols - 1);
+    const maxCellR = Math.max(0, this.spatialRows - 1);
+    for (let i = 0; i < count; i++) {
+      const n = this.navNodes[i];
+      const col = Math.max(
+        0,
+        Math.min(maxCellC, Math.floor((n.x + this.cityHalfX) / SPATIAL_CELL_SIZE))
+      );
+      const row = Math.max(
+        0,
+        Math.min(maxCellR, Math.floor((n.z + this.cityHalfZ) / SPATIAL_CELL_SIZE))
+      );
+      this.navCells[row][col].push(n);
+    }
   }
 
   private buildStreetFurniture(rng: SeededRNG): void {
@@ -1951,8 +2503,42 @@ export class CityLayout {
   }
 
   public findNearestNode(x: number, z: number): NavNode {
+    const maxCellC = Math.max(0, this.spatialCols - 1);
+    const maxCellR = Math.max(0, this.spatialRows - 1);
+    const col = Math.max(
+      0,
+      Math.min(maxCellC, Math.floor((x + this.cityHalfX) / SPATIAL_CELL_SIZE))
+    );
+    const row = Math.max(
+      0,
+      Math.min(maxCellR, Math.floor((z + this.cityHalfZ) / SPATIAL_CELL_SIZE))
+    );
+
     let best = this.navNodes[0];
     let bestDistSq = Infinity;
+    const minR = Math.max(0, row - 1);
+    const maxR = Math.min(maxCellR, row + 1);
+    const minC = Math.max(0, col - 1);
+    const maxC = Math.min(maxCellC, col + 1);
+
+    for (let r = minR; r <= maxR; r++) {
+      for (let c = minC; c <= maxC; c++) {
+        const list = this.navCells[r][c];
+        for (let i = 0; i < list.length; i++) {
+          const n = list[i];
+          const dx = n.x - x;
+          const dz = n.z - z;
+          const dSq = dx * dx + dz * dz;
+          if (dSq < bestDistSq) {
+            bestDistSq = dSq;
+            best = n;
+          }
+        }
+      }
+    }
+
+    if (bestDistSq < Infinity) return best;
+
     for (let i = 0; i < this.navNodes.length; i++) {
       const n = this.navNodes[i];
       const dx = n.x - x;
