@@ -1,4 +1,8 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { AgentRenderer } from './agentRenderer';
 import { SoundEngine } from './audio';
 import { CameraController } from './camera';
@@ -48,6 +52,8 @@ class ProjectOutbreakApp {
   private flashlightRig!: THREE.Group;
   private flashlightSpot!: THREE.SpotLight;
   private wasFirstPerson = false;
+  private composer!: EffectComposer;
+  private bloomPass!: UnrealBloomPass;
 
   constructor() {
     const container = document.getElementById('canvas-container')!;
@@ -67,7 +73,7 @@ class ProjectOutbreakApp {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.18;
+    this.renderer.toneMappingExposure = 1.06;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(this.renderer.domElement);
 
@@ -75,6 +81,19 @@ class ProjectOutbreakApp {
     this.sound = new SoundEngine();
     this.sim = new OutbreakSimulation(DEFAULT_CONFIG);
     this.cityRenderer = new CityRenderer(this.scene, this.sim.city, this.textureStudio);
+    this.cityRenderer.initEnvironment(this.renderer);
+
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(Math.floor(window.innerWidth / 2), Math.floor(window.innerHeight / 2)),
+      0.36,
+      0.34,
+      1.05
+    );
+    this.composer.addPass(this.bloomPass);
+    this.composer.addPass(new OutputPass());
+    this.applyOptimalPixelRatio(DEFAULT_CONFIG.population);
     this.agentRenderer = new AgentRenderer(this.scene, this.textureStudio);
     this.camController = new CameraController(this.camera, this.renderer.domElement);
     this.camController.setWorldBounds(this.sim.city.cityHalfX, this.sim.city.cityHalfZ);
@@ -147,7 +166,15 @@ class ProjectOutbreakApp {
 
   private applyOptimalPixelRatio(pop: number): void {
     const maxDpr = pop >= 1500 ? 1.25 : 1.5;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, maxDpr));
+    const dpr = Math.min(window.devicePixelRatio, maxDpr);
+    this.renderer.setPixelRatio(dpr);
+    if (this.composer) {
+      this.composer.setPixelRatio(dpr);
+      this.composer.setSize(window.innerWidth, window.innerHeight);
+    }
+    if (this.bloomPass) {
+      this.bloomPass.setSize(Math.floor(window.innerWidth / 2), Math.floor(window.innerHeight / 2));
+    }
   }
 
   public resetSimulation(cfg: ScenarioConfig): void {
@@ -225,7 +252,7 @@ class ProjectOutbreakApp {
     const beamGeo = new THREE.ConeGeometry(3.4, 18.0, 20, 1, true);
     beamGeo.translate(0, -9.0, 0);
     beamGeo.rotateX(Math.PI / 2); // Points straight forward (-Z) from apex at (0,0,0)
-    const beamMat = this.textureStudio.createVolumetricConeMaterial(0xffe9a6, 0.42);
+    const beamMat = this.textureStudio.createVolumetricConeMaterial(0xffe9a6, 0.28);
     const beamCone = new THREE.Mesh(beamGeo, beamMat);
     beamCone.position.set(0, 0, -0.24);
 
@@ -233,7 +260,7 @@ class ProjectOutbreakApp {
     this.flashlightRig.visible = false;
     this.camera.add(this.flashlightRig);
 
-    this.flashlightSpot = new THREE.SpotLight(0xfff2cc, 78, 76, Math.PI / 4.0, 0.68, 0.95);
+    this.flashlightSpot = new THREE.SpotLight(0xfff0c8, 22, 46, Math.PI / 4.2, 0.72, 1.45);
     this.flashlightSpot.position.set(0.28, -0.20, -0.66);
     const targetObj = new THREE.Object3D();
     targetObj.position.set(0, -0.22, -20);
@@ -567,10 +594,11 @@ class ProjectOutbreakApp {
       this.sim.firstPerson.insideBuildingId,
       this.sim.gridFlickerTimer,
       this.sim.blackoutMaxZ,
-      this.sim.supplyPickups
+      this.sim.supplyPickups,
+      this.sim.firstPerson.insideTrainCar
     );
 
-    this.renderer.render(this.scene, this.camera);
+    this.composer.render();
 
     this.uiUpdateAccumulator += rawDt;
     if (this.uiUpdateAccumulator >= 0.2) {

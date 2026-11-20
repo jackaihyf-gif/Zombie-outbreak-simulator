@@ -76,6 +76,10 @@ export class CityRenderer {
   private hemiLight!: THREE.HemisphereLight;
   private ambientLight!: THREE.AmbientLight;
   private interiorPointLight!: THREE.PointLight;
+  private trainRedPointLight!: THREE.PointLight;
+  private baseAmbientIntensity = 0.48;
+  private baseHemiIntensity = 0.78;
+  private baseSunIntensity = 2.85;
 
   private skyDomeMesh!: THREE.Mesh;
   private skyMat!: THREE.MeshBasicMaterial;
@@ -179,14 +183,16 @@ export class CityRenderer {
     opacity: 0.72
   });
   private fireYellowMat = new THREE.MeshBasicMaterial({
-    color: 0xfef08a,
+    color: new THREE.Color(0xfef08a).multiplyScalar(1.6),
     transparent: true,
-    opacity: 0.95
+    opacity: 0.95,
+    toneMapped: false
   });
   private fireMat = new THREE.MeshBasicMaterial({
-    color: 0xf97316,
+    color: new THREE.Color(0xf97316).multiplyScalar(1.55),
     transparent: true,
-    opacity: 0.9
+    opacity: 0.9,
+    toneMapped: false
   });
   private barBgMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
   private barOrangeMat = new THREE.MeshBasicMaterial({ color: 0xf97316 });
@@ -435,16 +441,56 @@ export class CityRenderer {
     this.horizonGroup.add(towerInst, crownInst, spireInst);
   }
 
+  public initEnvironment(renderer: THREE.WebGLRenderer): void {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const envScene = new THREE.Scene();
+
+    const envMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      vertexShader: `
+        varying vec3 vWorldPos;
+        void main() {
+          vec4 wp = modelMatrix * vec4(position, 1.0);
+          vWorldPos = normalize(wp.xyz);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vWorldPos;
+        void main() {
+          float y = vWorldPos.y;
+          vec3 zenith = vec3(0.18, 0.09, 0.30);
+          vec3 horizon = vec3(0.95, 0.42, 0.22);
+          vec3 nadir = vec3(0.06, 0.08, 0.14);
+          vec3 col = y >= 0.0
+            ? mix(horizon, zenith, pow(clamp(y, 0.0, 1.0), 0.55))
+            : mix(horizon * 0.45, nadir, pow(clamp(-y, 0.0, 1.0), 0.45));
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `
+    });
+    const envSphere = new THREE.Mesh(new THREE.SphereGeometry(20, 24, 16), envMat);
+    envScene.add(envSphere);
+
+    const rt = pmrem.fromScene(envScene, 0.04);
+    this.scene.environment = rt.texture;
+    (this.scene as THREE.Scene & { environmentIntensity?: number }).environmentIntensity = 0.65;
+
+    envSphere.geometry.dispose();
+    envMat.dispose();
+    pmrem.dispose();
+  }
+
   private setupLighting(): void {
-    this.ambientLight = new THREE.AmbientLight(0xd2ddf2, 1.02);
+    this.ambientLight = new THREE.AmbientLight(0x526491, 0.48);
     this.scene.add(this.ambientLight);
 
-    this.hemiLight = new THREE.HemisphereLight(0xc7b9ff, 0x323b4f, 1.38);
+    this.hemiLight = new THREE.HemisphereLight(0xd47d78, 0x161d2e, 0.78);
     this.hemiLight.position.set(0, 90, 0);
     this.scene.add(this.hemiLight);
 
-    this.sunLight = new THREE.DirectionalLight(0xffb469, 2.45);
-    this.sunLight.position.set(-125, 86, -110);
+    this.sunLight = new THREE.DirectionalLight(0xff9a52, 2.85);
+    this.sunLight.position.set(-140, 68, -120);
     this.sunLight.castShadow = true;
     this.sunLight.shadow.mapSize.width = 2048;
     this.sunLight.shadow.mapSize.height = 2048;
@@ -456,6 +502,10 @@ export class CityRenderer {
     this.interiorPointLight = new THREE.PointLight(0xd8e8ff, 0, 18, 1.3);
     this.interiorPointLight.castShadow = false;
     this.scene.add(this.interiorPointLight);
+
+    this.trainRedPointLight = new THREE.PointLight(0xff1e33, 0, 12, 1.4);
+    this.trainRedPointLight.castShadow = false;
+    this.scene.add(this.trainRedPointLight);
 
     this.applyAtmosphere('dusk');
   }
@@ -471,33 +521,42 @@ export class CityRenderer {
     }
 
     if (stage === 'dusk') {
-      this.scene.background = new THREE.Color(0x211933);
-      this.scene.fog = new THREE.FogExp2(0x2b1e3b, 0.00105);
-      this.ambientLight.intensity = 1.02;
-      this.hemiLight.color.setHex(0xc7b9ff);
-      this.hemiLight.groundColor.setHex(0x323b4f);
-      this.hemiLight.intensity = 1.38;
-      this.sunLight.intensity = 2.45;
-      this.sunLight.color.setHex(0xffb469);
-      this.sunLight.position.set(-125, 86, -110);
+      this.scene.background = new THREE.Color(0x1f142e);
+      this.scene.fog = new THREE.FogExp2(0x2a1836, 0.00195);
+      this.baseAmbientIntensity = 0.48;
+      this.baseHemiIntensity = 0.78;
+      this.baseSunIntensity = 2.85;
+      this.ambientLight.intensity = this.baseAmbientIntensity;
+      this.hemiLight.color.setHex(0xd47d78);
+      this.hemiLight.groundColor.setHex(0x161d2e);
+      this.hemiLight.intensity = this.baseHemiIntensity;
+      this.sunLight.intensity = this.baseSunIntensity;
+      this.sunLight.color.setHex(0xff9a52);
+      this.sunLight.position.set(-140, 68, -120);
     } else if (stage === 'night') {
       this.scene.background = new THREE.Color(0x040711);
       this.scene.fog = new THREE.FogExp2(0x050914, 0.0034);
-      this.ambientLight.intensity = 0.28;
+      this.baseAmbientIntensity = 0.24;
+      this.baseHemiIntensity = 0.36;
+      this.baseSunIntensity = 0.55;
+      this.ambientLight.intensity = this.baseAmbientIntensity;
       this.hemiLight.color.setHex(0x60a5fa);
       this.hemiLight.groundColor.setHex(0x090d16);
-      this.hemiLight.intensity = 0.42;
-      this.sunLight.intensity = 0.58;
+      this.hemiLight.intensity = this.baseHemiIntensity;
+      this.sunLight.intensity = this.baseSunIntensity;
       this.sunLight.color.setHex(0x93c5fd);
       this.sunLight.position.set(60, 95, 55);
     } else {
       this.scene.background = new THREE.Color(0x38bdf8);
       this.scene.fog = new THREE.FogExp2(0x476b8c, 0.0018);
-      this.ambientLight.intensity = 0.72;
+      this.baseAmbientIntensity = 0.65;
+      this.baseHemiIntensity = 0.85;
+      this.baseSunIntensity = 1.65;
+      this.ambientLight.intensity = this.baseAmbientIntensity;
       this.hemiLight.color.setHex(0xe0f2fe);
       this.hemiLight.groundColor.setHex(0x334155);
-      this.hemiLight.intensity = 0.92;
-      this.sunLight.intensity = 1.62;
+      this.hemiLight.intensity = this.baseHemiIntensity;
+      this.sunLight.intensity = this.baseSunIntensity;
       this.sunLight.color.setHex(0xfff7ed);
       this.sunLight.position.set(70, 110, 60);
     }
@@ -688,9 +747,10 @@ export class CityRenderer {
     const groundGeo = new THREE.BoxGeometry(baseW, 2.0, baseD);
     const groundMat = new THREE.MeshStandardMaterial({
       map: this.textureStudio.getAsphaltTexture(28),
-      color: 0xffffff,
-      roughness: 0.92,
-      metalness: 0.04
+      color: 0x8c97ad,
+      roughness: 0.44,
+      metalness: 0.24,
+      envMapIntensity: 1.35
     });
     this.groundMesh = new THREE.Mesh(groundGeo, groundMat);
     this.groundMesh.position.y = -1.0;
@@ -1424,9 +1484,9 @@ export class CityRenderer {
       map: this.textureStudio.getTrainFloorTexture(),
       roughness: 0.72
     });
-    const seatBlueMat = new THREE.MeshStandardMaterial({ color: 0x162d59, roughness: 0.78 });
-    const seatTrimMat = new THREE.MeshStandardMaterial({ color: 0x3b82f6, roughness: 0.55 });
-    const innerWallMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.85 });
+    const seatBlueMat = new THREE.MeshStandardMaterial({ color: 0x0c1b36, roughness: 0.78 });
+    const seatTrimMat = new THREE.MeshStandardMaterial({ color: 0x162f59, roughness: 0.62 });
+    const innerWallMat = new THREE.MeshStandardMaterial({ color: 0x141b26, roughness: 0.86 });
     const hullTopMat = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.42 });
     const ceilingMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.9 });
     const noseMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.3, metalness: 0.45 });
@@ -1441,7 +1501,10 @@ export class CityRenderer {
       metalness: 0.4,
       depthWrite: false
     });
-    const warmLightMat = new THREE.MeshBasicMaterial({ color: 0xfef3c7 });
+    const warmLightMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(0xfef3c7).multiplyScalar(1.35),
+      toneMapped: false
+    });
     const doorGlassTex0 = this.textureStudio.getDoorGlassTexture(0);
 
     const trainConeGeo = new THREE.ConeGeometry(2.0, 12.0, 10, 1, true);
@@ -2579,7 +2642,11 @@ export class CityRenderer {
           yOverride?: number
         ) => {
           const signTex = this.textureStudio.getNeonSignTexture(label);
-          const signFaceMat = new THREE.MeshBasicMaterial({ map: signTex });
+          const signFaceMat = new THREE.MeshBasicMaterial({
+            map: signTex,
+            color: new THREE.Color(0xffffff).multiplyScalar(1.35),
+            toneMapped: false
+          });
           const sg = new THREE.Group();
           sg.position.set(lx, yOverride ?? (b.interior ? 4.45 : 3.85), lz);
           sg.rotation.y = rotY;
@@ -2637,7 +2704,12 @@ export class CityRenderer {
             const vTex = this.textureStudio.getVerticalNeonSignTexture(vLabel);
             const vSign = new THREE.Mesh(
               new THREE.PlaneGeometry(1.15, 4.15),
-              new THREE.MeshBasicMaterial({ map: vTex, side: THREE.DoubleSide })
+              new THREE.MeshBasicMaterial({
+                map: vTex,
+                color: new THREE.Color(0xffffff).multiplyScalar(1.45),
+                side: THREE.DoubleSide,
+                toneMapped: false
+              })
             );
             const dirOut = b.x < 0 ? 1 : -1;
             vSign.position.set(aveSignX + dirOut * 0.72, 6.4, faceSign * (b.depth * 0.32));
@@ -2959,9 +3031,18 @@ export class CityRenderer {
       }
 
       // Cantilevered Traffic Signal Gantries at primary city intersections
-      const redSigMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
-      const amberSigMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
-      const greenSigMat = new THREE.MeshBasicMaterial({ color: 0x22c55e });
+      const redSigMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(0xef4444).multiplyScalar(1.8),
+        toneMapped: false
+      });
+      const amberSigMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(0xf59e0b).multiplyScalar(1.8),
+        toneMapped: false
+      });
+      const greenSigMat = new THREE.MeshBasicMaterial({
+        color: new THREE.Color(0x22c55e).multiplyScalar(1.8),
+        toneMapped: false
+      });
       const boxSigMat = new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.7 });
       for (const rx of [-52, -16, 26, 68]) {
         for (const rz of [-80, -42, -8, 88, 128]) {
@@ -3434,8 +3515,13 @@ export class CityRenderer {
       );
     }
     for (let i = 0; i < this.trainEmergencyLightMats.length; i++) {
-      const hot = Math.sin(time * 9.5 + i * 1.4) > 0.1;
-      this.trainEmergencyLightMats[i].color.setHex(hot ? 0xef4444 : 0x7f1d1d);
+      const hot = Math.sin(time * 9.5 + i * 1.4) > -0.15;
+      if (hot) {
+        this.trainEmergencyLightMats[i].color.setRGB(2.0, 0.2, 0.25);
+      } else {
+        this.trainEmergencyLightMats[i].color.setHex(0x7f1d1d);
+      }
+      this.trainEmergencyLightMats[i].toneMapped = false;
     }
     if (train.doors) {
       for (let i = 0; i < train.doors.length; i++) {
@@ -3538,7 +3624,8 @@ export class CityRenderer {
     insideBuildingId: string | null = null,
     gridFlickerTimer = 0,
     blackoutMaxZ = -999,
-    supplyPickups: SupplyPickupData[] = []
+    supplyPickups: SupplyPickupData[] = [],
+    insideTrainCar: 0 | 1 | 2 | 3 = 0
   ): void {
     // 0a. Walkable Interior Doors (open swing, locked padlock/rattle, cracked glass stages, broken leaves)
     for (let di = 0; di < interiorDoors.length; di++) {
@@ -3604,6 +3691,16 @@ export class CityRenderer {
         fx.coneMesh.visible = true;
       }
     }
+    if (isFirstPerson && (insideTrainCar > 0 || insideBuildingId)) {
+      this.ambientLight.intensity = this.baseAmbientIntensity * 0.26;
+      this.hemiLight.intensity = this.baseHemiIntensity * 0.24;
+      this.sunLight.intensity = this.baseSunIntensity * 0.20;
+    } else {
+      this.ambientLight.intensity = this.baseAmbientIntensity;
+      this.hemiLight.intensity = this.baseHemiIntensity;
+      this.sunLight.intensity = this.baseSunIntensity;
+    }
+
     if (isFirstPerson && insideBuildingId) {
       const b = buildings.find((bld) => bld.id === insideBuildingId);
       if (b) {
@@ -3614,19 +3711,18 @@ export class CityRenderer {
       } else {
         this.interiorPointLight.intensity = 0;
       }
-    } else if (
-      isFirstPerson &&
-      this.currentLayout?.hasExpressRail &&
-      fpCamZ >= 193.2 &&
-      fpCamZ <= 198.8 &&
-      Math.abs(fpCamX) <= 24
-    ) {
-      this.interiorPointLight.color.setHex(0xffcca3);
-      this.interiorPointLight.distance = 22;
+      this.trainRedPointLight.intensity = 0;
+    } else if (isFirstPerson && insideTrainCar > 0) {
+      this.interiorPointLight.color.setHex(0xffb570);
+      this.interiorPointLight.distance = 16;
       this.interiorPointLight.position.set(fpCamX, 2.75, 196.0);
-      this.interiorPointLight.intensity = 2.5;
+      this.interiorPointLight.intensity = 2.05;
+      const bulkheadX = fpCamX < 0 ? -7.5 : 7.5;
+      this.trainRedPointLight.position.set(bulkheadX, 2.55, 196.0);
+      this.trainRedPointLight.intensity = 3.4;
     } else {
       this.interiorPointLight.intensity = 0;
+      this.trainRedPointLight.intensity = 0;
     }
 
     // 0c. Permanent Dark Broken Upper-Floor Windows (zero bright blue panes)

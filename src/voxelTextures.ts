@@ -494,6 +494,23 @@ export class VoxelTextureStudio {
     return tex;
   }
 
+  private createZombieEyeEmissive(archetype: AgentArchetype): THREE.CanvasTexture {
+    const key = `head-eye-em-${archetype}`;
+    const cached = this.texCache.get(key);
+    if (cached) return cached;
+
+    const [canvas, ctx] = this.makeCanvas(16, 16);
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, 16, 16);
+    ctx.fillStyle = archetype === 'zombie_brute' ? '#ff6a00' : '#ff1e2d';
+    ctx.fillRect(3, 6, 2, 1);
+    ctx.fillRect(11, 6, 2, 1);
+
+    const tex = this.finalizeTexture(canvas, { nearestMin: true });
+    this.texCache.set(key, tex);
+    return tex;
+  }
+
   public getAgentMaterials(archetype: AgentArchetype): AgentMaterialBundle {
     const cached = this.agentMatCache.get(archetype);
     if (cached) return cached;
@@ -506,11 +523,23 @@ export class VoxelTextureStudio {
         metalness: 0.04
       });
 
-    // BoxGeometry face order: [+X, -X, +Y, -Y, +Z FRONT, -Z back]
+    const isZombie = archetype.startsWith('zombie');
     const headSide = makeStd(this.createAgentFaceTexture(archetype, 'side'));
     const headTop = makeStd(this.createAgentFaceTexture(archetype, 'top'));
     const headBot = makeStd(this.createAgentFaceTexture(archetype, 'bot'));
-    const headFront = makeStd(this.createAgentFaceTexture(archetype, 'front'));
+    const frontTex = this.createAgentFaceTexture(archetype, 'front');
+    const headFront = isZombie
+      ? new THREE.MeshStandardMaterial({
+          map: frontTex,
+          color: 0xffffff,
+          emissive: archetype === 'zombie_brute' ? 0xff6a00 : 0xff1e2d,
+          emissiveMap: this.createZombieEyeEmissive(archetype),
+          emissiveIntensity: 2.3,
+          roughness: 0.72,
+          metalness: 0.04,
+          toneMapped: false
+        })
+      : makeStd(frontTex);
     const headBack = makeStd(this.createAgentFaceTexture(archetype, 'back'));
 
     const torsoSide = makeStd(this.createAgentBodyTexture(archetype, 'torso_side'));
@@ -854,10 +883,11 @@ export class VoxelTextureStudio {
     ctx.fillRect(0, 0, 3, 36);
     ctx.fillRect(125, 0, 3, 36);
 
-    const px = 3;
+    const px = label.length >= 7 ? 2 : 3;
     const totalW = label.length * (6 * px) - px;
     const startX = Math.floor((128 - totalW) / 2);
-    this.drawPixelText(ctx, label, startX, 10, px, textHex, false);
+    const startY = Math.floor((36 - 5 * px) / 2);
+    this.drawPixelText(ctx, label, startX, startY, px, textHex, false);
 
     const tex = this.finalizeTexture(canvas, { nearestMin: true });
     this.texCache.set(key, tex);

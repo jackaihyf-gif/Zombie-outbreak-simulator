@@ -429,6 +429,11 @@ export interface AgentData {
   isEvacuated: boolean;
   perceivedThreats: number;
   recentLogs: string[];
+  lastProgressX: number;
+  lastProgressZ: number;
+  stuckTimer: number;
+  avoidSide: number;
+  avoidTimer: number;
 }
 
 export interface VehicleData {

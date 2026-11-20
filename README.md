@@ -49,6 +49,10 @@ npm run preview
 - **4 Zombie Attack Modes**: Continuous **`tackle_pin`** mauling (with 3D prone victim poses & police/SWAT rescue counterplay), **`neck_grapple`**, **`claw_swipe`**, and **Alpha Brute `brute_slam`** ground knockbacks; `18s` FP severe-maul incubation curable by Paramedics or Antiviral Medkits.
 - **2,200-Pop `InstancedMesh` Architecture**: Supports **300**, **600 (Default)**, **1,200**, and **2,200 Apocalypse Swarm** via zero-alloc `SpatialGrid`, spatial building/obstacle cells, `InstancedMesh` VFX/world-bars/horizon rings, squared-distance perception culling, and adaptive DPR.
 
+### 🎨 Selective HDR Bloom, PMREM Reflections & Anti-Stuck Pathfinding
+- **Cinema-Grade Post-Processing & Mood Lighting**: Half-res selective HDR `UnrealBloomPass` + `OutputPass`, procedural `PMREMGenerator` amber-violet dusk reflections on damp asphalt streets & concrete canals, readable HDR neon brackets (`PHARMACY`, `24H MART`), glowing infected eye emissives, and indoor/KTX exterior-light attenuation with crimson bulkhead point lights.
+- **Anti-Stuck Swarm & Interior Navigation**: `0.28m` progress-stall detection, clear-side probing, and `1.35m` proactive OBB tangent feelers steer zombies & survivors smoothly around parked cars, buses, and barricades; smart door-funnel routing guides hordes straight through **KTX Car 3's boarding door** and walkable storefront entrances instead of rubbing exterior walls.
+
 ### 🗺️ 4 Maps & 7 Outbreak Scenarios (`⚙ Lab`)
 - **Maps**: `Citadel Wall & Express (456m Layered)`, `Grand Metropolis`, `Twin River Bridges`, `Neon Downtown`
 - **Scenarios**: `WWZ × 釜山狂潮`, `Patient Zero`, `Multi-Epicenter`, `Crimson Tide Siege`, `Delayed Response`, `Fast Strain`, `No Intervention`

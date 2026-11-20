@@ -21,6 +21,7 @@ import {
   RoadblockData,
   ScenarioConfig,
   SimulationStats,
+  StaticObstacleData,
   SupplyPickupData,
   TimeSeriesPoint,
   Vec2,
@@ -109,6 +110,8 @@ export class OutbreakSimulation {
   private windowBreachCooldown = 2.8;
   private overpassDropCooldown = 5.5;
   private activeAlarmSet: Set<number> = new Set();
+  private obsAvoidBuffer: StaticObstacleData[] = [];
+  private avoidProbeBuf: StaticObstacleData[] = [];
   private pathsComputedThisTick = 0;
   private pyramidBuckets: AgentData[][][] = [];
   private fpVaultActive = false;
@@ -820,7 +823,12 @@ export class OutbreakSimulation {
       isAlive: true,
       isEvacuated: false,
       perceivedThreats: 0,
-      recentLogs: [`08:00:00 — Active in ${this.city.getDistrictAtPos(x, z)}.`]
+      recentLogs: [`08:00:00 — Active in ${this.city.getDistrictAtPos(x, z)}.`],
+      lastProgressX: x,
+      lastProgressZ: z,
+      stuckTimer: 0,
+      avoidSide: this.rng.chance(0.5) ? 1 : -1,
+      avoidTimer: 0
     };
   }
 
@@ -2616,7 +2624,7 @@ export class OutbreakSimulation {
       z.zombieState = 'PURSUING';
       z.destinationLabel = 'Drawn to Acoustic Lure';
       if (bestLureDist > 2.2) {
-        this.steerTowards(z, activeLure.x, activeLure.z, z.baseSpeed * 1.15 * hordeFrenzy, dt);
+        this.pursuePositionSmart(z, activeLure.x, activeLure.z, z.baseSpeed * 1.15 * hordeFrenzy, dt);
       } else {
         z.vx *= 0.3;
         z.vz *= 0.3;
@@ -2686,7 +2694,7 @@ export class OutbreakSimulation {
         const maxChaseSpeed =
           z.zombieVariant === 'runner' ? 6.1 : z.zombieVariant === 'brute' ? 4.3 : 4.95;
         const chaseSpeed = Math.min(z.baseSpeed * lungeBoost, maxChaseSpeed);
-        this.steerTowards(z, currentTarget.x, currentTarget.z, chaseSpeed, dt);
+        this.pursuePositionSmart(z, currentTarget.x, currentTarget.z, chaseSpeed, dt, currentTarget);
       }
       return;
     }
@@ -2731,7 +2739,7 @@ export class OutbreakSimulation {
       z.zombieState = 'PURSUING';
       z.destinationLabel = 'Drawn to Car Alarm';
       if (bestAlarmDist > 2.4) {
-        this.steerTowards(z, nearestAlarm.x, nearestAlarm.z, z.baseSpeed * 1.12 * hordeFrenzy, dt);
+        this.pursuePositionSmart(z, nearestAlarm.x, nearestAlarm.z, z.baseSpeed * 1.12 * hordeFrenzy, dt);
       } else {
         z.vx *= 0.3;
         z.vz *= 0.3;
@@ -3445,6 +3453,100 @@ export class OutbreakSimulation {
     a.shelterBuildingId = null;
   }
 
+  private isProbeBlocked(px: number, pz: number): boolean {
+    if (this.city.isPointInOpenWater(px, pz, 0.5)) return true;
+    const obs = this.city.getObstaclesNearPos(px, pz, this.avoidProbeBuf, 2.2);
+    for (let i = 0; i < obs.length; i++) {
+      const o = obs[i];
+      const cosR = o.cosR ?? Math.cos(o.rotationY);
+      const sinR = o.sinR ?? Math.sin(o.rotationY);
+      const dx = px - o.x;
+      const dz = pz - o.z;
+      const lx = dx * cosR - dz * sinR;
+      const lz = dx * sinR + dz * cosR;
+      if (Math.abs(lx) < o.width * 0.5 + 0.62 && Math.abs(lz) < o.depth * 0.5 + 0.62) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private pursuePositionSmart(
+    z: AgentData,
+    gx: number,
+    gz: number,
+    speed: number,
+    dt: number,
+    targetAgent?: AgentData
+  ): void {
+    let navX = gx;
+    let navZ = gz;
+
+    // 1. KTX Train Entry Funnel: outside infected must enter via Car 3 open North door instead of jamming into side hull
+    const tr = this.expressTrain;
+    if (tr.active && tr.state === 'DOCKED' && this.getTrainCarForPos(gx, gz) > 0 && this.getTrainCarForPos(z.x, z.z) === 0) {
+      const doorX = tr.x + tr.boardingDoorLocalX;
+      const apronZ = tr.z - 2.35;
+      if (Math.hypot(z.x - doorX, z.z - apronZ) <= 2.35) {
+        this.steerTowards(z, doorX, tr.z, speed, dt);
+        return;
+      }
+      navX = doorX;
+      navZ = apronZ;
+    } else if (targetAgent) {
+      // 2. Walkable Building Door Funnel: outside zombie chasing indoor survivor routes to building door first
+      const nearBlds = this.city.getBuildingsNearPos(gx, gz, this.buildingBuffer, 1.5);
+      for (let bi = 0; bi < nearBlds.length; bi++) {
+        const b = nearBlds[bi];
+        if (!b.interior) continue;
+        const tgtIn = gx > b.minX && gx < b.maxX && gz > b.minZ && gz < b.maxZ;
+        const zIn = z.x > b.minX && z.x < b.maxX && z.z > b.minZ && z.z < b.maxZ;
+        if (tgtIn && !zIn) {
+          let bestDoor: InteriorDoorData | null = null;
+          let bestScore = Infinity;
+          for (let di = 0; di < this.interiorDoors.length; di++) {
+            const d = this.interiorDoors[di];
+            if (d.buildingId !== b.id) continue;
+            const sc = Math.hypot(d.x - z.x, d.z - z.z) + (d.isLocked && !d.isBroken ? 18 : 0);
+            if (sc < bestScore) {
+              bestScore = sc;
+              bestDoor = d;
+            }
+          }
+          if (bestDoor) {
+            navX = bestDoor.x;
+            navZ = bestDoor.z;
+          }
+          break;
+        }
+      }
+    }
+
+    const dGoal = Math.hypot(navX - z.x, navZ - z.z);
+    if (
+      dGoal > 4.2 &&
+      z.climbY <= 0.1 &&
+      !hasLineOfSight(z.x, z.z, navX, navZ, this.city, this.defenseWalls, this.blastGates, this.interiorDoors)
+    ) {
+      if (!z.path || z.pathIndex >= z.path.length || z.repathCooldown <= 0) {
+        const path = this.requestPath(z.x, z.z, navX, navZ, true);
+        if (path && path.length > 0) {
+          z.path = path;
+          z.pathIndex = 0;
+          z.repathCooldown = 1.05;
+        } else {
+          z.repathCooldown = 0.45;
+        }
+      }
+      if (z.path && z.pathIndex < z.path.length) {
+        this.moveAlongPath(z, speed, dt);
+        return;
+      }
+    }
+
+    this.steerTowards(z, navX, navZ, speed, dt);
+  }
+
   private moveAlongPath(a: AgentData, speed: number, dt: number): boolean {
     if (!a.path || a.pathIndex >= a.path.length) {
       a.vx = 0;
@@ -3457,7 +3559,7 @@ export class OutbreakSimulation {
     const dz = wp.z - a.z;
     const dist = Math.hypot(dx, dz);
 
-    if (dist < 1.1) {
+    if (dist < 1.55 || (a.avoidTimer > 0.85 && a.pathIndex < a.path.length - 1 && dist < 4.5)) {
       a.pathIndex++;
       if (a.pathIndex >= a.path.length) {
         a.vx = 0;
@@ -3476,8 +3578,69 @@ export class OutbreakSimulation {
     const dist = Math.hypot(dx, dz);
     if (dist < 1e-4) return;
 
-    const dirX = dx / dist;
-    const dirZ = dz / dist;
+    let dirX = dx / dist;
+    let dirZ = dz / dist;
+
+    // Anti-sticking progress tracker + proactive tangent weaving around parked vehicles, buses & barricades
+    if (!a.isPlayerControlled && a.climbY <= 0.1 && a.stunnedTimer <= 0 && a.pinnedById === null && a.grappleTargetId === null) {
+      if (Math.hypot(a.x - a.lastProgressX, a.z - a.lastProgressZ) >= 0.28) {
+        a.lastProgressX = a.x;
+        a.lastProgressZ = a.z;
+        a.stuckTimer = 0;
+      } else if (speed > 0.6) {
+        a.stuckTimer += dt;
+        if (a.stuckTimer >= 0.42) {
+          a.stuckTimer = 0;
+          if (a.avoidTimer > 0) {
+            a.avoidSide = -a.avoidSide;
+          } else {
+            const angL = Math.atan2(dirZ, dirX) + 1.15;
+            const angR = Math.atan2(dirZ, dirX) - 1.15;
+            const bL = this.isProbeBlocked(a.x + Math.cos(angL) * 1.45, a.z + Math.sin(angL) * 1.45);
+            const bR = this.isProbeBlocked(a.x + Math.cos(angR) * 1.45, a.z + Math.sin(angR) * 1.45);
+            a.avoidSide = bL && !bR ? -1 : !bL && bR ? 1 : a.avoidSide;
+          }
+          a.avoidTimer = 1.05;
+        }
+      }
+
+      if (a.avoidTimer > 0) {
+        a.avoidTimer = Math.max(0, a.avoidTimer - dt);
+        const turn = a.avoidSide * 1.15;
+        const c = Math.cos(turn);
+        const s = Math.sin(turn);
+        const rx = dirX * c - dirZ * s;
+        const rz = dirX * s + dirZ * c;
+        dirX = rx;
+        dirZ = rz;
+      } else if (dist > 1.4) {
+        const fx = a.x + dirX * 1.35;
+        const fz = a.z + dirZ * 1.35;
+        const nearObs = this.city.getObstaclesNearPos(fx, fz, this.obsAvoidBuffer, 2.3);
+        for (let oi = 0; oi < nearObs.length; oi++) {
+          const o = nearObs[oi];
+          const cosR = o.cosR ?? Math.cos(o.rotationY);
+          const sinR = o.sinR ?? Math.sin(o.rotationY);
+          const rx = fx - o.x;
+          const rz = fz - o.z;
+          const lx = rx * cosR - rz * sinR;
+          const lz = rx * sinR + rz * cosR;
+          if (Math.abs(lx) < o.width * 0.5 + 0.68 && Math.abs(lz) < o.depth * 0.5 + 0.68) {
+            const cross = dirX * (o.z - a.z) - dirZ * (o.x - a.x);
+            const side = cross >= 0 ? -1 : 1;
+            const turn = side * 1.05;
+            const c = Math.cos(turn);
+            const s = Math.sin(turn);
+            const nx = dirX * c - dirZ * s;
+            const nz = dirX * s + dirZ * c;
+            dirX = nx;
+            dirZ = nz;
+            break;
+          }
+        }
+      }
+    }
+
     a.vx = dirX * speed;
     a.vz = dirZ * speed;
     a.x += a.vx * dt;
