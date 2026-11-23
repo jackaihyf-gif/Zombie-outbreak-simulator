@@ -335,7 +335,7 @@ export class AgentRenderer {
 
     for (let i = 0; i < agents.length; i++) {
       const a = agents[i];
-      if (!a.isAlive || a.isEvacuated || a.civState === 'SHELTERED' || a.id === hiddenAgentId) {
+      if (!a.isAlive || a.isEvacuated || (a.isTrainPassenger && !a.onTerminalFloor) || a.civState === 'SHELTERED' || a.id === hiddenAgentId) {
         continue;
       }
 
@@ -360,7 +360,7 @@ export class AgentRenderer {
       const speedSq = a.vx * a.vx + a.vz * a.vz;
       const speed = speedSq > 1e-6 ? Math.sqrt(speedSq) : 0;
       const isConvulsing = a.role === 'civilian' && a.civState === 'CONVULSING';
-      const isClimbing = a.role === 'infected' && a.climbY > 0.25;
+      const isClimbing = a.role === 'infected' && a.climbY > 0.25 && !a.onWallDeck && !a.onTerminalFloor;
 
       let rootYawOffset = 0;
       let rootPitch = 0;
@@ -585,17 +585,26 @@ export class AgentRenderer {
         }
       } else if (a.role === 'police') {
         const swing = speed > 0.15 ? Math.sin(a.animPhase) * 0.65 : 0;
-        const engaging =
+        const coveringRetreat = a.policeState === 'RETREATING' && a.targetAgentId !== null;
+        const engaging = coveringRetreat ||
           a.policeState === 'ENGAGING' || a.policeState === 'HOLDING_POSITION';
-        if (engaging) {
+        if (a.policeState === 'CLIMBING') {
+          const reach = Math.sin(simTime * 9 + a.id) * 0.55;
+          lArmPitch = -2.2 + reach;
+          rArmPitch = -2.2 - reach;
+          lLegPitch = -reach;
+          rLegPitch = reach;
+        } else if (engaging) {
+          const downwardAim = (a.onWallDeck || a.onTerminalFloor) && a.targetAgentId !== null ? a.wallAimPitch ?? 0 : 0;
           rootYawOffset = -0.18;
           rootPitch = 0.06;
-          rArmPitch = -1.48;
+          headPitch = downwardAim * 0.65;
+          rArmPitch = -1.48 + downwardAim;
           rArmYaw = 0.12;
-          lArmPitch = -1.25;
+          lArmPitch = -1.25 + downwardAim;
           lArmYaw = 0.44;
-          lLegPitch = 0.22;
-          rLegPitch = -0.25;
+          lLegPitch = coveringRetreat ? -swing : 0.22;
+          rLegPitch = coveringRetreat ? swing : -0.25;
         } else {
           rootPitch = speed > 1.8 ? 0.10 : 0;
           lArmPitch = -swing;

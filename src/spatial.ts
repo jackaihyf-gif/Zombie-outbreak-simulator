@@ -1,4 +1,5 @@
-import { CityLayout } from './cityData';
+import type { CityLayout } from './cityData';
+import { gateClearHalfWidth } from './perimeter';
 import {
   AgentData,
   BlastGateData,
@@ -150,8 +151,7 @@ export function hasLineOfSight(
         const g = gates[gi];
         if (
           g.wallId === w.id &&
-          (g.isOpen || g.breached) &&
-          Math.abs(ix - g.x) <= g.width * 0.5
+          Math.abs(ix - g.x) < gateClearHalfWidth(g)
         ) {
           throughOpenGate = true;
           break;
@@ -383,8 +383,7 @@ export function resolveWorldCollisions(
         const g = gates[gi];
         if (
           g.wallId === w.id &&
-          (g.isOpen || g.breached) &&
-          Math.abs(pos.x - g.x) <= g.width * 0.5 - radius
+          Math.abs(pos.x - g.x) <= gateClearHalfWidth(g) - radius
         ) {
           canPassGate = true;
           break;

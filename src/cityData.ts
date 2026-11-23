@@ -17,6 +17,9 @@ import {
   Vec2
 } from './types';
 import { SeededRNG } from './rng';
+import { KTX_LAST_LINE_Z } from './ktxTerminal';
+import { WALL_BUILDING_CLEARANCE } from './perimeter';
+import { segmentIntersectsAABB } from './spatial';
 
 export const BLOCK_PITCH = 32; // distance between road centerlines for standard grid maps
 export const ROAD_WIDTH = 8.0;
@@ -117,7 +120,7 @@ export class CityLayout {
       this.cityHalfZ = 228; // 456m deep elongated metropolis!
       this.cityHalfSize = 228;
       this.roadXs = [-126, -92, -52, -16, 26, 68, 98, 126];
-      this.roadZs = [-228, -172, -118, -80, -42, -8, 20, 48, 88, 128, 168, 200, 228];
+      this.roadZs = [-228, -172, -118, -80, -42, -8, 20, 48, 88, 128, KTX_LAST_LINE_Z, 200, 228];
       this.roadCoords = this.roadXs;
     } else {
       this.gridBlocks = mapId === 'quarantine_citadel' ? 5 : 7;
@@ -223,7 +226,7 @@ export class CityLayout {
         if (x >= 28 && x <= 96) return 'Sector 2 • Midtown Parking & Shops';
         return 'Sector 2 • Commercial Canyon';
       }
-      if (z < 168) {
+      if (z < KTX_LAST_LINE_Z) {
         if (x >= -14 && x <= 24 && z >= 88 && z <= 128) return 'Sector 3 • Police Precinct';
         return 'Sector 3 • Inner Residential';
       }
@@ -1102,7 +1105,7 @@ export class CityLayout {
         gateXs: [-52, 26]
       },
       {
-        z: 168,
+        z: KTX_LAST_LINE_Z,
         height: 8.2,
         thickness: 2.6,
         label: 'Defense Line 3 • KTX Terminal Last Perimeter',
@@ -1117,7 +1120,7 @@ export class CityLayout {
     this.railTracksZ = [196, 204];
     this.stationPos = { x: 0, z: 196 };
     this.highwayZone = { minX: -18, maxX: 82, minZ: -228, maxZ: -119 };
-    this.terminalPlaza = { minX: -116, maxX: 116, minZ: 170, maxZ: 222 };
+    this.terminalPlaza = { minX: -116, maxX: 116, minZ: KTX_LAST_LINE_Z + 1, maxZ: 222 };
     this.evacSpawnPoints = [];
 
     // 3. Midtown Concrete Canal dividing east/midtown + 2 Fortified Bridges (West Blvd x=-52 stays dry)
@@ -1352,8 +1355,12 @@ export class CityLayout {
     for (let r = 0; r < this.roadZs.length - 1; r++) {
       const z0 = this.roadZs[r];
       const z1 = this.roadZs[r + 1];
-      const cz = (z0 + z1) * 0.5;
-      const cellD = z1 - z0;
+      const northWall = this.wallDefs.find((wall) => wall.z === z0);
+      const southWall = this.wallDefs.find((wall) => wall.z === z1);
+      const parcelZ0 = northWall ? z0 + northWall.thickness / 2 + WALL_BUILDING_CLEARANCE : z0;
+      const parcelZ1 = southWall ? z1 - southWall.thickness / 2 - WALL_BUILDING_CLEARANCE : z1;
+      const cz = (parcelZ0 + parcelZ1) * 0.5;
+      const cellD = parcelZ1 - parcelZ0;
 
       for (let c = 0; c < this.roadXs.length - 1; c++) {
         const x0 = this.roadXs[c];
@@ -1361,8 +1368,8 @@ export class CityLayout {
         const cx = (x0 + x1) * 0.5;
         const cellW = x1 - x0;
 
-        // South Rail Terminal Plaza (z >= 168) stays open for tracks & canopies
-        if (z0 >= 168) {
+        // Leave the South Rail Terminal Plaza open beyond the final defense line.
+        if (z0 >= KTX_LAST_LINE_Z) {
           continue;
         }
 
@@ -1483,7 +1490,7 @@ export class CityLayout {
                   { x: -31, z: -154, flickerSeed: 4.1 }
                 ]
               );
-              // Gap (-151..-140) is a narrow 9.25m walkable brick alley with dumpsters!
+              // Keep the clinic and its walkable alley outside the wall clearance.
               const clinic = this.addBuilding({
                 id: `BLD-${bIndex++}`,
                 name: 'Northgate Brick Clinic',
@@ -1491,7 +1498,7 @@ export class CityLayout {
                 blockRow: r,
                 blockCol: c,
                 x: -34,
-                z: -135,
+                z: -138.5,
                 width: 19,
                 depth: 14.0,
                 height: 13.8,
@@ -1529,24 +1536,24 @@ export class CityLayout {
                   }
                 ],
                 [
-                  { minX: -39.5, maxX: -36.5, minZ: -139.2, maxZ: -138.1, height: 1.15, kind: 'counter' },
-                  { minX: -39.5, maxX: -35.8, minZ: -132.2, maxZ: -131.3, height: 0.72, kind: 'bench' },
-                  { minX: -28.2, maxX: -25.5, minZ: -139.5, maxZ: -137.8, height: 0.85, kind: 'bed' },
-                  { minX: -28.2, maxX: -25.5, minZ: -133.2, maxZ: -131.5, height: 0.85, kind: 'bed' }
+                  { minX: -39.5, maxX: -36.5, minZ: -142.7, maxZ: -141.6, height: 1.15, kind: 'counter' },
+                  { minX: -39.5, maxX: -35.8, minZ: -135.7, maxZ: -134.8, height: 0.72, kind: 'bench' },
+                  { minX: -28.2, maxX: -25.5, minZ: -143, maxZ: -141.3, height: 0.85, kind: 'bed' },
+                  { minX: -28.2, maxX: -25.5, minZ: -136.7, maxZ: -135, height: 0.85, kind: 'bed' }
                 ],
                 [
-                  { x: -38, z: -135, flickerSeed: 1.5 },
-                  { x: -30, z: -138, flickerSeed: 3.2 },
-                  { x: -30, z: -131.5, flickerSeed: 5.0 }
+                  { x: -38, z: -138.5, flickerSeed: 1.5 },
+                  { x: -30, z: -141.5, flickerSeed: 3.2 },
+                  { x: -30, z: -135, flickerSeed: 5.0 }
                 ]
               );
             } else {
-              populateOrganicBlock(r, c, x0, x1, z0, z1, 'Sector 1 • Outer Boulevard', 'ALLEY_PAIR');
+              populateOrganicBlock(r, c, x0, x1, parcelZ0, parcelZ1, 'Sector 1 • Outer Boulevard', 'ALLEY_PAIR');
             }
             continue;
           }
           if (c >= 5) {
-            populateOrganicBlock(r, c, x0, x1, z0, z1, 'Sector 1 • East Freight', 'INDUSTRIAL');
+            populateOrganicBlock(r, c, x0, x1, parcelZ0, parcelZ1, 'Sector 1 • East Freight', 'INDUSTRIAL');
           }
           continue;
         }
@@ -1573,7 +1580,7 @@ export class CityLayout {
               rng
             );
           } else {
-            populateOrganicBlock(r, c, x0, x1, z0, z1, 'Sector 2 • East Commercial', 'COURTYARD');
+            populateOrganicBlock(r, c, x0, x1, parcelZ0, parcelZ1, 'Sector 2 • East Commercial', 'COURTYARD');
           }
           continue;
         }
@@ -1635,7 +1642,7 @@ export class CityLayout {
           continue;
         }
 
-        // Sector 3 Precinct & South Parking (z = 48..168)
+        // Sector 3 Precinct & South Parking
         if (r === 8 && c === 3) {
           this.occupiedBlockKeys.add(`${r}:${c}`);
           this.precinctPos = { x: cx, z: cz + 14 };
@@ -1705,76 +1712,13 @@ export class CityLayout {
           c,
           x0,
           x1,
-          z0,
-          z1,
+          parcelZ0,
+          parcelZ1,
           z1 <= 48 ? 'Sector 2 • Midtown Commercial' : 'Sector 3 • South Residences',
           pattern
         );
       }
     }
-
-    // 3b. KTX South Terminal Walkable Concourse Hall (between Defense Line 3 z=168 and North Platform z=190)
-    const terminalHall = this.addBuilding({
-      id: 'BLD-KTX-HALL',
-      name: 'KTX Central Station Hall',
-      district: 'Line 3 • KTX Express Terminal',
-      blockRow: 10,
-      blockCol: 3,
-      x: 0,
-      z: 179.5,
-      width: 38,
-      depth: 11.5,
-      height: 7.4,
-      doorSide: 'N',
-      color: 0x334155,
-      accentColor: 0x22d3ee,
-      roofType: 'flat',
-      isShelterCapable: false,
-      shelterCapacity: 0
-    });
-    this.configureWalkableInterior(
-      terminalHall,
-      'terminal',
-      [
-        {
-          side: 'N',
-          offset: 0,
-          width: 4.2,
-          isGlass: true,
-          label: 'KTX Main Plaza Entrance'
-        },
-        {
-          side: 'S',
-          offset: -12,
-          width: 3.6,
-          isGlass: true,
-          label: 'KTX Platform Gate A (Train Car 3)'
-        },
-        {
-          side: 'S',
-          offset: 11,
-          width: 3.6,
-          isGlass: true,
-          label: 'KTX Platform Gate B'
-        }
-      ],
-      [
-        { minX: -16.8, maxX: -13.6, minZ: 177.2, maxZ: 181.2, height: 2.3, kind: 'ticket_booth' },
-        { minX: 13.6, maxX: 16.8, minZ: 177.2, maxZ: 181.2, height: 2.3, kind: 'ticket_booth' },
-        { minX: -2.4, maxX: 2.4, minZ: 178.9, maxZ: 179.6, height: 3.2, kind: 'departure_board' },
-        { minX: -10.5, maxX: -5.5, minZ: 179.0, maxZ: 179.7, height: 1.05, kind: 'turnstile' },
-        { minX: 5.5, maxX: 10.5, minZ: 179.0, maxZ: 179.7, height: 1.05, kind: 'turnstile' },
-        { minX: -8.6, maxX: -5.4, minZ: 181.8, maxZ: 182.7, height: 0.72, kind: 'bench' },
-        { minX: 5.4, maxX: 8.6, minZ: 181.8, maxZ: 182.7, height: 0.72, kind: 'bench' },
-        { minX: -12.6, maxX: -10.8, minZ: 176.2, maxZ: 181.2, height: 2.4, kind: 'escalator' },
-        { minX: 10.8, maxX: 12.6, minZ: 176.2, maxZ: 181.2, height: 2.4, kind: 'escalator' }
-      ],
-      [
-        { x: -10, z: 179.5, flickerSeed: 1.1 },
-        { x: 0, z: 179.5, flickerSeed: 2.7 },
-        { x: 10, z: 179.5, flickerSeed: 4.3 }
-      ]
-    );
 
     // 3c. Layered Urban Infrastructure: Elevated Cross-Town Expressway + Pedestrian Skybridges
     const overpassPillars = [-110, -72, -34, 6, 46, 84, 112].map((px) => ({ x: px, z: -80 }));
@@ -2302,14 +2246,30 @@ export class CityLayout {
     return false;
   }
 
-  private segmentHitsStaticOrBuilding(x1: number, z1: number, x2: number, z2: number): boolean {
-    if (this.segmentCrossesWater(x1, z1, x2, z2)) return true;
-    for (let t = 0.2; t <= 0.85; t += 0.2) {
-      const px = x1 + (x2 - x1) * t;
-      const pz = z1 + (z2 - z1) * t;
-      if (this.isNavPointBlocked(px, pz, 0.45)) return true;
+  private navBuildings: BuildingData[] = [];
+  private navObstacles: StaticObstacleData[] = [];
+
+  public isNavigationSegmentClear(x1: number, z1: number, x2: number, z2: number): boolean {
+    if (this.segmentCrossesWater(x1, z1, x2, z2)) return false;
+    const mx = (x1 + x2) * 0.5;
+    const mz = (z1 + z2) * 0.5;
+    const range = Math.hypot(x2 - x1, z2 - z1) * 0.5 + 0.6;
+    const pad = 0.53;
+    const hits = (box: { minX: number; maxX: number; minZ: number; maxZ: number }) =>
+      segmentIntersectsAABB(x1, z1, x2, z2, box.minX - pad, box.maxX + pad, box.minZ - pad, box.maxZ + pad);
+    for (const b of this.getBuildingsNearPos(mx, mz, this.navBuildings, range)) {
+      if (!hits(b)) continue;
+      if (!b.interior || b.interior.walls.some(hits) || b.interior.props.some(hits)) return false;
     }
-    return false;
+    for (const o of this.getObstaclesNearPos(mx, mz, this.navObstacles, range)) {
+      const cos = o.cosR ?? Math.cos(o.rotationY);
+      const sin = o.sinR ?? Math.sin(o.rotationY);
+      const ax = x1 - o.x, az = z1 - o.z, bx = x2 - o.x, bz = z2 - o.z;
+      const halfWidth = o.width * 0.5 + pad, halfDepth = o.depth * 0.5 + pad;
+      if (segmentIntersectsAABB(ax * cos - az * sin, ax * sin + az * cos,
+        bx * cos - bz * sin, bx * sin + bz * cos, -halfWidth, halfWidth, -halfDepth, halfDepth)) return false;
+    }
+    return true;
   }
 
   private buildOrganicNavigationGraph(): void {
@@ -2411,7 +2371,7 @@ export class CityLayout {
         // Prefer axis-aligned corridors or medium diagonals inside plazas/highways
         const isAligned = dx < 5.5 || dz < 5.5 || dist < 17.5;
         if (!isAligned) continue;
-        if (!this.segmentHitsStaticOrBuilding(a.x, a.z, b.x, b.z)) {
+        if (this.isNavigationSegmentClear(a.x, a.z, b.x, b.z)) {
           this.linkNodes(i, j);
         }
       }
@@ -2502,7 +2462,13 @@ export class CityLayout {
     }
   }
 
-  public findNearestNode(x: number, z: number): NavNode {
+  public findNearestNode(x: number, z: number, minZ = -Infinity, maxZ = Infinity): NavNode {
+    return this.findNearestMatchingNode(x, z, minZ, maxZ) ?? this.navNodes[0];
+  }
+
+  private findNearestMatchingNode(
+    x: number, z: number, minZ: number, maxZ: number, accept?: (node: NavNode) => boolean
+  ): NavNode | undefined {
     const maxCellC = Math.max(0, this.spatialCols - 1);
     const maxCellR = Math.max(0, this.spatialRows - 1);
     const col = Math.max(
@@ -2514,7 +2480,7 @@ export class CityLayout {
       Math.min(maxCellR, Math.floor((z + this.cityHalfZ) / SPATIAL_CELL_SIZE))
     );
 
-    let best = this.navNodes[0];
+    let best: NavNode | undefined;
     let bestDistSq = Infinity;
     const minR = Math.max(0, row - 1);
     const maxR = Math.min(maxCellR, row + 1);
@@ -2526,10 +2492,11 @@ export class CityLayout {
         const list = this.navCells[r][c];
         for (let i = 0; i < list.length; i++) {
           const n = list[i];
+          if (n.z < minZ || n.z >= maxZ) continue;
           const dx = n.x - x;
           const dz = n.z - z;
           const dSq = dx * dx + dz * dz;
-          if (dSq < bestDistSq) {
+          if (dSq < bestDistSq && (!accept || accept(n))) {
             bestDistSq = dSq;
             best = n;
           }
@@ -2541,10 +2508,11 @@ export class CityLayout {
 
     for (let i = 0; i < this.navNodes.length; i++) {
       const n = this.navNodes[i];
+      if (n.z < minZ || n.z >= maxZ) continue;
       const dx = n.x - x;
       const dz = n.z - z;
       const dSq = dx * dx + dz * dz;
-      if (dSq < bestDistSq) {
+      if (dSq < bestDistSq && (!accept || accept(n))) {
         bestDistSq = dSq;
         best = n;
       }
@@ -2565,11 +2533,24 @@ export class CityLayout {
     gates: BlastGateData[] = [],
     isZombie = false
   ): Vec2[] {
-    const startNode = this.findNearestNode(startX, startZ);
-    const goalNode = this.findNearestNode(goalX, goalZ);
-
+    const nearestForPath = (x: number, z: number) => {
+      let minZ = -Infinity;
+      let maxZ = Infinity;
+      for (const wall of walls) {
+        if (z >= wall.z) minZ = Math.max(minZ, wall.z);
+        else maxZ = Math.min(maxZ, wall.z);
+      }
+      return this.findNearestMatchingNode(x, z, minZ, maxZ, (node) =>
+        node.neighbors.length > 0 && Math.hypot(node.x - x, node.z - z) <= 45 &&
+        this.isNavigationSegmentClear(x, z, node.x, node.z));
+    };
+    const startNode = nearestForPath(startX, startZ);
+    const goalNode = nearestForPath(goalX, goalZ);
+    const crossesWall = walls.some((wall) => (startZ < wall.z) !== (goalZ < wall.z));
+    const canGoDirect = () => !crossesWall && this.isNavigationSegmentClear(startX, startZ, goalX, goalZ);
+    if (!startNode || !goalNode) return canGoDirect() ? [{ x: goalX, z: goalZ }] : [];
     if (startNode.id === goalNode.id) {
-      return [{ x: goalX, z: goalZ }];
+      return canGoDirect() ? [{ x: goalX, z: goalZ }] : [{ x: startNode.x, z: startNode.z }, { x: goalX, z: goalZ }];
     }
 
     this.searchStamp++;
@@ -2609,7 +2590,8 @@ export class CityLayout {
           curr = this.cameFrom[curr];
         }
         result.reverse();
-        result.push({ x: goalX, z: goalZ });
+        if (Math.hypot(startX - startNode.x, startZ - startNode.z) > 0.75) result.unshift({ x: startNode.x, z: startNode.z });
+        if (Math.hypot(goalNode.x - goalX, goalNode.z - goalZ) > 0.1) result.push({ x: goalX, z: goalZ });
         return result;
       }
 
@@ -2633,9 +2615,10 @@ export class CityLayout {
           const w = walls[wi];
           if ((current.z < w.z) !== (neighbor.z < w.z)) {
             let matchingGate: BlastGateData | null = null;
+            const x = current.x + (neighbor.x - current.x) * (w.z - current.z) / (neighbor.z - current.z);
             for (let gi = 0; gi < gates.length; gi++) {
               const g = gates[gi];
-              if (g.wallId === w.id && Math.abs(mx - g.x) <= g.width * 0.5 + 0.5) {
+              if (g.wallId === w.id && Math.abs(x - g.x) <= g.width * 0.5 - 0.55) {
                 matchingGate = g;
                 break;
               }
@@ -2644,8 +2627,12 @@ export class CityLayout {
               blockedBySolidWall = true;
               break;
             }
-            if (!matchingGate.isOpen && !matchingGate.breached) {
-              stepCost += isZombie ? 40 : 260;
+            if (!matchingGate.breached && (!matchingGate.isOpen || matchingGate.openFraction < 0.17)) {
+              if (!isZombie) {
+                blockedBySolidWall = true;
+                break;
+              }
+              if (!matchingGate.isOpen) stepCost += 40;
             }
           }
         }
@@ -2675,6 +2662,6 @@ export class CityLayout {
       }
     }
 
-    return [{ x: goalX, z: goalZ }];
+    return canGoDirect() ? [{ x: goalX, z: goalZ }] : [];
   }
 }

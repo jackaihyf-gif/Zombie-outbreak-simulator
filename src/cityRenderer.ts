@@ -1,6 +1,12 @@
+import { getTrainLayout, KTX_RAIL_EXTENSION, TRAIN_SEAT_SIDES, TRAIN_WIDTH } from './trainLayout';
 import * as THREE from 'three';
 import { BLOCK_PITCH, CityLayout, ROAD_WIDTH } from './cityData';
+import { BLAST_GATE_WIDTH, ladderZ, WALL_DECK_OVERHANG, WALL_DECK_REAR_TRIM, wallLadderXs,
+  WALL_DECK_RISE, wallRetreatLadderXs } from './perimeter';
+import { KTX_BOXES, KTX_FORECOURT_CROSSING, KTX_GATES, KTX_GATE_IDS, KTX_PLATFORM_Y, KTX_SURFACES,
+  type KtxGateId, type KtxGates, ktxGateBox, ktxSurfaceHeight } from './ktxTerminal';
 import {
+  AmmoCacheData,
   BlastGateData,
   BrokenWindowData,
   BuildingData,
@@ -135,6 +141,7 @@ export class CityRenderer {
 
   private gunBeamMat = new THREE.MeshBasicMaterial({ color: 0xfef08a, transparent: true, opacity: 0.92 });
   private gunFlashMat = new THREE.MeshBasicMaterial({ color: 0xfde047 });
+  private impactDustMat = new THREE.MeshBasicMaterial({ color: 0xc4b9a8, transparent: true, opacity: 0.72 });
   private reportRingMat = new THREE.MeshBasicMaterial({
     color: 0xf59e0b,
     side: THREE.DoubleSide,
@@ -195,6 +202,7 @@ export class CityRenderer {
     toneMapped: false
   });
   private barBgMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
+  private barGreenMat = new THREE.MeshBasicMaterial({ color: 0x4ade80 });
   private barOrangeMat = new THREE.MeshBasicMaterial({ color: 0xf97316 });
   private barRedMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
   private barPurpleMat = new THREE.MeshBasicMaterial({ color: 0xa855f7 });
@@ -209,7 +217,9 @@ export class CityRenderer {
   private fxShatterWoodInst!: THREE.InstancedMesh;
   private fxGunBeamInst!: THREE.InstancedMesh;
   private fxGunFlashInst!: THREE.InstancedMesh;
+  private fxImpactDustInst!: THREE.InstancedMesh;
   private barBgInst!: THREE.InstancedMesh;
+  private barGreenInst!: THREE.InstancedMesh;
   private barOrangeInst!: THREE.InstancedMesh;
   private barRedInst!: THREE.InstancedMesh;
   private barPurpleInst!: THREE.InstancedMesh;
@@ -290,7 +300,9 @@ export class CityRenderer {
     this.fxShatterWoodInst = this.createFxPool(this.dropletGeo, this.shatterWoodMat, 160);
     this.fxGunBeamInst = this.createFxPool(this.beamUnitGeo, this.gunBeamMat, 160);
     this.fxGunFlashInst = this.createFxPool(this.voxelUnitGeo, this.gunFlashMat, 160);
+    this.fxImpactDustInst = this.createFxPool(this.voxelUnitGeo, this.impactDustMat, 120);
     this.barBgInst = this.createFxPool(this.barUnitGeo, this.barBgMat, 160);
+    this.barGreenInst = this.createFxPool(this.barUnitGeo, this.barGreenMat, 32);
     this.barOrangeInst = this.createFxPool(this.barUnitGeo, this.barOrangeMat, 160);
     this.barRedInst = this.createFxPool(this.barUnitGeo, this.barRedMat, 160);
     this.barPurpleInst = this.createFxPool(this.barUnitGeo, this.barPurpleMat, 160);
@@ -325,7 +337,8 @@ export class CityRenderer {
     az: number,
     bx: number,
     by: number,
-    bz: number
+    bz: number,
+    thickness = 1
   ): void {
     this.tmpVecA.set(ax, ay, az);
     this.tmpVecB.set(bx, by, bz);
@@ -338,7 +351,7 @@ export class CityRenderer {
     this.tmpPos.copy(this.tmpVecA).add(this.tmpVecB).multiplyScalar(0.5);
     this.tmpMatrix.lookAt(this.tmpVecA, this.tmpVecB, THREE.Object3D.DEFAULT_UP);
     this.tmpQuat.setFromRotationMatrix(this.tmpMatrix);
-    this.tmpScale.set(1, 1, len);
+    this.tmpScale.set(thickness, thickness, len);
     this.tmpMatrix.compose(this.tmpPos, this.tmpQuat, this.tmpScale);
     inst.setMatrixAt(idx, this.tmpMatrix);
   }
@@ -593,6 +606,7 @@ export class CityRenderer {
     this.streetLampCones = [];
     this.priorityMesh = null;
     this.expressTrainGroup = null;
+    this.ktxShutters.clear();
     this.stationBeaconMat = null;
     this.trainDoorVisuals.clear();
     this.trainConsoleLightMat = null;
@@ -713,7 +727,7 @@ export class CityRenderer {
     if (tool === 'deploy_police') {
       radius = 3.2;
       color = 0x3b82f6;
-    } else if (tool === 'deploy_swat') {
+    } else if (tool === 'deploy_swat' || tool === 'deploy_hunters') {
       radius = 3.6;
       color = 0x06b6d4;
     } else if (tool === 'deploy_medic') {
@@ -875,6 +889,7 @@ export class CityRenderer {
 
     const buttressMat = new THREE.MeshStandardMaterial({ color: 0x262d38, roughness: 0.85 });
     const trimMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.65 });
+    const edgePaintMat = new THREE.MeshStandardMaterial({ color: 0xd4a33d, emissive: 0x52370d, emissiveIntensity: 0.32 });
     const steelMat = new THREE.MeshStandardMaterial({
       map: this.textureStudio.getBlastGateTexture(),
       color: 0xffffff,
@@ -893,7 +908,7 @@ export class CityRenderer {
 
     const wallSpanMin = -layout.cityHalfX - 10;
     const wallSpanMax = layout.cityHalfX + 10;
-    const gateWidth = 13.0;
+    const gateWidth = BLAST_GATE_WIDTH;
 
     for (const wd of layout.wallDefs) {
       const sortedGates = [...wd.gateXs].sort((a, b) => a - b);
@@ -934,66 +949,37 @@ export class CityRenderer {
         wallMesh.receiveShadow = true;
 
         const parapet = new THREE.Mesh(
-          new THREE.BoxGeometry(segW, 0.42, wd.thickness + 0.5),
+          new THREE.BoxGeometry(segW, WALL_DECK_RISE, wd.thickness + WALL_DECK_OVERHANG + WALL_DECK_REAR_TRIM),
           trimMat
         );
-        parapet.position.set(segCx, wd.height + 0.21, wd.z);
-        this.cityGroup.add(wallMesh, parapet);
+        parapet.position.set(segCx, wd.height + WALL_DECK_RISE / 2, wd.z + (WALL_DECK_REAR_TRIM - WALL_DECK_OVERHANG) / 2);
+        const edgePaint = new THREE.Mesh(new THREE.BoxGeometry(segW, 0.012, 0.11), edgePaintMat);
+        edgePaint.position.set(segCx, wd.height + WALL_DECK_RISE + 0.006, wd.z - wd.thickness / 2 - WALL_DECK_OVERHANG + 0.12);
+        this.cityGroup.add(wallMesh, parapet, edgePaint);
 
-        // Barbed wire horizontal rails + razor coils on parapet
+        // Mount the wire on the outer face below the deck sightline.
         const wireStrandGeo = new THREE.BoxGeometry(segW, 0.06, 0.06);
         const strand1 = new THREE.Mesh(wireStrandGeo, wireMat);
-        strand1.position.set(segCx, wd.height + 0.95, wd.z);
+        const wireZ = wd.z - wd.thickness / 2 - 0.12;
+        strand1.position.set(segCx, wd.height - 0.62, wireZ);
         const strand2 = new THREE.Mesh(wireStrandGeo, wireMat);
-        strand2.position.set(segCx, wd.height + 1.25, wd.z);
+        strand2.position.set(segCx, wd.height - 0.27, wireZ);
         this.cityGroup.add(strand1, strand2);
 
         const postCount = Math.max(3, Math.floor(segW / 5));
         for (let p = 0; p <= postCount; p++) {
           const px = seg.start + (p / postCount) * segW;
           const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.05, 0.14), wirePostMat);
-          post.position.set(px, wd.height + 0.92, wd.z);
+          post.position.set(px, wd.height - 0.57, wireZ);
           this.cityGroup.add(post);
         }
 
         for (let rx = seg.start + 1.0; rx <= seg.end - 1.0; rx += 1.65) {
           const coil = new THREE.Mesh(coilGeo, wireMat);
-          coil.position.set(rx, wd.height + 0.92, wd.z);
+          coil.position.set(rx, wd.height - 0.57, wireZ);
           coil.rotation.y = Math.PI * 0.35;
           coil.rotation.x = 0.15;
           this.cityGroup.add(coil);
-        }
-
-        // Stacked shipping containers & sandbag barricades dressing concrete wall for realistic military perimeter
-        const containerPalette = [0x3f6212, 0x9a3412, 0x1e3a8a, 0x854d0e];
-        const containerTex = this.textureStudio.getShippingContainerTexture();
-        if (segW >= 9.5 && wd.height >= 6) {
-          for (let cx = seg.start + 4.8; cx <= seg.end - 4.8; cx += 13.5) {
-            const ci = Math.abs(Math.round(cx + wd.z)) % containerPalette.length;
-            const cMat = new THREE.MeshStandardMaterial({
-              map: containerTex,
-              color: containerPalette[ci],
-              roughness: 0.72
-            });
-            const botBox = new THREE.Mesh(new THREE.BoxGeometry(6.2, 2.55, 2.45), cMat);
-            botBox.position.set(cx, 1.28, wd.z - wd.thickness * 0.5 - 1.35);
-            botBox.castShadow = true;
-            botBox.receiveShadow = true;
-            this.cityGroup.add(botBox);
-            if (((Math.abs(Math.round(cx)) + wd.layerIndex) % 2) === 0) {
-              const topBox = new THREE.Mesh(
-                new THREE.BoxGeometry(6.0, 2.45, 2.4),
-                new THREE.MeshStandardMaterial({
-                  map: containerTex,
-                  color: containerPalette[(ci + 1) % containerPalette.length],
-                  roughness: 0.74
-                })
-              );
-              topBox.position.set(cx + 0.15, 3.78, wd.z - wd.thickness * 0.5 - 1.35);
-              topBox.castShadow = true;
-              this.cityGroup.add(topBox);
-            }
-          }
         }
 
         // Buttress pillars along concrete wall
@@ -1010,14 +996,8 @@ export class CityRenderer {
         }
       }
 
-      // Sandbag material, military tents & red/white striped boom arm materials for realistic checkpoints
+      // Checkpoint sandbags and striped boom barriers
       const sandbagMat = new THREE.MeshStandardMaterial({ color: 0xa1885d, roughness: 0.94 });
-      const tentMat = new THREE.MeshStandardMaterial({
-        color: 0xe2e8f0,
-        emissive: 0xffedd5,
-        emissiveIntensity: 0.22,
-        roughness: 0.85
-      });
       const boomRedMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
       const boomWhiteMat = new THREE.MeshBasicMaterial({ color: 0xf8fafc });
       const towerConeMat = this.textureStudio.createVolumetricConeMaterial(0xfff1bf, 0.26);
@@ -1026,6 +1006,34 @@ export class CityRenderer {
       towerConeGeo.rotateX(Math.PI * 0.38);
 
       // Steel Blast Gate archways, hazard-striped sliding doors, watchtowers & boom gates
+      const ladderHeight = wd.height + WALL_DECK_RISE;
+      const ladderRail = new THREE.BoxGeometry(0.09, ladderHeight + 0.4, 0.09);
+      const ladderRung = new THREE.BoxGeometry(0.66, 0.075, 0.09);
+      const rungCount = Math.ceil(ladderHeight / 0.42) - 1;
+      const gateLadders = sortedGates.flatMap(wallLadderXs);
+      const retreatLadders = wallRetreatLadderXs(wallSpanMin, wallSpanMax, sortedGates);
+      const ladders = [...gateLadders, ...retreatLadders];
+      const ladderCount = ladders.length;
+      const rails = new THREE.InstancedMesh(ladderRail, trimMat, ladderCount * 2);
+      const rungs = new THREE.InstancedMesh(ladderRung, trimMat, ladderCount * rungCount);
+      const marker = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      const markers = new THREE.InstancedMesh(new THREE.BoxGeometry(0.65, 0.12, 0.12), marker, ladderCount * 2);
+      const transform = new THREE.Matrix4();
+      const gateMarker = new THREE.Color(0xeab65e);
+      const retreatMarker = new THREE.Color(0x67e8f9);
+      this.cityGroup.add(rails, rungs, markers);
+      for (const [ladderIndex, x] of ladders.entries()) {
+        const z = ladderZ(wd) - 0.2;
+        for (let side = 0; side < 2; side++) {
+          const dx = side === 0 ? -0.33 : 0.33;
+          rails.setMatrixAt(ladderIndex * 2 + side, transform.makeTranslation(x + dx, (ladderHeight + 0.4) / 2, z));
+          markers.setMatrixAt(ladderIndex * 2 + side, transform.makeTranslation(x, side === 0 ? 1.22 : ladderHeight + 0.12, z));
+          markers.setColorAt(ladderIndex * 2 + side, ladderIndex < gateLadders.length ? gateMarker : retreatMarker);
+        }
+        for (let rung = 0; rung < rungCount; rung++) {
+          rungs.setMatrixAt(ladderIndex * rungCount + rung, transform.makeTranslation(x, (rung + 1) * 0.42, z));
+        }
+      }
       for (const gx of sortedGates) {
         const gGroup = new THREE.Group();
         gGroup.position.set(gx, 0, wd.z);
@@ -1091,7 +1099,7 @@ export class CityRenderer {
         }
 
         // Flanking Sandbag Watchtower (left side) + Searchlight cone sweeping avenue
-        const towerX = -gateWidth * 0.5 - 3.0;
+        const towerX = Math.sign(gx || 1) * (gateWidth * 0.5 + 3.0);
         for (const lx of [-1.05, 1.05]) {
           for (const lz of [-1.05, 1.05]) {
             const leg = new THREE.Mesh(new THREE.BoxGeometry(0.28, 9.2, 0.28), wirePostMat);
@@ -1116,22 +1124,6 @@ export class CityRenderer {
         searchCone.visible = this.atmosphereStage !== 'day';
         this.streetLampCones.push(searchCone);
         gGroup.add(deck, sandbagWall, roof, searchHead, searchCone);
-
-        // Glowing White Quarantine Relief Tent behind checkpoint off the road lane
-        const tent = new THREE.Group();
-        tent.position.set(gateWidth * 0.5 + 4.4, 0, wd.thickness * 0.5 + 3.8);
-        const tentBody = new THREE.Mesh(new THREE.BoxGeometry(4.4, 2.3, 5.2), tentMat);
-        tentBody.position.y = 1.15;
-        tentBody.castShadow = true;
-        const tentRidge = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.65, 5.1), tentMat);
-        tentRidge.position.y = 2.6;
-        const crossMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
-        const crossH = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.32, 0.1), crossMat);
-        crossH.position.set(0, 1.65, -2.62);
-        const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.32, 1.1, 0.1), crossMat);
-        crossV.position.set(0, 1.65, -2.62);
-        tent.add(tentBody, tentRidge, crossH, crossV);
-        gGroup.add(tent);
 
         // Gate floodlight cones
         for (const fx of [-4.0, 4.0]) {
@@ -1353,9 +1345,13 @@ export class CityRenderer {
   private buildExpressRailAndTrain(layout: CityLayout): void {
     if (!layout.hasExpressRail) return;
 
-    const railSpan = layout.cityHalfX * 2 + 40;
+    const elevated = layout.mapId === 'citadel_express';
+    const extension = elevated ? KTX_RAIL_EXTENSION + getTrainLayout(true).carPitch * getTrainLayout(true).carCount : 0;
+    const railCenterX = extension * 0.5;
+    const railSpan = layout.cityHalfX * 2 + 40 + extension;
     const tracks = layout.railTracksZ.length > 0 ? layout.railTracksZ : [layout.railZ];
     const rz = layout.railZ;
+    const trackY = elevated ? KTX_PLATFORM_Y - 0.52 : 0;
 
     // Gravel ballast bed & sleepers for single or dual parallel tracks
     const sleeperMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.9 });
@@ -1368,19 +1364,19 @@ export class CityRenderer {
         new THREE.BoxGeometry(railSpan, 0.16, 6.2),
         new THREE.MeshStandardMaterial({ color: 0x242933, roughness: 0.95 })
       );
-      ballast.position.set(0, 0.08, tz);
+      ballast.position.set(railCenterX, trackY + 0.08, tz);
       this.cityGroup.add(ballast);
 
-      for (let sx = -layout.cityHalfX - 12; sx <= layout.cityHalfX + 12; sx += 2.2) {
+      for (let sx = -layout.cityHalfX - 12; sx <= layout.cityHalfX + 12 + extension; sx += 2.2) {
         const sleeper = new THREE.Mesh(sleeperGeo, sleeperMat);
-        sleeper.position.set(sx, 0.16, tz);
+        sleeper.position.set(sx, trackY + 0.16, tz);
         this.cityGroup.add(sleeper);
       }
 
       const railN = new THREE.Mesh(railGeo, railMat);
-      railN.position.set(0, 0.24, tz - 1.15);
+      railN.position.set(railCenterX, trackY + 0.24, tz - 1.15);
       const railS = new THREE.Mesh(railGeo, railMat);
-      railS.position.set(0, 0.24, tz + 1.15);
+      railS.position.set(railCenterX, trackY + 0.24, tz + 1.15);
       this.cityGroup.add(railN, railS);
     }
 
@@ -1459,19 +1455,13 @@ export class CityRenderer {
       this.cityGroup.add(platGroup);
     };
 
-    if (tracks.length > 1) {
-      // Multi-canopy KTX Terminal matching Organic Aerial Concept
-      for (const cx of [-42, 0, 42]) {
-        buildPlatformCanopy(cx, tracks[0] - 6.0, 32, true);
-      }
-      for (const cx of [-26, 26]) {
-        buildPlatformCanopy(cx, tracks[1] + 6.0, 34, false);
-      }
+    if (elevated) {
+      this.buildKtxBase(railSpan, railCenterX, layout.cityHalfX + 20 + extension);
     } else {
       buildPlatformCanopy(layout.stationPos.x, rz - 6.0, 34, true);
     }
 
-    // Hollow Walkable 3-Car KTX-101 High-Speed Express Train (Train to Busan Interior Endgame!)
+    // Walkable KTX train with inter-car doors and passenger seating.
     const trainGroup = new THREE.Group();
     const hullTex = this.textureStudio.getTrainHullTexture();
     const hullSideMat = new THREE.MeshStandardMaterial({
@@ -1512,16 +1502,18 @@ export class CityRenderer {
     trainConeGeo.rotateZ(Math.PI / 2);
     const trainConeMat = this.textureStudio.createVolumetricConeMaterial(0xfef08a, 0.24);
 
-    // Three 14.4m long x 4.2m wide walkable passenger cars + aerodynamic noses
-    const carCenters = [-15.0, 0, 15.0];
-    const carLength = 14.4;
-    const carWidth = 4.2;
+    const trainLayout = getTrainLayout(layout.mapId === 'citadel_express');
+    const { centers, carLength, seatRows, rearX, frontX } = trainLayout;
+    const carWidth = TRAIN_WIDTH;
     const wallH = 2.95;
+    const seatBases = new THREE.InstancedMesh(new THREE.BoxGeometry(0.66, 0.38, 0.49), seatBlueMat, trainLayout.capacity);
+    const seatBacks = new THREE.InstancedMesh(new THREE.BoxGeometry(0.22, 0.92, 0.49), seatTrimMat, trainLayout.capacity);
+    const seatMatrix = new THREE.Matrix4();
+    let seatIndex = 0;
 
-    for (let ci = 0; ci < carCenters.length; ci++) {
-      const cx = carCenters[ci];
-      const isCar3 = ci === 0;
-      const isCar1 = ci === 2;
+    for (const [ci, cx] of centers.entries()) {
+      const isRearCar = ci === 0;
+      const isFrontCar = ci === centers.length - 1;
 
       const floor = new THREE.Mesh(new THREE.BoxGeometry(carLength, 0.22, carWidth), floorMat);
       floor.position.set(cx, 0.12, 0);
@@ -1552,10 +1544,9 @@ export class CityRenderer {
       }
       trainGroup.add(floor, chassis, ceilLiner, roofShell);
 
-      // Build side walls with transparent windows (leave open boarding vestibule at Car 3 North wall: cx-1.8..cx+1.8 -> localX -16.8..-13.2)
+      // Leave the platform-side doorway open in the rear car.
       const buildSideWall = (zSide: number, isNorth: boolean) => {
-        if (isNorth && isCar3) {
-          // West wing (-22.2 .. -16.8) and East wing (-13.2 .. -7.8) flanking open Car 3 platform boarding door
+        if (isNorth && isRearCar) {
           for (const [segStart, segEnd] of [
             [cx - carLength * 0.5, cx - 1.8],
             [cx + 1.8, cx + carLength * 0.5]
@@ -1570,7 +1561,7 @@ export class CityRenderer {
             pane.position.set(scx, 1.82, zSide);
             trainGroup.add(knee, hdr, pane);
           }
-          // Glowing cyan boarding doorway frame + step threshold plate on North Car 3
+          // Glowing cyan boarding doorway frame + step threshold plate on the rear car
           const thresh = new THREE.Mesh(
             new THREE.BoxGeometry(3.6, 0.14, 1.35),
             new THREE.MeshBasicMaterial({ color: 0x22d3ee })
@@ -1602,7 +1593,7 @@ export class CityRenderer {
         trainGroup.add(rack);
         for (let si = 0; si < 3; si++) {
           const sx = cx - 4.4 + si * 4.2 + (rz < 0 ? 0.4 : -0.4);
-          if (isCar3 && rz < 0 && Math.abs(sx - cx) < 2.2) continue;
+          if (isRearCar && rz < 0 && Math.abs(sx - cx) < 2.2) continue;
           const sc = new THREE.Mesh(
             new THREE.BoxGeometry(1.1, 0.34, 0.52),
             new THREE.MeshStandardMaterial({
@@ -1615,36 +1606,23 @@ export class CityRenderer {
         }
       }
 
-      // Blue KTX passenger seat pairs flanking a wide clear central aisle (z = -0.92 .. +0.92 clear!)
-      for (let rx = -5.6; rx <= 5.6; rx += 2.15) {
-        const sx = cx + rx;
-        if (isCar3 && Math.abs(rx) < 2.1) {
-          // Only put South seats across from Car 3 boarding doorway so entry is effortless
-          const baseS = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.38, 0.96), seatBlueMat);
-          baseS.position.set(sx, 0.42, 1.46);
-          const backS = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.92, 0.96), seatTrimMat);
-          backS.position.set(sx - 0.24, 0.94, 1.46);
-          trainGroup.add(baseS, backS);
-          continue;
-        }
-        for (const sz of [-1.46, 1.46]) {
-          const base = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.38, 0.96), seatBlueMat);
-          base.position.set(sx, 0.42, sz);
-          const back = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.92, 0.96), seatTrimMat);
-          back.position.set(sx - 0.24, 0.94, sz);
-          trainGroup.add(base, back);
+      for (const row of seatRows) {
+        const sx = cx + row;
+        for (const sz of TRAIN_SEAT_SIDES) {
+          seatBases.setMatrixAt(seatIndex, seatMatrix.makeTranslation(sx, 0.42, sz));
+          seatBacks.setMatrixAt(seatIndex, seatMatrix.makeTranslation(sx - 0.24, 0.94, sz));
+          seatIndex++;
         }
       }
 
-      // Rear Endwall of Car 3
-      if (isCar3) {
+      if (isRearCar) {
         const rearWall = new THREE.Mesh(new THREE.BoxGeometry(0.25, wallH, carWidth), innerWallMat);
         rearWall.position.set(cx - carLength * 0.5, wallH * 0.5 + 0.12, 0);
         trainGroup.add(rearWall);
       }
 
       // Car 1 Front Conductor Safe Cabin Wall + Green Departure Console!
-      if (isCar1) {
+      if (isFrontCar) {
         const cabX = cx + carLength * 0.5 - 0.15;
         const cabWall = new THREE.Mesh(new THREE.BoxGeometry(0.32, wallH, carWidth), noseMat);
         cabWall.position.set(cabX, wallH * 0.5 + 0.12, 0);
@@ -1662,8 +1640,9 @@ export class CityRenderer {
       }
     }
 
-    // Two Inter-Car Connector Vestibules & Dynamic Sliding Glass Bulkhead Doors (x = -7.5, x = +7.5)
-    for (const [di, doorX] of [-7.5, 7.5].entries()) {
+    trainGroup.add(seatBases, seatBacks);
+
+    for (const [di, doorX] of trainLayout.bulkheads.entries()) {
       const doorId = di + 1;
       const gangwayFloor = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.2, carWidth), floorMat);
       gangwayFloor.position.set(doorX, 0.12, 0);
@@ -1722,7 +1701,7 @@ export class CityRenderer {
 
     // Streamlined KTX Aerodynamic Head (+X) & Tail (-X) Noses with Dual Headlights
     for (const dir of [-1, 1]) {
-      const endX = dir * 22.2;
+      const endX = dir < 0 ? rearX : frontX;
       const nose1 = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.3, 3.6), noseMat);
       nose1.position.set(endX + dir * 1.1, 1.38, 0);
       const nose2 = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.45, 2.8), noseMat);
@@ -1746,6 +1725,220 @@ export class CityRenderer {
     trainGroup.visible = false;
     this.cityGroup.add(trainGroup);
     this.expressTrainGroup = trainGroup;
+  }
+
+  private ktxShutters = new Map<KtxGateId, THREE.Mesh>();
+
+  private buildKtxBase(railSpan: number, railCenterX: number, railEndX: number): void {
+    const group = new THREE.Group();
+    const concrete = new THREE.MeshStandardMaterial({ color: 0x5b6370, roughness: 0.87 });
+    const tile = new THREE.MeshStandardMaterial({ color: 0x777986, roughness: 0.85 });
+    const steel = new THREE.MeshStandardMaterial({ color: 0x253546, roughness: 0.66 });
+    const gatePanel = new THREE.MeshStandardMaterial({ map: this.textureStudio.getBlastGateTexture(), metalness: 0.44, roughness: 0.65 });
+    const amber = new THREE.MeshBasicMaterial({ color: 0xf6b761 });
+    const cyan = new THREE.MeshBasicMaterial({ color: 0x5bd6e8 });
+    const seat = new THREE.MeshStandardMaterial({ color: 0x177082, roughness: 0.72 });
+    const cabinet = new THREE.MeshStandardMaterial({ color: 0x65746c, roughness: 0.77 });
+    const red = new THREE.MeshBasicMaterial({ color: 0xf05c54 });
+    const block = (x: number, y: number, z: number, width: number, height: number, depth: number, material: THREE.Material) => {
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+      mesh.position.set(x, y, z);
+      mesh.receiveShadow = true;
+      group.add(mesh);
+      return mesh;
+    };
+    const railing = (ax: number, az: number, bx: number, bz: number, y: number, endY = y) => {
+      const dx = bx - ax, dz = bz - az, dy = endY - y;
+      const length = Math.hypot(dx, dz, dy);
+      for (const h of [0.5, 1.02]) {
+        const bar = block((ax + bx) / 2, (y + endY) / 2 + h, (az + bz) / 2, 0.075, 0.06, length, steel);
+        bar.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(dx, dy, dz).normalize());
+      }
+      const posts = Math.max(1, Math.ceil(length / 3));
+      for (let i = 0; i <= posts; i++) {
+        const t = i / posts;
+        block(ax + dx * t, y + dy * t + 0.51, az + dz * t, 0.085, 1.03, 0.085, steel);
+      }
+    };
+    const sign = (x: number, y: number, z: number, width: number, name: string, detail: string, color = '#66dfed') => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 512;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d')!;
+      ctx.fillStyle = '#101d28';
+      ctx.fillRect(0, 0, 512, 128);
+      ctx.fillStyle = color;
+      ctx.fillRect(0, 0, 512, 7);
+      ctx.font = 'bold 48px "Microsoft YaHei", sans-serif';
+      ctx.fillText(name, 20, 61, 472);
+      ctx.font = '24px sans-serif';
+      ctx.fillStyle = '#e7f2f5';
+      ctx.fillText(detail, 20, 103, 472);
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      const height = width / 4;
+      block(x, y, z, width + 0.11, height + 0.08, 0.12, steel);
+      const panel = new THREE.Mesh(new THREE.PlaneGeometry(width, height),
+        new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide }));
+      panel.position.set(x, y, z - 0.065);
+      panel.rotation.y = Math.PI;
+      group.add(panel);
+    };
+    // The continuous deck sits on discrete piers. The service road stays open below it.
+    block(railCenterX, KTX_PLATFORM_Y - 0.91, 200, railSpan, 0.86, 13.8, concrete);
+    block(railCenterX, 0.04, 199, railSpan, 0.07, 4.9, steel);
+    const crossing = KTX_FORECOURT_CROSSING;
+    block(crossing.x, 2.94, crossing.z, 0.61, 0.32, crossing.width + 0.24, steel);
+    for (const z of [crossing.z - crossing.width / 2 + 0.53, crossing.z + crossing.width / 2 - 0.53]) {
+      block(crossing.x, 0.055, z, 4, 0.02, 0.095, cyan);
+      block(crossing.x, 2.69, z, 0.52, 0.08, 0.16, cyan);
+    }
+    for (let x = 140; x < railEndX - 3; x += 28) {
+      block(x, 2.75, 199, 2.3, 5.5, 3.2, concrete);
+    }
+    const checkpointX = railEndX - 5;
+    for (const z of [193.3, 206.7]) {
+      block(checkpointX, 8.55, z, 0.6, 5.1, 0.6, steel);
+      block(checkpointX, 9.8, z, 0.69, 0.45, 0.69, amber);
+    }
+    block(checkpointX, 11, 200, 0.68, 0.7, 14, steel);
+    sign(checkpointX - 3, 10.3, 193.24, 5.7, '隔离终点', 'KTX QUARANTINE CHECKPOINT', '#f6b761');
+    for (let x = -116; x < 118; x += 8) block(x, 0.082, 199, 3, 0.014, 0.08, amber);
+    for (const box of KTX_BOXES) {
+      const y = box.y ?? 0;
+      if (box.kind === 'bench') {
+        const alongZ = box.depth > box.width;
+        block(box.x, y + 0.43, box.z, box.width, 0.13, box.depth, seat);
+        block(box.x - (alongZ ? box.width * 0.38 : 0), y + 0.71, box.z + (alongZ ? 0 : box.depth * 0.37),
+          alongZ ? 0.12 : box.width, 0.45, alongZ ? box.depth : 0.12, seat);
+        for (const offset of [-0.32, 0.32]) {
+          block(box.x + (alongZ ? 0 : box.width * offset), y + 0.18, box.z + (alongZ ? box.depth * offset : 0),
+            0.18, 0.36, 0.18, steel);
+        }
+        continue;
+      }
+      if (box.kind === 'locker') {
+        block(box.x, y + box.height / 2, box.z, box.width, box.height, box.depth, cabinet);
+        const alongZ = box.depth > box.width;
+        for (let slot = -1; slot <= 1; slot++) {
+          const x = box.x + (alongZ ? -box.width / 2 - 0.013 : slot * box.width / 3);
+          const z = box.z + (alongZ ? slot * box.depth / 3 : -box.depth / 2 - 0.013);
+          block(x, y + box.height * 0.52, z, alongZ ? 0.043 : 0.19, 0.07, alongZ ? 0.19 : 0.043, amber);
+        }
+        continue;
+      }
+      block(box.x, y + box.height / 2, box.z, box.width, box.height, box.depth, box.kind === 'supply' ? steel : concrete);
+      block(box.x, y + Math.min(box.height - 0.17, 2.2), box.z - box.depth / 2 - 0.018,
+        Math.min(box.width * 0.56, 1.6), 0.13, 0.05, box.kind === 'wall' ? cyan : amber);
+    }
+    for (const surface of KTX_SURFACES) {
+      const { minX, maxX, minZ, maxZ, fromY, toY, id } = surface;
+      const x = (minX + maxX) / 2, z = (minZ + maxZ) / 2;
+      const width = maxX - minX, length = maxZ - minZ;
+      if (fromY !== toY) {
+        const steps = Math.ceil((toY - fromY) / 0.19);
+        for (let step = 0; step < steps; step++) {
+          const sz = minZ + (step + 0.5) * length / steps;
+          const y = ktxSurfaceHeight(surface, x, sz);
+          block(x, y - 0.16, sz, width, 0.34, length / steps + 0.015, tile);
+          block(x, y + 0.008, sz - length / steps * 0.3, width - 0.24, 0.021, 0.055, amber);
+        }
+        railing(minX, minZ, minX, maxZ, fromY, toY);
+        railing(maxX, minZ, maxX, maxZ, fromY, toY);
+      } else {
+        block(x, fromY - 0.28, z, width, 0.56, length, tile);
+        if (id === 'tower' || id.endsWith('landing')) {
+          railing(minX, minZ, minX, maxZ, fromY);
+          railing(maxX, minZ, maxX, maxZ, fromY);
+          block(x, fromY / 2 - 0.12, z, 0.58, fromY - 0.24, 0.65, steel);
+        }
+      }
+    }
+    // Rails leave deliberate apertures at both stairheads and the actual boarding door.
+    for (const [a, b] of [[-61, -57], [-50, 8], [24.5, 39], [49, 56]]) railing(a, 189, b, 189, KTX_PLATFORM_Y);
+    railing(8, 157.5, 24.5, 157.5, KTX_PLATFORM_Y);
+    for (const x of [8, 24.5]) railing(x, 157.5, x, 189, KTX_PLATFORM_Y);
+    const door = KTX_SURFACES[KTX_SURFACES.length - 1];
+    railing(-61, 194, door.minX, 194, KTX_PLATFORM_Y);
+    railing(door.maxX, 194, 56, 194, KTX_PLATFORM_Y);
+    railing(-61, 189, -61, 194, KTX_PLATFORM_Y);
+    railing(56, 189, 56, 194, KTX_PLATFORM_Y);
+    block(0, KTX_PLATFORM_Y + 0.015, 193.4, 113, 0.03, 0.12, amber);
+    for (const z of [189.35, 193.78]) block(-2.5, 6.008, z, 115, 0.012, 0.17, steel);
+    for (let x = -59; x < 55; x += 3) {
+      block(x, 6.007, 191.5, 0.025, 0.012, 3.7, steel);
+    }
+    for (const x of [-43, -23, -4, 17, 37, 53]) {
+      block(x, 7.85, 189.5, 0.26, 3.7, 0.26, steel);
+      block(x, 9.45, 191.1, 5.4, 0.17, 0.13, cyan);
+    }
+    block(5, 9.75, 191.15, 99, 0.28, 4.4, steel);
+    sign(-15, 8.55, 193.75, 4.2, '01 登车口', 'BOARDING  ·  TRACK 1');
+    sign(14, 8.65, 188.93, 5, '候车区', 'OPEN-AIR WAITING DECK');
+    sign(-44, 8.62, 191.1, 4.7, '西侧勤务通道', 'SERVICE ACCESS', '#f6b761');
+    sign(29, 3.14, 155.36, 5.3, '疏散入口  →', 'EVACUATION INTAKE');
+    for (const x of [24.45, 32.95]) {
+      block(x, 1.43, 155.37, 0.16, 2.86, 0.19, steel);
+      block(x, 2.66, 155.24, 0.29, 0.18, 0.14, cyan);
+    }
+
+    for (const id of KTX_GATE_IDS) {
+      const g = KTX_GATES[id];
+      const box = ktxGateBox(id);
+      const light = id === 'public' ? cyan : amber;
+      this.ktxShutters.set(id, block(g.x, g.y + box.height / 2, g.z, box.width, box.height, box.depth, gatePanel));
+      const alongX = g.axis === 'x';
+      for (const side of [-1, 1]) {
+        const offset = side * g.width / 2;
+        block(g.x + (alongX ? offset : 0), g.y + 1.53, g.z + (alongX ? 0 : offset), 0.47, 3.06, 0.47, steel);
+      }
+      block(g.x, g.y + 2.98, g.z, alongX ? g.width + 0.45 : 0.6, 0.34, alongX ? 0.6 : g.width + 0.45, steel);
+      if (alongX) {
+        block(g.x, g.y + 2.98, g.z - 0.31, g.width * 0.62, 0.115, 0.04, light);
+      } else {
+        for (const side of [-1, 1]) {
+          block(g.x + side * 0.31, g.y + 2.98, g.z, 0.04, 0.115, g.width * 0.64, light);
+        }
+      }
+    }
+
+    for (const x of [15.5, 46.4]) {
+      block(x, 2.6, 160.0, 9.4, 0.24, 5.6, steel);
+      for (const dx of [-4.4, 4.4]) for (const dz of [-2.5, 2.5]) block(x + dx, 1.25, 160.0 + dz, 0.17, 2.5, 0.17, steel);
+      for (const dz of [-1.25, 0.9]) {
+        block(x, 0.31, 160.0 + dz, 6.7, 0.33, 0.56, concrete);
+        block(x, 0.62, 160.28 + dz, 6.7, 0.43, 0.10, steel);
+      }
+      block(x, 2.43, 158.1, 5, 0.06, 0.11, cyan);
+    }
+    for (const x of [29.5, 34.5]) for (let z = 151.8; z < 166; z += 2.2) {
+      block(x, 0.05, z, 0.095, 0.025, 0.98, cyan);
+    }
+    for (let z = 154; z < 165.5; z += 2.2) block(-43, 0.05, z, 0.105, 0.025, 0.95, amber);
+    for (const x of [-62, -56]) for (const z of [161.4, 164.6]) {
+      block(x, 3.25, z, 0.28, 6.5, 0.28, steel);
+    }
+    railing(-64, 165, -54, 165, 4);
+    railing(-64, 161, -64, 165, 4);
+    railing(-54, 161, -54, 165, 4);
+    block(-59, 6.55, 163, 10.3, 0.26, 4.6, steel);
+    block(-59, 6.94, 161.85, 1.1, 0.54, 0.69, steel);
+    block(-59, 6.94, 161.48, 0.65, 0.28, 0.06, cyan);
+    const beamGeometry = new THREE.ConeGeometry(3.4, 15.5, 12, 1, true);
+    beamGeometry.translate(0, -7.75, 0);
+    const beam = new THREE.Mesh(beamGeometry, this.textureStudio.createVolumetricConeMaterial(0xa7dcff, 0.17));
+    beam.position.set(-59, 6.9, 161.5);
+    beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0.27, -0.41, -0.87).normalize());
+    group.add(beam);
+    block(47, 3.57, 176.18, 3.5, 1.14, 0.28, concrete);
+    block(47, 4.02, 176.02, 2.4, 0.095, 0.05, cyan);
+    block(53, 2.62, 157.5, 5.1, 0.23, 4.35, steel);
+    sign(53, 2.92, 155.65, 3.45, '医疗分诊', 'FIRST AID / TRIAGE', '#ff8377');
+    block(50.75, 1.67, 157.5, 0.06, 0.75, 0.22, red);
+    block(50.75, 1.67, 157.5, 0.06, 0.22, 0.75, red);
+    block(4, 2.56, 176, 8, 0.26, 5, steel);
+    sign(4, 1.84, 173.95, 3.8, '勤务仓库', 'SUPPLY / MAINTENANCE', '#f6b761');
+    this.cityGroup.add(group);
   }
 
   private buildRiversAndBridges(layout: CityLayout): void {
@@ -3473,7 +3666,9 @@ export class CityRenderer {
     walls: DefenseWallData[],
     gates: BlastGateData[],
     train: ExpressTrainData,
-    time: number
+    time: number,
+    layeredTerminal = false,
+    stationGates?: KtxGates
   ): void {
     // 1. Animate Blast Gates (sliding doors, checkpoint boom barrier arms & beacons)
     for (let i = 0; i < gates.length; i++) {
@@ -3492,21 +3687,24 @@ export class CityRenderer {
         vis.boomArmPivot.rotation.z = -0.22;
         vis.beaconMat.color.setHex(0xef4444);
       } else {
-        const targetOffset = g.isOpen ? g.width * 0.62 : g.width * 0.25;
-        vis.leftDoor.position.x += (-targetOffset - vis.leftDoor.position.x) * 0.22;
-        vis.rightDoor.position.x += (targetOffset - vis.rightDoor.position.x) * 0.22;
+        const doorOffset = g.width * (0.25 + g.openFraction * 0.25);
+        vis.leftDoor.position.x = -doorOffset;
+        vis.rightDoor.position.x = doorOffset;
         vis.leftDoor.rotation.z = 0;
         vis.rightDoor.rotation.z = 0;
-        const targetBoomAngle = g.isOpen ? 1.18 : 0.0;
-        vis.boomArmPivot.rotation.z += (targetBoomAngle - vis.boomArmPivot.rotation.z) * 0.2;
-        vis.beaconMat.color.setHex(g.isOpen ? 0x22c55e : 0xf59e0b);
+        vis.boomArmPivot.rotation.z = g.openFraction * 1.18;
+        vis.beaconMat.color.setHex(g.openFraction === 1 ? 0x22c55e : 0xf59e0b);
       }
     }
 
-    // 2. Sync Walkable 3-Car KTX Express Train + Dynamic Inter-Car Sliding Glass Bulkhead Doors
+    // 2. Sync Walkable KTX Express Train + Dynamic Inter-Car Sliding Glass Bulkhead Doors
     if (this.expressTrainGroup) {
       this.expressTrainGroup.visible = train.active && train.state !== 'COOLDOWN';
-      this.expressTrainGroup.position.set(train.x, 0.25, train.z);
+      this.expressTrainGroup.position.set(train.x, layeredTerminal ? KTX_PLATFORM_Y - 0.23 : 0.25, train.z);
+    }
+    for (const [id, mesh] of this.ktxShutters) {
+      const gate = stationGates?.[id];
+      mesh.visible = !!gate && !gate.open && gate.integrity > 0;
     }
     if (this.trainConsoleLightMat) {
       const pulse = Math.sin(time * 7) > 0;
@@ -3625,7 +3823,10 @@ export class CityRenderer {
     gridFlickerTimer = 0,
     blackoutMaxZ = -999,
     supplyPickups: SupplyPickupData[] = [],
-    insideTrainCar: 0 | 1 | 2 | 3 = 0
+    insideTrainCar = 0,
+    ammoCaches: AmmoCacheData[] = [],
+    fpCamY = 1.68,
+    stationGates?: KtxGates
   ): void {
     // 0a. Walkable Interior Doors (open swing, locked padlock/rattle, cracked glass stages, broken leaves)
     for (let di = 0; di < interiorDoors.length; di++) {
@@ -3715,10 +3916,10 @@ export class CityRenderer {
     } else if (isFirstPerson && insideTrainCar > 0) {
       this.interiorPointLight.color.setHex(0xffb570);
       this.interiorPointLight.distance = 16;
-      this.interiorPointLight.position.set(fpCamX, 2.75, 196.0);
+      this.interiorPointLight.position.set(fpCamX, fpCamY + 0.35, 196.0);
       this.interiorPointLight.intensity = 2.05;
       const bulkheadX = fpCamX < 0 ? -7.5 : 7.5;
-      this.trainRedPointLight.position.set(bulkheadX, 2.55, 196.0);
+      this.trainRedPointLight.position.set(bulkheadX, fpCamY + 0.15, 196.0);
       this.trainRedPointLight.intensity = 3.4;
     } else {
       this.interiorPointLight.intensity = 0;
@@ -3864,6 +4065,7 @@ export class CityRenderer {
     // 6. World-Space 3D Health & Durability Bars (InstancedMesh, hidden in FP immersion)
     this.worldBarsGroup.clear();
     let cBarBg = 0;
+    let cBarGreen = 0;
     let cBarOrange = 0;
     let cBarRed = 0;
     let cBarPurple = 0;
@@ -3873,14 +4075,17 @@ export class CityRenderer {
       bz: number,
       width: number,
       pct: number,
-      kind: 'orange' | 'red' | 'purple'
+      kind: 'green' | 'orange' | 'red' | 'purple'
     ) => {
       if (cBarBg < 160) {
         this.writeFxInstance(this.barBgInst, cBarBg++, bx, by, bz, width, 1, 1);
       }
-      const fillW = Math.max(0.05, width * pct);
+      if (pct <= 0) return;
+      const fillW = width * pct;
       const fx = bx - (width - fillW) * 0.5;
-      if (kind === 'orange' && cBarOrange < 160) {
+      if (kind === 'green' && cBarGreen < 32) {
+        this.writeFxInstance(this.barGreenInst, cBarGreen++, fx, by, bz, fillW, 1.15, 1.15);
+      } else if (kind === 'orange' && cBarOrange < 160) {
         this.writeFxInstance(this.barOrangeInst, cBarOrange++, fx, by, bz, fillW, 1.15, 1.15);
       } else if (kind === 'red' && cBarRed < 160) {
         this.writeFxInstance(this.barRedInst, cBarRed++, fx, by, bz, fillW, 1.15, 1.15);
@@ -3890,18 +4095,24 @@ export class CityRenderer {
     };
 
     if (!isFirstPerson) {
+      const gateColor = (pct: number, damagedAt: number) =>
+        pct <= 0.3 ? 'red' : pct <= 0.6 || time - damagedAt < 0.9 ? 'orange' : 'green';
+      for (const g of gates) {
+        const pct = g.breached ? 0 : g.integrity / g.maxIntegrity;
+        writeBar(g.x, 10.2, g.z, 8, pct, gateColor(pct, g.lastDamagedAt));
+      }
+      if (stationGates) {
+        for (const id of KTX_GATE_IDS) {
+          const { x, y, z, width } = KTX_GATES[id];
+          const gate = stationGates[id];
+          const pct = gate.integrity / gate.maxIntegrity;
+          writeBar(x, y + 3.65, z, Math.max(4, width * 0.82), pct, gateColor(pct, gate.lastDamagedAt));
+        }
+      }
       for (const rb of roadblocks) {
         if (!rb.active) continue;
         const pct = Math.max(0.05, rb.integrity / rb.maxIntegrity);
         writeBar(rb.x, 2.3, rb.z, 2.6, pct, pct > 0.5 ? 'orange' : 'red');
-      }
-
-      for (const g of gates) {
-        if (g.breached || g.isOpen) continue;
-        const pct = Math.max(0.05, g.integrity / g.maxIntegrity);
-        if (pct < 0.99) {
-          writeBar(g.x, 10.2, g.z, 8.0, pct, pct > 0.45 ? 'orange' : 'red');
-        }
       }
 
       for (const b of buildings) {
@@ -3922,6 +4133,7 @@ export class CityRenderer {
     let cBloodM = 0;
     let cGlass = 0;
     let cWood = 0;
+    let cImpactDust = 0;
     let cGunBeam = 0;
     let cGunFlash = 0;
 
@@ -4065,22 +4277,59 @@ export class CityRenderer {
     for (let ei = 0; ei < effects.length; ei++) {
       const ev = effects[ei];
       const t = Math.min(1, ev.age / ev.duration);
-      if (ev.type === 'gunshot' && ev.targetX !== undefined && ev.targetZ !== undefined) {
+      if (ev.type === 'player_shot' && ev.targetX !== undefined && ev.targetY !== undefined && ev.targetZ !== undefined) {
+        const y = ev.y ?? 1.68;
+        const dx = ev.targetX - ev.x;
+        const dy = ev.targetY - y;
+        const dz = ev.targetZ - ev.z;
+        const distance = Math.hypot(dx, dy, dz);
+        const travelTime = distance / 380;
+        const front = Math.min(distance, (ev.age + 0.006) * 380);
+        const rear = Math.max(0, (ev.age - 0.013) * 380);
+        if (distance > 0.06 && front > rear && cGunBeam < 160) {
+          const a = rear / distance;
+          const b = front / distance;
+          this.writeBeamInstance(this.fxGunBeamInst, cGunBeam++,
+            ev.x + dx * a, y + dy * a, ev.z + dz * a,
+            ev.x + dx * b, y + dy * b, ev.z + dz * b, 0.45);
+        }
+        const impactAge = ev.age - travelTime + 0.006;
+        if (ev.impact && impactAge >= 0 && impactAge < 0.21) {
+          const fade = 1 - impactAge / 0.21;
+          const offset = distance > 0.05 ? 0.055 / distance : 0;
+          for (let particle = 0; particle < 4; particle++) {
+            const angle = particle * 2.39 + ev.targetX * 0.17;
+            const spread = impactAge * (ev.impact === 'metal' ? 2.8 : 1.45);
+            const px = ev.targetX - dx * offset + Math.cos(angle) * spread;
+            const py = Math.max(0.24, ev.targetY - dy * offset + impactAge * (1.4 + particle * 0.45) - impactAge ** 2 * 5);
+            const pz = ev.targetZ - dz * offset + Math.sin(angle) * spread;
+            if (ev.impact === 'metal' && cGunFlash < 160) {
+              const size = 0.065 * fade;
+              this.writeFxInstance(this.fxGunFlashInst, cGunFlash++, px, py, pz, size, size * 1.7, size);
+            } else if (ev.impact === 'infected' && cBloodM < 600) {
+              this.writeFxInstance(this.fxBloodMidInst, cBloodM++, px, py, pz, fade * 0.72, fade * 0.85, fade * 0.72);
+            } else if (ev.impact === 'dust' && cImpactDust < 120) {
+              const size = (0.065 + impactAge * 0.35) * fade;
+              this.writeFxInstance(this.fxImpactDustInst, cImpactDust++, px, py, pz, size, size, size);
+            }
+          }
+        }
+      } else if (ev.type === 'gunshot' && ev.targetX !== undefined && ev.targetZ !== undefined) {
         if (cGunBeam < 160) {
           this.writeBeamInstance(
             this.fxGunBeamInst,
             cGunBeam++,
             ev.x,
-            1.35,
+            ev.y ?? 1.35,
             ev.z,
             ev.targetX,
-            1.15,
+            ev.targetY ?? 1.15,
             ev.targetZ
           );
         }
         if (cGunFlash < 160) {
           const fs = (1 - t * 0.5) * 0.28;
-          this.writeFxInstance(this.fxGunFlashInst, cGunFlash++, ev.x, 1.35, ev.z, fs, fs, fs);
+          this.writeFxInstance(this.fxGunFlashInst, cGunFlash++, ev.x, ev.y ?? 1.35, ev.z, fs, fs, fs);
         }
       } else if (ev.type === 'explosion') {
         const ballScale = 1.6 + Math.sin(t * Math.PI) * 5.2;
@@ -4203,7 +4452,7 @@ export class CityRenderer {
       } else if (ev.type === 'bite' || ev.type === 'convert') {
         const evSeed = Math.abs(Math.round(ev.x * 17 + ev.z * 31));
         const evKey = `${Math.round(ev.x * 4)}:${Math.round(ev.z * 4)}:${Math.floor((time - ev.age) * 2)}`;
-        if (!this.stampedBloodEvents.has(evKey)) {
+        if ((ev.y ?? 0) < 0.2 && !this.stampedBloodEvents.has(evKey)) {
           this.stampedBloodEvents.add(evKey);
           if (this.stampedBloodEvents.size > 400) this.stampedBloodEvents.clear();
           this.stampBloodStain(ev.x, ev.z);
@@ -4218,7 +4467,7 @@ export class CityRenderer {
           if (isFirstPerson && Math.hypot(px - fpCamX, pz - fpCamZ) < 1.15) {
             continue;
           }
-          const py = Math.max(0.08, 1.15 + vy * ageSec - 5.4 * ageSec * ageSec);
+          const py = Math.max(0.08, (ev.y ?? 0) + 1.15 + vy * ageSec - 5.4 * ageSec * ageSec);
           const s = Math.max(0.45, 1.25 - t * 0.65);
           if (b % 2 === 0) {
             if (cBloodD < 600) {
@@ -4236,6 +4485,7 @@ export class CityRenderer {
       if (count > 0) inst.instanceMatrix.needsUpdate = true;
     };
     syncPool(this.barBgInst, cBarBg);
+    syncPool(this.barGreenInst, cBarGreen);
     syncPool(this.barOrangeInst, cBarOrange);
     syncPool(this.barRedInst, cBarRed);
     syncPool(this.barPurpleInst, cBarPurple);
@@ -4249,6 +4499,7 @@ export class CityRenderer {
     syncPool(this.fxShatterWoodInst, cWood);
     syncPool(this.fxGunBeamInst, cGunBeam);
     syncPool(this.fxGunFlashInst, cGunFlash);
+    syncPool(this.fxImpactDustInst, cImpactDust);
 
     // 8. Interactive Urban Supply Pickups (hidden in Commander overview? Shown cleanly in both views!)
     const activePickupIds = new Set<number>();
@@ -4265,12 +4516,45 @@ export class CityRenderer {
       mesh.position.set(p.x, 0.72 + Math.sin(time * 3.4 + p.id) * 0.1, p.z);
       mesh.rotation.y = time * 1.6 + p.id;
     }
+    for (const cache of ammoCaches) {
+      activePickupIds.add(cache.id);
+      let mesh = this.pickupMeshes.get(cache.id);
+      if (!mesh) {
+        mesh = this.createAmmoCacheMesh();
+        this.pickupMeshes.set(cache.id, mesh);
+        this.tacticalGroup.add(mesh);
+      }
+      mesh.position.set(cache.x, cache.y + 0.25, cache.z);
+      const indicator = mesh.getObjectByName('ammo-ready');
+      if (indicator) indicator.visible = cache.readyAt <= time;
+    }
     for (const [id, mesh] of this.pickupMeshes.entries()) {
       if (!activePickupIds.has(id)) {
         this.tacticalGroup.remove(mesh);
         this.pickupMeshes.delete(id);
       }
     }
+  }
+
+  private createAmmoCacheMesh(): THREE.Group {
+    const group = new THREE.Group();
+    const casing = new THREE.MeshStandardMaterial({ color: 0x354447, roughness: 0.72 });
+    const paint = new THREE.MeshBasicMaterial({ color: 0xf8cd7a });
+    const crate = new THREE.Mesh(new THREE.BoxGeometry(1.04, 0.45, 0.66), casing);
+    const lid = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.09, 0.7), casing);
+    lid.position.y = 0.24;
+    crate.castShadow = true;
+    const indicator = new THREE.Group();
+    indicator.name = 'ammo-ready';
+    for (const x of [-0.22, 0, 0.22]) {
+      const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.035, 0.3), paint);
+      stripe.position.set(x, 0.30, 0);
+      indicator.add(stripe);
+    }
+    const face = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.12, 0.018), paint);
+    face.position.set(0, 0.08, 0.34);
+    group.add(crate, lid, face, indicator);
+    return group;
   }
 
   private createSupplyPickupMesh(kind: SupplyPickupData['kind']): THREE.Group {

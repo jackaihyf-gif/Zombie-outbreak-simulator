@@ -1,3 +1,11 @@
+import type { PlayerWeapon } from './types';
+
+const PLAYER_SHOT_SOUND: Record<PlayerWeapon, { length: number; tone: number; bass: number; gain: number }> = {
+  pistol: { length: 0.11, tone: 1950, bass: 145, gain: 0.33 },
+  carbine: { length: 0.095, tone: 1460, bass: 105, gain: 0.36 },
+  shotgun: { length: 0.19, tone: 870, bass: 74, gain: 0.46 }
+};
+
 /**
  * Web Audio API Procedural Sound Synthesizer for PROJECT OUTBREAK.
  * Synthesizes gunshots, SWAT shotgun blasts, radio dispatch chirps, medic cure chimes,
@@ -11,6 +19,7 @@ export class SoundEngine {
   private lastDoorPoundTime = 0;
   private heartbeatTimer = 0;
   private growlTimer = 0;
+  private playerNoise: AudioBuffer | null = null;
 
   private ensureContext(): AudioContext | null {
     if (!this.enabled) return null;
@@ -106,6 +115,60 @@ export class SoundEngine {
     gain.connect(ctx.destination);
     osc.start(t);
     osc.stop(t + 0.11);
+  }
+
+  public playPlayerShot(weapon: PlayerWeapon): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    if (!this.playerNoise) {
+      this.playerNoise = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.3), ctx.sampleRate);
+      const samples = this.playerNoise.getChannelData(0);
+      for (let i = 0; i < samples.length; i++) samples[i] = Math.random() * 2 - 1;
+    }
+    const profile = PLAYER_SHOT_SOUND[weapon];
+    const time = ctx.currentTime;
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.playerNoise;
+    const crack = ctx.createBiquadFilter();
+    crack.type = 'bandpass';
+    crack.frequency.setValueAtTime(profile.tone, time);
+    crack.frequency.exponentialRampToValueAtTime(380, time + profile.length);
+    crack.Q.value = 0.72;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(profile.gain, time);
+    gain.gain.exponentialRampToValueAtTime(0.004, time + profile.length);
+    noise.connect(crack).connect(gain).connect(ctx.destination);
+    noise.start(time, Math.random() * 0.075);
+    noise.stop(time + profile.length);
+
+    const thump = ctx.createOscillator();
+    thump.type = 'sine';
+    thump.frequency.setValueAtTime(profile.bass, time);
+    thump.frequency.exponentialRampToValueAtTime(profile.bass * 0.46, time + 0.075);
+    const low = ctx.createGain();
+    low.gain.setValueAtTime(profile.gain * 0.36, time);
+    low.gain.exponentialRampToValueAtTime(0.002, time + 0.075);
+    thump.connect(low).connect(ctx.destination);
+    thump.start(time);
+    thump.stop(time + 0.076);
+  }
+
+  public playReload(): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    for (const [offset, frequency] of [[0, 620], [0.12, 1050]]) {
+      const start = ctx.currentTime + offset;
+      const click = ctx.createOscillator();
+      click.type = 'triangle';
+      click.frequency.setValueAtTime(frequency, start);
+      click.frequency.exponentialRampToValueAtTime(frequency * 0.44, start + 0.045);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.055, start);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.045);
+      click.connect(gain).connect(ctx.destination);
+      click.start(start);
+      click.stop(start + 0.05);
+    }
   }
 
   public playMedicCure(x: number, z: number, camX: number, camZ: number, camDist: number): void {

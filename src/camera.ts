@@ -31,7 +31,11 @@ export class CameraController {
   public isFirstPerson = false;
   public fpYaw = Math.PI;
   public fpPitch = -0.02;
-  private fpLooking = false;
+  private fpDragButton = 0;
+  private fpAllowLeftDrag = true;
+  private fpIgnoreLockedMotionUntil = 0;
+  private fpBob = 0;
+  private fpRoll = 0;
   private domElement: HTMLElement;
 
   constructor(camera: THREE.PerspectiveCamera, domElement: HTMLElement) {
@@ -64,6 +68,24 @@ export class CameraController {
     return Math.max(210, Math.max(this.worldHalfX, this.worldHalfZ) * 2.1);
   }
 
+  private requestMouseLock(): void {
+    if (document.pointerLockElement === this.domElement) return;
+    try {
+      void Promise.resolve(this.domElement.requestPointerLock?.()).catch(() => {});
+    } catch {
+      // Locked mouse input may be unavailable in an embedded browser. Drag-to-look still works.
+    }
+  }
+
+  private resetInput(): void {
+    this.keysPressed.clear();
+    this.pendingKeyPresses.clear();
+    this.isOrbiting = false;
+    this.isPanning = false;
+    this.fpDragButton = 0;
+    this.fpIgnoreLockedMotionUntil = performance.now() + 75;
+  }
+
   private bindEvents(el: HTMLElement): void {
     el.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -71,8 +93,8 @@ export class CameraController {
       this.lastMouseX = e.clientX;
       this.lastMouseY = e.clientY;
       if (this.isFirstPerson) {
-        if (e.button === 0 || e.button === 2) {
-          this.fpLooking = true;
+        if (document.pointerLockElement !== el && (e.button === 2 || (e.button === 0 && this.fpAllowLeftDrag))) {
+          this.fpDragButton = e.button === 2 ? 2 : 1;
         }
         return;
       }
@@ -86,8 +108,8 @@ export class CameraController {
     });
 
     el.addEventListener('dblclick', () => {
-      if (this.isFirstPerson && document.pointerLockElement !== el) {
-        el.requestPointerLock?.();
+      if (this.isFirstPerson && this.fpAllowLeftDrag && document.pointerLockElement !== el) {
+        this.requestMouseLock();
       }
     });
 
@@ -98,13 +120,19 @@ export class CameraController {
       this.lastMouseY = e.clientY;
 
       if (this.isFirstPerson) {
-        if (document.pointerLockElement === el) {
-          this.fpYaw -= e.movementX * 0.0024;
-          this.fpPitch = Math.max(-1.15, Math.min(1.15, this.fpPitch - e.movementY * 0.0022));
-        } else if (this.fpLooking) {
-          this.fpYaw -= dx * 0.0055;
-          this.fpPitch = Math.max(-1.15, Math.min(1.15, this.fpPitch - dy * 0.0045));
+        const locked = document.pointerLockElement === el;
+        if (locked && performance.now() < this.fpIgnoreLockedMotionUntil) return;
+        if (!locked && (this.fpDragButton === 0 || (e.buttons & this.fpDragButton) === 0)) {
+          this.fpDragButton = 0;
+          return;
         }
+        const moveX = locked ? e.movementX : dx;
+        const moveY = locked ? e.movementY : dy;
+        if (!Number.isFinite(moveX) || !Number.isFinite(moveY) || Math.hypot(moveX, moveY) > 320) return;
+        const limit = locked ? 100 : 54;
+        this.fpYaw -= Math.max(-limit, Math.min(limit, moveX)) * (locked ? 0.0024 : 0.0042);
+        this.fpPitch = Math.max(-1.52, Math.min(1.15,
+          this.fpPitch - Math.max(-limit, Math.min(limit, moveY)) * (locked ? 0.0022 : 0.0038)));
         return;
       }
 
@@ -119,7 +147,7 @@ export class CameraController {
     window.addEventListener('mouseup', () => {
       this.isOrbiting = false;
       this.isPanning = false;
-      this.fpLooking = false;
+      this.fpDragButton = 0;
     });
 
     el.addEventListener(
@@ -137,8 +165,12 @@ export class CameraController {
     );
 
     window.addEventListener('keydown', (e) => {
-      if (document.activeElement?.tagName === 'INPUT') return;
+      if (document.activeElement?.matches('input, select, textarea, [contenteditable]')) return;
       const k = e.code === 'Space' ? ' ' : e.key.toLowerCase();
+      if (this.isFirstPerson && k === 'l' && !e.repeat) {
+        this.requestMouseLock();
+        return;
+      }
       if (this.isFirstPerson && k === ' ') {
         e.preventDefault();
       }
@@ -153,12 +185,12 @@ export class CameraController {
       this.keysPressed.delete(k);
     });
 
-    window.addEventListener('blur', () => {
-      this.keysPressed.clear();
-      this.pendingKeyPresses.clear();
-      this.isOrbiting = false;
-      this.isPanning = false;
-      this.fpLooking = false;
+    window.addEventListener('blur', () => this.resetInput());
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.resetInput();
+    });
+    document.addEventListener('pointerlockchange', () => {
+      if (this.isFirstPerson) this.resetInput();
     });
   }
 
@@ -209,12 +241,12 @@ export class CameraController {
     return this.autoDirectorMode;
   }
 
-  public setFirstPersonMode(active: boolean, initialYaw = Math.PI): void {
+  public setFirstPersonMode(active: boolean, initialYaw = Math.PI, armed = false): void {
     this.isFirstPerson = active;
-    this.isOrbiting = false;
-    this.isPanning = false;
-    this.fpLooking = false;
-    this.pendingKeyPresses.clear();
+    this.resetInput();
+    this.fpAllowLeftDrag = !armed;
+    this.fpBob = 0;
+    this.fpRoll = 0;
     if (active) {
       if (document.activeElement instanceof HTMLElement) {
         document.activeElement.blur();
@@ -245,6 +277,11 @@ export class CameraController {
     return false;
   }
 
+  public updateFirstPersonAim(dt: number): void {
+    if (this.keysPressed.has('arrowleft')) this.fpYaw += 1.9 * dt;
+    if (this.keysPressed.has('arrowright')) this.fpYaw -= 1.9 * dt;
+  }
+
   public updateFirstPerson(
     x: number,
     z: number,
@@ -255,17 +292,18 @@ export class CameraController {
     vaultY = 0,
     vaultRoll = 0
   ): void {
-    if (this.keysPressed.has('arrowleft')) this.fpYaw += 1.9 * dt;
-    if (this.keysPressed.has('arrowright')) this.fpYaw -= 1.9 * dt;
     const bob = isMoving
-      ? Math.sin(time * (sprinting ? 14 : 9)) * (sprinting ? 0.075 : 0.04)
-      : Math.sin(time * 1.8) * 0.008;
-    const roll = isMoving
-      ? Math.cos(time * (sprinting ? 7 : 4.5)) * (sprinting ? 0.012 : 0.005)
+      ? Math.sin(time * (sprinting ? 14 : 9)) * (sprinting ? 0.045 : 0.026)
       : 0;
-    this.camera.position.set(x, 1.68 + bob + vaultY, z);
+    const roll = isMoving
+      ? Math.cos(time * (sprinting ? 7 : 4.5)) * (sprinting ? 0.007 : 0.003)
+      : 0;
+    const blend = 1 - Math.exp(-16 * dt);
+    this.fpBob += (bob - this.fpBob) * blend;
+    this.fpRoll += (roll + vaultRoll * 0.5 - this.fpRoll) * blend;
+    this.camera.position.set(x, 1.68 + this.fpBob + vaultY, z);
     this.camera.rotation.order = 'YXZ';
-    this.camera.rotation.set(this.fpPitch, this.fpYaw, roll + vaultRoll);
+    this.camera.rotation.set(this.fpPitch, this.fpYaw, this.fpRoll);
   }
 
   public update(

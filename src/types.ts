@@ -1,3 +1,5 @@
+import type { KtxGateId } from './ktxTerminal';
+import type { TrainLayout } from './trainLayout';
 export type MapId =
   | 'citadel_express'
   | 'grand_metropolis'
@@ -9,6 +11,7 @@ export type ScenarioId =
   | 'patient_zero'
   | 'multi_epicenter'
   | 'horde_invasion'
+  | 'breach_siege'
   | 'delayed_response'
   | 'super_spreader'
   | 'no_intervention';
@@ -17,6 +20,7 @@ export type TacticalTool =
   | 'inspect'
   | 'deploy_police'
   | 'deploy_swat'
+  | 'deploy_hunters'
   | 'deploy_medic'
   | 'lure_flare'
   | 'frag_bomb'
@@ -63,6 +67,7 @@ export type PoliceState =
   | 'INVESTIGATING'
   | 'ENGAGING'
   | 'HOLDING_POSITION'
+  | 'CLIMBING'
   | 'RETREATING';
 
 export type MedicState =
@@ -147,6 +152,7 @@ export interface TrainBulkheadDoorData {
   integrity: number;
   maxIntegrity: number;
   lastHitTime: number;
+  manualUntil: number;
 }
 
 export interface ParkingLotFeature {
@@ -164,9 +170,11 @@ export interface BlastGateData {
   z: number;
   width: number;
   isOpen: boolean;
+  openFraction: number;
   breached: boolean;
   integrity: number;
   maxIntegrity: number;
+  lastDamagedAt: number;
   label: string;
 }
 
@@ -180,29 +188,29 @@ export interface DefenseWallData {
   label: string;
   layerIndex: number;
   breachedNotified: boolean;
+  pyramidBreachNotified: boolean;
   pyramidHeights: number[];
   bucketSize: number;
+  retreatLadderXs: number[];
 }
 
 export interface ExpressTrainData {
   active: boolean;
   x: number;
   z: number;
-  state: 'COOLDOWN' | 'APPROACHING' | 'DOCKED' | 'DEPARTING';
+  state: 'COOLDOWN' | 'APPROACHING' | 'DOCKED' | 'DEPARTING' | 'QUARANTINE';
   timer: number;
   boardedTotal: number;
   stationX: number;
   stationZ: number;
-  length: number;
-  carLength: number;
-  carWidth: number;
+  layout: TrainLayout;
+  currentLoad: number;
   carHeight: number;
   boardingDoorLocalX: number;
   cabinSwitchLocalX: number;
   doors: TrainBulkheadDoorData[];
-  playerInsideCar: 0 | 1 | 2 | 3;
+  playerInsideCar: number;
   playerDeparting: boolean;
-  departRideTimer: number;
 }
 
 export interface SupplyPickupData {
@@ -214,9 +222,54 @@ export interface SupplyPickupData {
   collected: boolean;
 }
 
+export interface AmmoCacheData {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+  readyAt: number;
+}
+
+export type PlayerRole = 'civilian' | 'police' | 'swat';
+export type PlayerWeapon = 'pistol' | 'shotgun' | 'carbine';
+
+export interface PlayerSpawnPoint extends Vec2 {
+  y: number;
+  wallId?: number;
+}
+
+export interface PlayerWeaponState {
+  id: PlayerWeapon;
+  ammo: number;
+  reserve: number;
+  cooldown: number;
+  reloadTimer: number;
+  shots: number;
+  lastHit: boolean;
+  hitTimer: number;
+}
+
+export interface PlayerMission {
+  kind: 'hold' | 'clear';
+  x: number;
+  y: number;
+  z: number;
+  district: string;
+  remaining: number;
+  hostiles: number;
+  totalTargets: number;
+  targetIds: number[];
+  complete: boolean;
+}
+
 export interface FirstPersonState {
   active: boolean;
   playerId: number | null;
+  role: PlayerRole;
+  weapon: PlayerWeaponState | null;
+  mission: PlayerMission | null;
+  killRewardProgress: number;
+  killRewardAmmo: number;
   yaw: number;
   pitch: number;
   stamina: number;
@@ -224,6 +277,7 @@ export interface FirstPersonState {
   sprinting: boolean;
   nearestZombieDist: number;
   nearbyGateId: number | null;
+  wallLadder: 'up' | 'down' | 'climbing' | null;
   nearbyDoorId: number | null;
   insideBuildingId: string | null;
   pursuers: number;
@@ -235,14 +289,16 @@ export interface FirstPersonState {
   nearbyVaultLabel: string | null;
   nearbyCarId: number | null;
   nearbyPickupId: number | null;
+  nearbyAmmoId: number | null;
   nearbyTrainDoorId: number | null;
+  nearbyKtxGate: KtxGateId | null;
   nearTrainCabinConsole: boolean;
-  insideTrainCar: 0 | 1 | 2 | 3;
+  insideTrainCar: number;
   waypointX: number;
   waypointZ: number;
   waypointLabel: string;
   spawnLabel: string;
-  outcome: 'PLAYING' | 'ESCAPED' | 'INFECTED' | null;
+  outcome: 'PLAYING' | 'ESCAPED' | 'INFECTED' | 'QUARANTINED' | null;
   survivalTime: number;
 }
 
@@ -360,6 +416,8 @@ export interface AgentData {
   name: string;
   role: AgentRole;
   isSwat: boolean;
+  isHunter?: boolean;
+  avoidsEvacuation?: boolean;
   zombieVariant: ZombieVariant;
   x: number;
   z: number;
@@ -367,6 +425,9 @@ export interface AgentData {
   vz: number;
   rotationY: number;
   climbY: number;
+  onWallDeck?: boolean;
+  wallAimPitch?: number;
+  onTerminalFloor?: boolean;
   convulseTimer: number;
   fallY: number;
   fallVy: number;
@@ -427,6 +488,7 @@ export interface AgentData {
   animPhase: number;
   isAlive: boolean;
   isEvacuated: boolean;
+  isTrainPassenger?: boolean;
   perceivedThreats: number;
   recentLogs: string[];
   lastProgressX: number;
@@ -505,6 +567,7 @@ export interface IncidentReport {
 export interface VisualEffectEvent {
   type:
     | 'gunshot'
+    | 'player_shot'
     | 'bite'
     | 'report_ring'
     | 'convert'
@@ -522,7 +585,9 @@ export interface VisualEffectEvent {
   dirX?: number;
   dirZ?: number;
   targetX?: number;
+  targetY?: number;
   targetZ?: number;
+  impact?: 'dust' | 'metal' | 'infected';
   age: number;
   duration: number;
 }
@@ -561,9 +626,9 @@ export interface SimulationStats {
   activeReports: number;
   commandPoints: number;
   hordeWave: number;
-  line1Status: 'HOLDING' | 'BREACHED' | 'NONE';
-  line2Status: 'HOLDING' | 'BREACHED' | 'NONE';
-  line3Status: 'HOLDING' | 'BREACHED' | 'NONE';
+  line1Status: 'HOLDING' | 'WITHDRAWN' | 'BREACHED' | 'NONE';
+  line2Status: 'HOLDING' | 'WITHDRAWN' | 'BREACHED' | 'NONE';
+  line3Status: 'HOLDING' | 'WITHDRAWN' | 'BREACHED' | 'NONE';
   trainBoarded: number;
   simTime: number;
   outbreakStatus: 'CITY NORMAL' | 'LOCAL INCIDENT' | 'ACTIVE OUTBREAK' | 'CONTAINED' | 'CRITICAL COLLAPSE';

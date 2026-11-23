@@ -1,8 +1,23 @@
+import { KTX_GATES, KTX_GATE_IDS } from './ktxTerminal';
 import { SoundEngine } from './audio';
 import { CameraController } from './camera';
 import { AtmosphereStage } from './cityRenderer';
-import { OutbreakSimulation } from './simulation';
-import { MapId, ScenarioConfig, ScenarioId, TacticalTool } from './types';
+import { OutbreakSimulation, SIEGE_WAVE_SIZES } from './simulation';
+import { GameLanguage, collectLocalizedLabels, PLAYER_ROLE_NAMES, translateCommanderOrder, translateGameplayAlert, translateWorldLabel, WEAPON_NAMES } from './localization';
+import { PLAYER_KILL_REWARD, PLAYER_LOADOUTS, PLAYER_WEAPONS } from './playerLoadouts';
+import { KTX_EMERGENCY_INFECTED } from './trainLayout';
+import { describeRadio } from './policeRadio';
+import type { RadioTransmission } from './policeRadio';
+import { AgentData, MapId, PlayerRole, PlayerSpawnPoint, PlayerWeapon, ScenarioConfig, ScenarioId, TacticalTool } from './types';
+
+interface GateStatus {
+  integrity: number;
+  maxIntegrity: number;
+  lastDamagedAt: number;
+  open: boolean;
+  breached?: boolean;
+  openFraction?: number;
+}
 
 export class UIController {
   public activeTool: TacticalTool = 'inspect';
@@ -36,6 +51,11 @@ export class UIController {
   private fpsDangerVignetteEl = document.getElementById('fps-danger-vignette')!;
   private fpsObjectiveEl = document.getElementById('fps-objective')!;
   private fpsTrainStatusEl = document.getElementById('fps-train-status')!;
+  private fpsCommanderStatusEl = document.getElementById('fps-commander-status')!;
+  private fpsMissionDetailEl = document.getElementById('fps-mission-detail')!;
+  private fpsKillRewardEl = document.getElementById('fps-kill-reward')!;
+  private fpsWeaponStatusEl = document.getElementById('fps-weapon-status')!;
+  private fpsCrosshairEl = document.getElementById('fps-crosshair')!;
   private fpsInteractPromptEl = document.getElementById('fps-interact-prompt')!;
   private fpsControlsHintEl = document.getElementById('fps-controls-hint')!;
   private fpsHpTextEl = document.getElementById('fps-hp-text')!;
@@ -46,6 +66,8 @@ export class UIController {
   private fpsOutcomeTitleEl = document.getElementById('fps-outcome-title')!;
   private fpsOutcomeDescEl = document.getElementById('fps-outcome-desc')!;
   private defenseLinesStatusEl = document.getElementById('defense-lines-status')!;
+  private defenseGateBarsEl = document.getElementById('defense-gate-bars')!;
+  private fpsGateBarEl = document.getElementById('fps-gate-bar')!;
 
   // Alert Toast
   private alertToastEl = document.getElementById('alert-toast')!;
@@ -62,6 +84,11 @@ export class UIController {
   private prioritySectorLabel = document.getElementById('priority-sector-label')!;
 
   private eventLogListEl = document.getElementById('event-log-list')!;
+  private radioPanel = document.querySelector<HTMLDetailsElement>('#police-radio')!;
+  private radioTitle = document.getElementById('police-radio-title')!;
+  private radioLog = document.getElementById('police-radio-log')!;
+  private radioRows = new Map<RadioTransmission, HTMLLIElement>();
+  private latestRadio?: RadioTransmission;
   private activeReportsCountEl = document.getElementById('active-reports-count')!;
   private lastRenderedEventId = -1;
 
@@ -77,6 +104,23 @@ export class UIController {
 
   // Modal Elements
   private modalEl = document.getElementById('scenario-modal')!;
+  private roleModalEl = document.getElementById('player-modal')!;
+  private roleForm = document.getElementById('player-form') as HTMLFormElement;
+  private loadoutRow = document.getElementById('player-loadout-row')!;
+  private loadoutSelect = document.getElementById('player-loadout') as HTMLSelectElement;
+  private loadoutInfo = document.getElementById('player-loadout-info')!;
+  private wasPausedBeforeRoles = false;
+  private roleOpener: HTMLElement | null = null;
+  private spawnPickerEl = document.getElementById('spawn-picker')!;
+  private spawnStatusEl = document.getElementById('spawn-picker-status')!;
+  private spawnConfirmBtn = document.getElementById('btn-confirm-spawn') as HTMLButtonElement;
+  private spawnSelection: { role: PlayerRole; weapon?: PlayerWeapon; point: PlayerSpawnPoint | null;
+    follow: boolean; director: boolean; invalid: boolean } | null = null;
+
+  public get isPickingSpawn(): boolean { return this.spawnSelection !== null; }
+  public get selectedSpawnPoint(): PlayerSpawnPoint | null { return this.spawnSelection?.point ?? null; }
+  private localizedLabels = collectLocalizedLabels();
+  private language: GameLanguage = 'zh';
   private inputSeedEl = document.getElementById('input-seed') as HTMLInputElement;
   private selectPopEl = document.getElementById('select-population') as HTMLSelectElement;
   private selectIncubEl = document.getElementById('select-incubation') as HTMLSelectElement;
@@ -99,10 +143,18 @@ export class UIController {
     this.onResetScenario = onResetScenario;
 
     this.bindEvents();
-    this.refreshUI();
+    try {
+      this.language = localStorage.getItem('outbreak-language') === 'en' ? 'en' : 'zh';
+    } catch {
+      // The in-game toggle still works when browser storage is unavailable.
+    }
+    this.applyLanguage();
   }
 
   private bindEvents(): void {
+    this.radioPanel.addEventListener('toggle', () => {
+      if (this.radioPanel.open) this.radioLog.scrollTop = this.radioLog.scrollHeight;
+    });
     const btnPlayPause = document.getElementById('btn-play-pause')!;
     const btnSpeed1 = document.getElementById('btn-speed-1')!;
     const btnSpeed2 = document.getElementById('btn-speed-2')!;
@@ -137,8 +189,44 @@ export class UIController {
       this.exitFirstPersonMode();
     });
     document.getElementById('btn-fps-respawn')!.addEventListener('click', () => {
-      this.enterFirstPersonMode();
+      this.openRolePicker();
     });
+
+    this.roleForm.addEventListener('change', (event) => {
+      if (event.target === this.loadoutSelect) this.refreshLoadoutInfo();
+      else this.refreshLoadoutOptions();
+    });
+    this.roleForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const role = this.selectedPlayerRole();
+      const weapon = this.loadoutSelect.value as PlayerWeapon | '';
+      this.closeRolePicker(false);
+      if (this.sim.firstPerson.active) this.exitFirstPersonMode();
+      this.enterFirstPersonMode('city', role, weapon || undefined);
+    });
+    document.getElementById('btn-cancel-player')!.addEventListener('click', () => this.closeRolePicker(true));
+    document.getElementById('btn-pick-spawn')!.addEventListener('click', () => this.beginSpawnSelection());
+    document.getElementById('btn-cancel-spawn')!.addEventListener('click', () => this.closeSpawnSelection(true));
+    this.spawnConfirmBtn.addEventListener('click', () => {
+      const selection = this.spawnSelection;
+      if (!selection?.point) return;
+      if (!this.sim.canSpawnPlayerAt(selection.point)) {
+        this.selectSpawnPoint(null);
+        return;
+      }
+      this.closeSpawnSelection(false);
+      this.enterFirstPersonMode('city', selection.role, selection.weapon, selection.point);
+    });
+    this.roleModalEl.addEventListener('click', (event) => {
+      if (event.target === this.roleModalEl) this.closeRolePicker(true);
+    });
+    for (const toggle of document.querySelectorAll<HTMLButtonElement>('[data-language-toggle]')) {
+      toggle.addEventListener('click', () => {
+        this.language = this.language === 'zh' ? 'en' : 'zh';
+        try { localStorage.setItem('outbreak-language', this.language); } catch { /* optional preference */ }
+        this.applyLanguage();
+      });
+    }
 
     this.btnAutoCam.addEventListener('click', () => {
       const on = this.cam.toggleAutoDirector();
@@ -203,8 +291,23 @@ export class UIController {
 
     // Keyboard shortcuts (1-9,0 for tools, F for Escape POV, Space for pause)
     window.addEventListener('keydown', (e) => {
-      if (document.activeElement?.tagName === 'INPUT') return;
+      if (this.isPickingSpawn) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          this.closeSpawnSelection(true);
+        }
+        return;
+      }
+      if (!this.roleModalEl.classList.contains('hidden')) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          this.closeRolePicker(true);
+        }
+        return;
+      }
+      if (document.activeElement?.matches('input, select, textarea')) return;
       if (e.key.toLowerCase() === 'f') {
+        if (e.repeat) return;
         e.preventDefault();
         this.toggleFirstPersonMode();
         return;
@@ -294,6 +397,7 @@ export class UIController {
     const mapCards = document.querySelectorAll<HTMLElement>('.map-card');
     mapCards.forEach((card) => {
       card.addEventListener('click', () => {
+        if (this.selectedModalScenario === 'breach_siege' && card.dataset.map !== 'citadel_express') return;
         mapCards.forEach((c) => c.classList.remove('selected'));
         card.classList.add('selected');
         this.selectedModalMap = card.dataset.map as MapId;
@@ -307,6 +411,12 @@ export class UIController {
         cards.forEach((c) => c.classList.remove('selected'));
         card.classList.add('selected');
         this.selectedModalScenario = card.dataset.scenario as ScenarioId;
+        const siege = this.selectedModalScenario === 'breach_siege';
+        if (siege) this.selectedModalMap = 'citadel_express';
+        mapCards.forEach((map) => {
+          map.classList.toggle('selected', map.dataset.map === this.selectedModalMap);
+          map.setAttribute('aria-disabled', String(siege && map.dataset.map !== 'citadel_express'));
+        });
       });
     });
 
@@ -325,7 +435,8 @@ export class UIController {
       const population = parseInt(this.selectPopEl.value, 10) || 600;
       const selectedIncub = parseInt(this.selectIncubEl.value, 10) || 7;
 
-      const isFastStrain = id === 'super_spreader' || id === 'wwz_busan';
+      const siege = id === 'breach_siege';
+      const isFastStrain = id === 'super_spreader' || id === 'wwz_busan' || siege;
       const newConfig: ScenarioConfig = {
         id,
         mapId,
@@ -334,11 +445,11 @@ export class UIController {
         incubationSeconds:
           id === 'super_spreader'
             ? 2.5
-            : id === 'wwz_busan'
+            : id === 'wwz_busan' || siege
             ? Math.min(selectedIncub, 2.8)
             : selectedIncub,
         initialPolice:
-          id === 'horde_invasion'
+          id === 'horde_invasion' || siege
             ? 24
             : id === 'wwz_busan'
             ? 22
@@ -346,7 +457,9 @@ export class UIController {
             ? 20
             : 18,
         initialInfected:
-          id === 'horde_invasion'
+          siege
+            ? SIEGE_WAVE_SIZES[0]
+            : id === 'horde_invasion'
             ? 55
             : id === 'wwz_busan'
             ? 18
@@ -358,9 +471,9 @@ export class UIController {
             ? 2
             : 1,
         dispatchDelaySeconds:
-          id === 'delayed_response' ? 35 : id === 'horde_invasion' || id === 'wwz_busan' ? 2 : 3,
+          id === 'delayed_response' ? 35 : id === 'horde_invasion' || id === 'wwz_busan' || siege ? 2 : 3,
         allowPlayerIntervention: id !== 'no_intervention',
-        enableWaves: id === 'horde_invasion' || id === 'wwz_busan',
+        enableWaves: id === 'horde_invasion' || id === 'wwz_busan' || siege,
         fastStrain: isFastStrain
       };
 
@@ -377,11 +490,148 @@ export class UIController {
     if (this.sim.firstPerson.active) {
       this.exitFirstPersonMode();
     } else {
-      this.enterFirstPersonMode();
+      this.openRolePicker();
     }
   }
 
-  public enterFirstPersonMode(preset: 'city' | 'ktx_terminal' = 'city'): void {
+  private t(english: string, chinese: string): string {
+    return this.language === 'zh' ? chinese : english;
+  }
+
+  private worldLabel(label: string): string {
+    return this.language === 'zh' ? translateWorldLabel(label) : label;
+  }
+
+  private siegeWaveStatus(): string {
+    const wave = this.sim.hordeWave;
+    const total = SIEGE_WAVE_SIZES.length;
+    const seconds = Math.max(0, Math.ceil(this.sim.nextWaveTimer));
+    return this.t(
+      `SIEGE ${wave}/${total}${seconds > 0 ? ` · Next in ${seconds}s` : ''}`,
+      `尸潮 ${wave}/${total}${seconds > 0 ? ` · 下一波 ${seconds} 秒` : ''}`
+    );
+  }
+
+  private applyLanguage(): void {
+    document.documentElement.lang = this.language === 'zh' ? 'zh-CN' : 'en';
+    for (const { element, english, chinese } of this.localizedLabels) element.textContent = this.t(english, chinese);
+    for (const button of document.querySelectorAll('[data-language-toggle]')) button.textContent = this.t('中文', 'English');
+    if (this.sim.lastAlert) {
+      const alert = this.sim.lastAlert.text;
+      this.alertToastEl.textContent = this.t(alert, translateGameplayAlert(alert));
+    }
+    this.refreshLoadoutOptions();
+    this.refreshSpawnSelection();
+    this.radioTitle.textContent = this.t('Police Radio', '警务频道');
+    this.latestRadio = undefined;
+    this.radioRows.clear();
+    this.radioLog.replaceChildren();
+    this.refreshUI();
+  }
+
+  private selectedPlayerRole(): PlayerRole {
+    return this.roleForm.querySelector<HTMLInputElement>('input[name="player-role"]:checked')!.value as PlayerRole;
+  }
+
+  private refreshLoadoutOptions(): void {
+    const weapons = PLAYER_LOADOUTS[this.selectedPlayerRole()];
+    const selected = this.loadoutSelect.value;
+    this.loadoutRow.hidden = weapons.length === 0;
+    this.loadoutSelect.replaceChildren(...weapons.map((id) => new Option(this.t(...WEAPON_NAMES[id]), id)));
+    if (weapons.includes(selected as PlayerWeapon)) this.loadoutSelect.value = selected;
+    this.refreshLoadoutInfo();
+  }
+
+  private refreshLoadoutInfo(): void {
+    const id = this.loadoutSelect.value as PlayerWeapon;
+    const weapon = PLAYER_WEAPONS[id];
+    this.loadoutInfo.textContent = weapon
+      ? this.t(`${weapon.capacity} loaded · ${weapon.reserve} in reserve`, `弹匣 ${weapon.capacity} 发 · 备弹 ${weapon.reserve} 发`)
+      : '';
+  }
+
+  private openRolePicker(): void {
+    this.roleOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    this.wasPausedBeforeRoles = this.isPaused;
+    if (!this.isPaused) this.togglePause();
+    this.modalEl.classList.add('hidden');
+    this.roleModalEl.classList.remove('hidden');
+    this.hudLayerEl.inert = true;
+    this.fpsHudEl.inert = true;
+    this.refreshLoadoutOptions();
+    this.roleForm.querySelector<HTMLInputElement>('input:checked')?.focus();
+  }
+
+  private closeRolePicker(cancelled: boolean): void {
+    this.roleModalEl.classList.add('hidden');
+    this.hudLayerEl.inert = false;
+    this.fpsHudEl.inert = false;
+    if (cancelled && !this.wasPausedBeforeRoles && this.isPaused) this.togglePause();
+    if (cancelled) this.roleOpener?.focus();
+  }
+
+  private beginSpawnSelection(): void {
+    const role = this.selectedPlayerRole();
+    const weapon = this.loadoutSelect.value as PlayerWeapon | '';
+    this.spawnSelection = { role, weapon: weapon || undefined, point: null,
+      follow: this.cam.followAgentMode, director: this.cam.autoDirectorMode, invalid: false };
+    this.closeRolePicker(false);
+    this.cam.followAgentMode = false;
+    this.cam.autoDirectorMode = false;
+    if (this.sim.firstPerson.active) {
+      const player = this.sim.getAgentById(this.sim.firstPerson.playerId);
+      this.cam.setFirstPersonMode(false);
+      if (player) this.cam.focusOn(player.x, player.z, 56);
+    }
+    this.fpsHudEl.classList.remove('active');
+    this.hudLayerEl.classList.add('hidden');
+    this.spawnPickerEl.hidden = false;
+    this.refreshSpawnSelection();
+    document.getElementById('btn-cancel-spawn')?.focus();
+  }
+
+  public selectSpawnPoint(point: PlayerSpawnPoint | null): void {
+    if (!this.spawnSelection) return;
+    this.spawnSelection.point = point;
+    this.spawnSelection.invalid = point === null;
+    this.refreshSpawnSelection();
+  }
+
+  private refreshSpawnSelection(): void {
+    if (!this.spawnSelection) return;
+    const { point, invalid } = this.spawnSelection;
+    this.spawnConfirmBtn.disabled = !point;
+    if (!point) {
+      this.spawnStatusEl.textContent = invalid
+        ? this.t('This location is blocked. Choose a walkable surface.', '该位置无法站立，请选择可通行的位置。')
+        : this.t('No location selected', '尚未选点');
+      return;
+    }
+    const district = this.worldLabel(this.sim.city.getDistrictAtPos(point.x, point.z));
+    this.spawnStatusEl.textContent = `${district} · X ${Math.round(point.x)} / Z ${Math.round(point.z)}${point.y > 0.05 ? ` · +${point.y.toFixed(1)} m` : ''}`;
+  }
+
+  private closeSpawnSelection(cancelled: boolean): void {
+    const selection = this.spawnSelection;
+    if (!selection) return;
+    this.spawnSelection = null;
+    this.spawnPickerEl.hidden = true;
+    if (!cancelled) return;
+    if (this.sim.firstPerson.active) {
+      this.cam.setFirstPersonMode(true, this.sim.firstPerson.yaw, Boolean(this.sim.firstPerson.weapon));
+      this.cam.fpPitch = this.sim.firstPerson.pitch;
+      this.fpsHudEl.classList.add('active');
+    } else {
+      this.cam.followAgentMode = selection.follow;
+      this.cam.autoDirectorMode = selection.director;
+      this.hudLayerEl.classList.remove('hidden');
+    }
+    if (!this.wasPausedBeforeRoles && this.isPaused) this.togglePause();
+    this.roleOpener?.focus();
+  }
+
+  public enterFirstPersonMode(preset: 'city' | 'ktx_terminal' = 'city', role: PlayerRole = 'civilian',
+    weapon?: PlayerWeapon, point?: PlayerSpawnPoint): void {
     this.modalEl.classList.add('hidden');
     if (this.isPaused) {
       this.togglePause();
@@ -391,8 +641,8 @@ export class UIController {
     document.getElementById('btn-speed-2')?.classList.remove('active');
     document.getElementById('btn-speed-5')?.classList.remove('active');
 
-    this.sim.enterFirstPerson(preset);
-    this.cam.setFirstPersonMode(true, this.sim.firstPerson.yaw);
+    this.sim.enterFirstPerson(preset, role, weapon, point);
+    this.cam.setFirstPersonMode(true, this.sim.firstPerson.yaw, Boolean(this.sim.firstPerson.weapon));
     this.hudLayerEl.classList.add('hidden');
     this.fpsHudEl.classList.add('active');
     this.btnFpsMode.classList.add('active');
@@ -429,6 +679,7 @@ export class UIController {
 
   public refreshUI(): void {
     const stats = this.sim.getStats();
+    this.refreshPoliceRadio();
 
     this.clockEl.textContent = this.sim.formatClock(stats.simTime);
     this.statHealthyEl.textContent = stats.healthy.toString();
@@ -442,11 +693,15 @@ export class UIController {
     this.btnAutoCam.classList.toggle('active', this.cam.autoDirectorMode);
 
     this.cpDisplayEl.textContent = this.sim.config.allowPlayerIntervention
-      ? `⚡ ${stats.commandPoints} CP`
-      : '🔒 LOCKED';
+      ? this.t(`⚡ ${stats.commandPoints} CP`, `⚡ ${stats.commandPoints} 指挥点`)
+      : this.t('🔒 LOCKED', '🔒 已锁定');
 
-    this.statusBadgeEl.textContent =
-      stats.hordeWave > 0 ? `WAVE ${stats.hordeWave} • ${stats.outbreakStatus}` : stats.outbreakStatus;
+    const outbreakStatus = this.worldLabel(stats.outbreakStatus);
+    this.statusBadgeEl.textContent = this.sim.config.id === 'breach_siege'
+      ? this.siegeWaveStatus()
+      : stats.hordeWave > 0
+      ? this.t(`WAVE ${stats.hordeWave}`, `第 ${stats.hordeWave} 波`) + ` • ${outbreakStatus}`
+      : outbreakStatus;
     this.statusBadgeEl.className = 'status-badge ';
     if (stats.outbreakStatus === 'CITY NORMAL') {
       this.statusBadgeEl.classList.add('status-normal');
@@ -461,24 +716,32 @@ export class UIController {
     this.activeReportsCountEl.textContent =
       stats.activeReports > 0 ? `(${stats.activeReports})` : '';
     this.prioritySectorLabel.textContent = this.sim.prioritySector
-      ? this.sim.prioritySector.district
-      : 'All Sectors';
+      ? this.worldLabel(this.sim.prioritySector.district)
+      : this.t('All Sectors', '全部区域');
 
     if (this.sim.defenseWalls.length > 0) {
-      const l1Color = stats.line1Status === 'HOLDING' ? '#22c55e' : '#ef4444';
-      const l2Color = stats.line2Status === 'HOLDING' ? '#22c55e' : '#ef4444';
-      const l3Color = stats.line3Status === 'HOLDING' ? '#22c55e' : '#ef4444';
+      const lineColor = (status: string) =>
+        status === 'BREACHED' ? '#ef4444' : status === 'WITHDRAWN' ? '#fbbf24' : '#22c55e';
+      const l1Color = lineColor(stats.line1Status);
+      const l2Color = lineColor(stats.line2Status);
+      const l3Color = lineColor(stats.line3Status);
       const l3Tag =
         stats.line3Status !== 'NONE'
-          ? ` • <span style="color:${l3Color};font-weight:700;">L3: ${stats.line3Status}</span>`
+          ? ` • <span style="color:${l3Color};font-weight:700;">${this.t('L3', '防线 3')} · ${this.worldLabel(stats.line3Status)}</span>`
           : '';
-      const trainTag = this.sim.city.hasExpressRail ? ` • 🚄 Boarded: ${stats.trainBoarded}` : '';
+      const train = this.sim.expressTrain;
+      const load = `${train.currentLoad}/${train.layout.capacity}`;
+      const quarantineTag = train.state === 'QUARANTINE'
+        ? ` • ${this.t('Quarantine', '隔离中')} ${Math.ceil(train.timer)}s · ${this.t('Infected', '感染者')} ${this.sim.countTrainInfected()}` : '';
+      const boardingThreat = this.sim.layeredKtx && train.state === 'DOCKED' ? this.trainInfectedStatus() : '';
+      const trainTag = this.sim.city.hasExpressRail ? ` • 🚄 ${this.t('Train load', '本班载客')} ${load} · ${this.t('Total boarded', '累计登车')} ${stats.trainBoarded}${boardingThreat}${quarantineTag}` : '';
       this.defenseLinesStatusEl.innerHTML =
-        `<span style="color:${l1Color};font-weight:700;">L1: ${stats.line1Status}</span> • ` +
-        `<span style="color:${l2Color};font-weight:700;">L2: ${stats.line2Status}</span>${l3Tag}${trainTag}`;
+        `<span style="color:${l1Color};font-weight:700;">${this.t('L1', '防线 1')} · ${this.worldLabel(stats.line1Status)}</span> • ` +
+        `<span style="color:${l2Color};font-weight:700;">${this.t('L2', '防线 2')} · ${this.worldLabel(stats.line2Status)}</span>${l3Tag}${trainTag}`;
     } else {
       this.defenseLinesStatusEl.textContent = '';
     }
+    this.refreshDefenseGateBars();
 
     if (this.sim.firstPerson.active) {
       this.refreshFirstPersonHud(stats.line1Status, stats.line2Status, stats.line3Status);
@@ -489,7 +752,8 @@ export class UIController {
       const ageMs = performance.now() - this.sim.lastAlert.timestamp;
       if (this.sim.lastAlert.timestamp !== this.lastShownAlertTime) {
         this.lastShownAlertTime = this.sim.lastAlert.timestamp;
-        this.alertToastEl.textContent = this.sim.lastAlert.text;
+        const alert = this.sim.lastAlert.text;
+        this.alertToastEl.textContent = this.t(alert, translateGameplayAlert(alert));
         this.alertToastEl.className = `alert-toast visible ${
           this.sim.lastAlert.severity === 'warn'
             ? 'sev-warn'
@@ -510,74 +774,128 @@ export class UIController {
     this.refreshInspector();
   }
 
+  public updateAimFeedback(hit: boolean): void {
+    this.fpsCrosshairEl.classList.toggle('hit', hit);
+  }
+
   private refreshFirstPersonHud(
     line1Status: string,
     line2Status: string,
     line3Status: string
   ): void {
     const fp = this.sim.firstPerson;
+    const order = this.sim.commanderOrder;
+    const waveSummary = this.sim.config.id === 'breach_siege' ? ` • ${this.siegeWaveStatus()}` : '';
+    this.fpsCommanderStatusEl.textContent = `${this.t('AI Commander', 'AI 指挥官')} · ${this.t(order, translateCommanderOrder(order))}${waveSummary}`;
     const player = this.sim.getAgentById(fp.playerId);
+    this.refreshNearbyGateBar(player);
+    const weapon = fp.weapon;
+    const mission = fp.mission;
+    const activeMission = mission && !mission.complete ? mission : null;
 
     const station = this.sim.city.stationPos;
-    const targetZ = fp.waypointZ || (station ? station.z : this.sim.city.cityHalfZ - 10);
-    const targetX = fp.waypointX ?? (station ? station.x : 0);
+    const targetZ = activeMission?.z ?? fp.waypointZ;
+    const targetX = activeMission?.x ?? fp.waypointX;
     const distToGoal = player ? Math.round(Math.hypot(player.x - targetX, player.z - targetZ)) : 0;
 
-    let compassArrow = '⬆';
-    if (player) {
-      const dx = targetX - player.x;
-      const dz = targetZ - player.z;
-      const fX = -Math.sin(fp.yaw);
-      const fZ = -Math.cos(fp.yaw);
-      const rX = Math.cos(fp.yaw);
-      const rZ = -Math.sin(fp.yaw);
-      const ang = Math.atan2(dx * rX + dz * rZ, dx * fX + dz * fZ);
-      if (Math.abs(ang) < 0.35) compassArrow = '⬆';
-      else if (ang >= 0.35 && ang < 1.15) compassArrow = '↗';
-      else if (ang >= 1.15 && ang < 2.0) compassArrow = '➡';
-      else if (ang >= 2.0 && ang < 2.65) compassArrow = '↘';
-      else if (ang <= -0.35 && ang > -1.15) compassArrow = '↖';
-      else if (ang <= -1.15 && ang > -2.0) compassArrow = '⬅';
-      else if (ang <= -2.0 && ang > -2.65) compassArrow = '↙';
-      else compassArrow = '⬇';
-    }
+    const compassArrow = player ? this.compassArrow(targetX - player.x, targetZ - player.z, fp.yaw) : '⬆';
 
     const insideBld = fp.insideBuildingId
       ? this.sim.city.buildingById.get(fp.insideBuildingId)
       : undefined;
     const locTag =
       fp.insideTrainCar > 0
-        ? ` • Inside: KTX Car ${fp.insideTrainCar}`
+        ? this.t(` • Inside KTX Car ${fp.insideTrainCar}`, ` · KTX ${fp.insideTrainCar} 号车厢`)
         : insideBld
-        ? ` • Inside: ${insideBld.name}`
+        ? ` • ${this.t('Inside', '室内')} · ${this.worldLabel(insideBld.name)}`
         : '';
-    const chaseTag = fp.pursuers > 0 ? ` • ⚠ ${fp.pursuers} CHASING` : ' • ✓ CLEAR';
-    const wpLabel = fp.waypointLabel || (this.sim.city.hasExpressRail ? 'South Express Station' : 'Evac Zone');
+    const chaseTag = fp.pursuers > 0
+      ? this.t(` • ⚠ ${fp.pursuers} CHASING`, ` · ⚠ ${fp.pursuers} 名感染者追击中`)
+      : this.t(' • ✓ CLEAR', ' · ✓ 暂时安全');
+    const wpLabel = this.worldLabel(fp.waypointLabel || (this.sim.city.hasExpressRail ? 'South Express Station' : 'Evac Zone'));
+    const distance = this.t(`${distToGoal}m`, `${distToGoal} 米`);
+    const roleName = this.t(...PLAYER_ROLE_NAMES[fp.role]);
+    this.fpsObjectiveEl.textContent = weapon
+      ? activeMission
+        ? `${compassArrow} ${activeMission.kind === 'hold' ? this.t('Hold', '守住') : this.t('Clear', '清剿')} · ${this.worldLabel(activeMission.district)} (${distance})${chaseTag}`
+        : `${roleName}${chaseTag}`
+      : `${compassArrow} ${wpLabel} (${distance})${locTag}${chaseTag}`;
+
+    const seconds = Math.ceil(activeMission?.remaining ?? 0);
+    const levelHint = activeMission && player && Math.abs(activeMission.y - player.climbY) > 1.5
+      ? activeMission.y > player.climbY ? this.t(' · Wall top', ' · 目标在墙顶') : this.t(' · Ground level', ' · 目标在地面')
+      : '';
+    this.fpsMissionDetailEl.textContent = !weapon ? ''
+      : activeMission
+      ? (activeMission.kind === 'hold'
+        ? this.t(`Hold within 10m for ${seconds}s`, `在目标 10 米内坚守 ${seconds} 秒`)
+        : activeMission.hostiles > 0
+        ? this.t(
+          `Marked infected ${activeMission.hostiles}/${activeMission.totalTargets} · eliminate or drive out`,
+          `标记目标剩余 ${activeMission.hostiles}/${activeMission.totalTargets} · 击杀或赶出目标区`
+        )
+        : this.t(`Area clear · verify from within 16m for ${seconds}s`, `区域已清理 · 在目标 16 米内确认 ${seconds} 秒`))
+        + levelHint + this.t(' · M Replace', ' · M 换任务')
+      : !this.sim.config.allowPlayerIntervention
+        ? this.t('Commander assignments disabled in this scenario', '这个场景关闭了指挥官任务')
+        : mission?.complete
+        ? this.t('Mission complete · ammunition resupplied · M for next assignment', '任务完成 · 已补充备弹 · M 接下一项任务')
+        : this.t('Press M to request an assignment', '按 M 向指挥官接取任务');
+
+    this.fpsKillRewardEl.hidden = !weapon;
+    this.fpsWeaponStatusEl.hidden = !weapon;
+    if (weapon) {
+      const progress = `${fp.killRewardProgress}/${PLAYER_KILL_REWARD.kills}`;
+      const reward = PLAYER_WEAPONS[weapon.id].capacity * PLAYER_KILL_REWARD.magazines;
+      const pending = fp.killRewardAmmo > 0
+        ? this.t(` · ${fp.killRewardAmmo} rounds banked`, ` · 已存 ${fp.killRewardAmmo} 发`)
+        : '';
+      this.fpsKillRewardEl.textContent = this.t(`Kill reward ${progress} · +${reward} rounds`, `击杀奖励 ${progress} · +${reward} 发`) + pending;
+      const ammo = `${weapon.ammo} / ${weapon.reserve}`;
+      const action = weapon.reloadTimer > 0
+        ? this.t(' · Reloading', ' · 换弹中')
+        : weapon.ammo === 0 && weapon.reserve === 0 ? this.t(' · Out of ammo', ' · 弹药耗尽') : '';
+      const stash = player && weapon.reserve < PLAYER_WEAPONS[weapon.id].capacity * 2
+        ? this.sim.findNearestAmmoCache(player, true)
+        : null;
+      let supply = '';
+      if (player && stash) {
+        const dx = stash.x - player.x;
+        const dz = stash.z - player.z;
+        const arrow = this.compassArrow(dx, dz, fp.yaw);
+        const meters = Math.round(Math.hypot(dx, dz));
+        supply = this.t(` · ${arrow} Ammo ${meters}m`, ` · ${arrow} 弹药箱 ${meters} 米`);
+      }
+      this.fpsWeaponStatusEl.textContent = `${roleName} · ${this.t(...WEAPON_NAMES[weapon.id])} · ${ammo}${action}${supply}`;
+    }
 
     if (this.sim.city.hasExpressRail && station) {
       const train = this.sim.expressTrain;
+      const trainSeconds = Math.max(0, Math.ceil(train.timer));
       const phaseLabel =
         train.state === 'DOCKED'
-          ? `BOARDING AT STATION (${Math.max(0, Math.ceil(train.timer))}s)`
+          ? this.t(`BOARDING AT STATION (${trainSeconds}s)`, `站台登车（${trainSeconds} 秒）`)
           : train.state === 'APPROACHING'
-          ? `INBOUND TO PLATFORM`
+          ? this.t('INBOUND TO PLATFORM', '正在进站')
           : train.state === 'DEPARTING'
-          ? `DEPARTING SOUTH`
-          : `NEXT TRAIN IN ${Math.max(0, Math.ceil(train.timer))}s`;
+          ? this.t(`IN TRANSIT (${trainSeconds}s)`, `行驶中（${trainSeconds} 秒）`)
+          : train.state === 'QUARANTINE'
+          ? this.t(`QUARANTINE (${trainSeconds}s)`, `终点隔离（${trainSeconds} 秒）`)
+          : this.t(`NEXT TRAIN IN ${trainSeconds}s`, `下一班 ${trainSeconds} 秒后到达`);
       const linesSummary =
         line3Status !== 'NONE'
-          ? `L1 ${line1Status} / L2 ${line2Status} / L3 ${line3Status}`
-          : `L1 ${line1Status} / L2 ${line2Status}`;
-      this.fpsObjectiveEl.textContent = `${compassArrow} ${wpLabel} (${distToGoal}m)${locTag}${chaseTag}`;
-      this.fpsTrainStatusEl.textContent = `KTX Express: ${phaseLabel} • ${linesSummary}`;
+          ? `1 ${this.worldLabel(line1Status)} / 2 ${this.worldLabel(line2Status)} / 3 ${this.worldLabel(line3Status)}`
+          : `1 ${this.worldLabel(line1Status)} / 2 ${this.worldLabel(line2Status)}`;
+      const load = `${train.currentLoad}/${train.layout.capacity}`;
+      const threat = this.trainInfectedStatus();
+      this.fpsTrainStatusEl.textContent = `${this.t('KTX Express', 'KTX 特快')} · ${phaseLabel} • ${this.t("Passengers", "载客")} ${load}${threat} • ${linesSummary}`;
     } else {
-      this.fpsObjectiveEl.textContent = `${compassArrow} ${wpLabel} (${distToGoal}m)${locTag}${chaseTag}`;
-      this.fpsTrainStatusEl.textContent = `Parkour Civilian Escape • Reach Evacuation Safely`;
+      this.fpsTrainStatusEl.textContent = weapon ? '' : this.t('Reach evacuation safely', '安全抵达撤离区');
     }
 
     const hpPct = player ? Math.max(0, Math.min(100, (player.health / player.maxHealth) * 100)) : 0;
     this.fpsHpTextEl.textContent = player?.isIncubating
-      ? `${Math.ceil(hpPct)} (INF)`
+      ? `${Math.ceil(hpPct)} ${this.t('(INF)', '（感染）')}`
       : `${Math.ceil(hpPct)}`;
     this.fpsHpFillEl.style.width = `${hpPct}%`;
     this.fpsHpFillEl.style.background = player?.isIncubating
@@ -589,7 +907,7 @@ export class UIController {
       : '#ef4444';
 
     const stamPct = Math.max(0, Math.min(100, (fp.stamina / fp.maxStamina) * 100));
-    this.fpsStamTextEl.textContent = fp.adrenalineTimer > 0 ? '⚡MAX' : `${Math.round(stamPct)}`;
+    this.fpsStamTextEl.textContent = fp.adrenalineTimer > 0 ? this.t('⚡MAX', '⚡满') : `${Math.round(stamPct)}`;
     this.fpsStamFillEl.style.width = `${stamPct}%`;
     this.fpsStamFillEl.style.background = fp.adrenalineTimer > 0 ? '#22d3ee' : '#38bdf8';
 
@@ -615,47 +933,81 @@ export class UIController {
       fp.nearbyGateId !== null
         ? this.sim.blastGates.find((g) => g.id === fp.nearbyGateId && !g.breached)
         : undefined;
+    const ammoCache = weapon ? this.sim.ammoCaches.find((cache) => cache.id === fp.nearbyAmmoId) : undefined;
 
-    if (fp.nearTrainCabinConsole) {
-      this.fpsInteractPromptEl.textContent = 'Press [E] to TRIGGER KTX-101 EMERGENCY DEPARTURE (CAR 1)';
+    if (fp.wallLadder) {
+      const message = fp.wallLadder === 'up'
+        ? this.t('Press [E] to climb onto the wall', '按 E 登上城墙')
+        : fp.wallLadder === 'down'
+        ? this.t('Press [E] to climb down', '按 E 沿梯子下墙')
+        : this.t('Climbing…', '正在攀爬…');
+      this.fpsInteractPromptEl.textContent = message;
+      this.fpsInteractPromptEl.style.borderColor = '#f59e0b';
+      this.fpsInteractPromptEl.style.color = '#fde68a';
+      this.fpsInteractPromptEl.style.display = 'block';
+    } else if (ammoCache && weapon) {
+      const cooldown = Math.max(0, Math.ceil(ammoCache.readyAt - this.sim.simTime));
+      const full = weapon.ammo === PLAYER_WEAPONS[weapon.id].capacity && weapon.reserve === PLAYER_WEAPONS[weapon.id].reserve;
+      this.fpsInteractPromptEl.textContent = cooldown > 0
+        ? this.t(`Ammo cache ready in ${cooldown}s`, `弹药箱 ${cooldown} 秒后恢复`)
+        : full
+          ? this.t('Ammo full', '弹药已满')
+          : this.t('Press [E] to refill ammo', '按 E 补满弹药');
+      this.fpsInteractPromptEl.style.borderColor = '#eab65e';
+      this.fpsInteractPromptEl.style.color = '#fde68a';
+      this.fpsInteractPromptEl.style.display = 'block';
+    } else if (fp.nearbyKtxGate) {
+      const name = this.worldLabel(KTX_GATES[fp.nearbyKtxGate].label);
+      this.fpsInteractPromptEl.textContent = this.sim.ktxGates[fp.nearbyKtxGate].open
+        ? this.t('Press [E] to close ' + name, '按 E 关闭' + name)
+        : this.t('Press [E] to open ' + name, '按 E 打开' + name);
+      this.fpsInteractPromptEl.style.borderColor = '#f59e0b';
+      this.fpsInteractPromptEl.style.color = '#fde68a';
+      this.fpsInteractPromptEl.style.display = 'block';
+    } else if (fp.nearTrainCabinConsole) {
+      this.fpsInteractPromptEl.textContent = this.t('Press [E] for emergency KTX departure', '按 E 启动 KTX 紧急发车');
       this.fpsInteractPromptEl.style.borderColor = '#22c55e';
       this.fpsInteractPromptEl.style.color = '#bbf7d0';
       this.fpsInteractPromptEl.style.display = 'block';
     } else if (trainDoor) {
       const pct = Math.max(1, Math.ceil((trainDoor.integrity / trainDoor.maxIntegrity) * 100));
-      this.fpsInteractPromptEl.textContent = trainDoor.isLocked
-        ? `Press [E] to UNLOCK ${trainDoor.label} (${pct}%)`
-        : `Press [E] to LOCK ${trainDoor.label} (${pct}%)`;
+      this.fpsInteractPromptEl.textContent = this.t(
+        `Press [E] to ${trainDoor.isLocked ? 'UNLOCK' : 'LOCK'} ${trainDoor.label} (${pct}%)`,
+        `按 E ${trainDoor.isLocked ? '解锁' : '锁上'} ${this.worldLabel(trainDoor.label)}（${pct}%）`
+      );
       this.fpsInteractPromptEl.style.borderColor = '#f59e0b';
       this.fpsInteractPromptEl.style.color = '#fde68a';
       this.fpsInteractPromptEl.style.display = 'block';
     } else if (pickup) {
-      this.fpsInteractPromptEl.textContent = `Press [E] to Grab ${pickup.label}`;
+      this.fpsInteractPromptEl.textContent = this.t(`Press [E] to grab ${pickup.label}`, `按 E 拾取 ${this.worldLabel(pickup.label)}`);
       this.fpsInteractPromptEl.style.borderColor = '#22c55e';
       this.fpsInteractPromptEl.style.color = '#bbf7d0';
       this.fpsInteractPromptEl.style.display = 'block';
     } else if (door) {
       const pct = Math.max(1, Math.ceil((door.integrity / door.maxIntegrity) * 100));
-      this.fpsInteractPromptEl.textContent = door.isLocked
-        ? `Press [E] to UNLOCK ${door.label} (${pct}%)`
-        : `Press [E] to LOCK ${door.label} (${pct}%)`;
+      this.fpsInteractPromptEl.textContent = this.t(
+        `Press [E] to ${door.isLocked ? 'UNLOCK' : 'LOCK'} ${door.label} (${pct}%)`,
+        `按 E ${door.isLocked ? '解锁' : '锁上'} ${this.worldLabel(door.label)}（${pct}%）`
+      );
       this.fpsInteractPromptEl.style.borderColor = '#f59e0b';
       this.fpsInteractPromptEl.style.color = '#fde68a';
       this.fpsInteractPromptEl.style.display = 'block';
     } else if (gate) {
-      this.fpsInteractPromptEl.textContent = gate.isOpen
-        ? `Press [E] to SEAL ${gate.label}`
-        : `Press [E] to OPEN ${gate.label}`;
+      const closing = !gate.isOpen && gate.openFraction > 0;
+      this.fpsInteractPromptEl.textContent = this.t(
+        `${closing ? 'CLOSING · ' : ''}Press [E] to ${gate.isOpen ? 'SEAL' : 'OPEN'} ${gate.label}`,
+        `${closing ? '关闭中 · ' : ''}按 E ${gate.isOpen ? '关闭' : '开启'}${this.worldLabel(gate.label)}`
+      );
       this.fpsInteractPromptEl.style.borderColor = '#f59e0b';
       this.fpsInteractPromptEl.style.color = '#fde68a';
       this.fpsInteractPromptEl.style.display = 'block';
     } else if (fp.nearbyCarId !== null) {
-      this.fpsInteractPromptEl.textContent = `Press [E] to Trigger Car Alarm (Distract Horde)`;
+      this.fpsInteractPromptEl.textContent = this.t('Press [E] to trigger car alarm', '按 E 触发汽车警报，引开尸群');
       this.fpsInteractPromptEl.style.borderColor = '#f59e0b';
       this.fpsInteractPromptEl.style.color = '#fde68a';
       this.fpsInteractPromptEl.style.display = 'block';
     } else if (fp.nearbyVaultLabel) {
-      this.fpsInteractPromptEl.textContent = `Press [Space] to VAULT OVER ${fp.nearbyVaultLabel}`;
+      this.fpsInteractPromptEl.textContent = this.t(`Press [Space] to vault over ${fp.nearbyVaultLabel}`, `按空格翻越 ${this.worldLabel(fp.nearbyVaultLabel)}`);
       this.fpsInteractPromptEl.style.borderColor = '#38bdf8';
       this.fpsInteractPromptEl.style.color = '#bae6fd';
       this.fpsInteractPromptEl.style.display = 'block';
@@ -665,31 +1017,65 @@ export class UIController {
 
     const spaceTag =
       fp.nearbyVaultLabel !== null
-        ? 'Space Vault'
+        ? this.t('Space Vault', '空格翻越')
         : fp.shoveCooldown > 0
-        ? `Shove ${fp.shoveCooldown.toFixed(1)}s`
-        : 'Space Vault/Shove Ready';
+        ? this.t(`Shove ${fp.shoveCooldown.toFixed(1)}s`, `推搡冷却 ${fp.shoveCooldown.toFixed(1)} 秒`)
+        : this.t('Space Vault/Shove', '空格翻越／推搡');
     const decoyTag =
-      fp.decoyCooldown > 0 ? `Q Decoy ${Math.ceil(fp.decoyCooldown)}s` : 'Q Decoy Ready';
-    const rushTag = fp.adrenalineTimer > 0 ? ` • ⚡ Surge ${fp.adrenalineTimer.toFixed(1)}s` : '';
-    this.fpsControlsHintEl.textContent = `WASD Move • Shift Sprint • ${spaceTag} • ${decoyTag} • E Door/Car/Loot • F Exit${rushTag}`;
+      fp.decoyCooldown > 0
+        ? this.t(`Decoy ${Math.ceil(fp.decoyCooldown)}s`, `诱饵冷却 ${Math.ceil(fp.decoyCooldown)} 秒`)
+        : this.t('Q Decoy', 'Q 诱饵');
+    const fireTag = weapon ? this.t(' • LMB/J Fire • R Reload • M Orders', ' · 左键/J 开火 · R 换弹 · M 接任务') : '';
+    const lookTag = document.pointerLockElement
+      ? ''
+      : this.t(' • L Lock Mouse / Right-drag Look', ' · L 锁定鼠标／右键拖动看向');
+    this.fpsControlsHintEl.textContent = player?.onWallDeck || fp.wallLadder === 'climbing' ? this.t(
+      `WASD Move along wall • Look down from the marked edge • E Ladder${fireTag}${lookTag}`,
+      `WASD 沿墙移动 · 到黄线处俯瞰墙脚 · E 梯子${fireTag}${lookTag}`
+    ) : this.t(
+      `WASD Move • Shift Sprint • ${spaceTag} • ${decoyTag} • E Interact${fireTag}${lookTag}`,
+      `WASD 移动 · Shift 冲刺 · ${spaceTag} · ${decoyTag} · E 互动${fireTag}${lookTag}`
+    );
 
     if (fp.outcome && fp.outcome !== 'PLAYING') {
       this.fpsOutcomeCardEl.classList.add('active');
       if (fp.outcome === 'ESCAPED') {
-        this.fpsOutcomeTitleEl.textContent = 'SURVIVED — ESCAPED!';
+        this.fpsOutcomeTitleEl.textContent = this.t('SURVIVED — ESCAPED!', '成功撤离');
         this.fpsOutcomeTitleEl.style.color = '#22c55e';
         this.fpsOutcomeDescEl.textContent =
-          'You made it past the falling defense lines and evacuated safely!';
+          this.t(
+            `You made it out safely. Evacuated this round: ${this.sim.totalEvacuated}.`,
+            `你已安全离开封锁区。本局已有 ${this.sim.totalEvacuated} 人成功撤离。`
+          );
+      } else if (fp.outcome === 'QUARANTINED') {
+        this.fpsOutcomeTitleEl.textContent = this.t('TRAIN QUARANTINED', '列车隔离 · 撤离失败');
+        this.fpsOutcomeTitleEl.style.color = '#ef4444';
+        this.fpsOutcomeDescEl.textContent = this.t(
+          'Infected remained aboard when the quarantine timer expired.',
+          '隔离时间结束时车上仍有感染者，这班列车未计入成功撤离。');
       } else {
-        this.fpsOutcomeTitleEl.textContent = 'INFECTED / OVERRUN';
+        this.fpsOutcomeTitleEl.textContent = this.t('INFECTED / OVERRUN', '已感染／被尸群攻陷');
         this.fpsOutcomeTitleEl.style.color = '#ef4444';
         this.fpsOutcomeDescEl.textContent =
-          'The horde caught up with you. Respawn as another civilian or return to Commander View.';
+          this.t('Choose another role or return to Commander View.', '选择另一个角色，或返回指挥官视角。');
       }
     } else {
       this.fpsOutcomeCardEl.classList.remove('active');
     }
+  }
+
+  private trainInfectedStatus(): string {
+    const infected = this.sim.countTrainInfected();
+    if (infected === 0) return '';
+    const threshold = this.sim.expressTrain.state === 'DOCKED' ? `/${KTX_EMERGENCY_INFECTED}` : '';
+    return this.t(` · Infected aboard ${infected}${threshold}`, ` · 车内感染者 ${infected}${threshold}`);
+  }
+
+  private compassArrow(dx: number, dz: number, yaw: number): string {
+    const right = dx * Math.cos(yaw) - dz * Math.sin(yaw);
+    const forward = -dx * Math.sin(yaw) - dz * Math.cos(yaw);
+    const octant = (Math.round(Math.atan2(right, forward) / (Math.PI / 4)) + 8) % 8;
+    return ['⬆', '↗', '➡', '↘', '⬇', '↙', '⬅', '↖'][octant];
   }
 
   private drawOutbreakChart(): void {
@@ -838,11 +1224,12 @@ export class UIController {
       const ry = toMapY(this.sim.city.railZ);
       const train = this.sim.expressTrain;
       if (train.state !== 'COOLDOWN') {
-        const tx = toMapX(train.x);
+        const tail = toMapX(train.x + train.layout.rearX);
+        const nose = toMapX(train.x + train.layout.frontX);
         ctx.fillStyle = '#e2e8f0';
-        ctx.fillRect(tx - 16, ry - 2.5, 32, 5);
+        ctx.fillRect(tail, ry - 2.5, nose - tail, 5);
         ctx.fillStyle = '#38bdf8';
-        ctx.fillRect(tx - 15, ry - 1.5, 4, 3);
+        ctx.fillRect(nose - 5, ry - 1.5, 4, 3);
       }
     }
 
@@ -857,7 +1244,7 @@ export class UIController {
     }
 
     for (const gate of this.sim.blastGates) {
-      ctx.fillStyle = gate.breached ? '#ef4444' : gate.isOpen ? '#22c55e' : '#38bdf8';
+      ctx.fillStyle = gate.breached ? '#ef4444' : gate.openFraction === 1 ? '#22c55e' : gate.openFraction === 0 ? '#38bdf8' : '#f59e0b';
       ctx.fillRect(toMapX(gate.x) - 3, toMapY(gate.z) - 2, 6, 4);
     }
 
@@ -889,6 +1276,11 @@ export class UIController {
       else ctx.fillStyle = '#1e293b';
 
       ctx.fillRect(toMapX(b.minX), toMapY(b.minZ), b.width * scaleX, b.depth * scaleY);
+    }
+
+    for (const cache of this.sim.ammoCaches) {
+      ctx.fillStyle = cache.readyAt <= this.sim.simTime ? '#f7ce79' : '#79674c';
+      ctx.fillRect(toMapX(cache.x) - 1.8, toMapY(cache.z) - 1.8, 3.6, 3.6);
     }
 
     // 4. Evacuation Zones, Acoustic Lure Flares & Roadblocks
@@ -947,7 +1339,7 @@ export class UIController {
           ctx.fillRect(mx - 1.5, my - 1.5, 3, 3);
         }
       } else if (a.role === 'police') {
-        ctx.fillStyle = a.isSwat ? '#06b6d4' : '#3b82f6';
+        ctx.fillStyle = a.isHunter ? '#c084fc' : a.isSwat ? '#06b6d4' : '#3b82f6';
         ctx.fillRect(mx - 1.4, my - 1.4, 2.8, 2.8);
       } else if (a.role === 'medic') {
         ctx.fillStyle = '#10b981';
@@ -991,6 +1383,108 @@ export class UIController {
     }
   }
 
+  private refreshPoliceRadio(): void {
+    this.radioPanel.classList.toggle('in-first-person', this.sim.firstPerson.active);
+    const messages = this.sim.policeRadio;
+    const latest = messages[messages.length - 1];
+    if (latest === this.latestRadio) return;
+    this.latestRadio = latest;
+
+    const follow = this.radioLog.scrollHeight - this.radioLog.clientHeight - this.radioLog.scrollTop <= 8;
+    for (const [message, row] of this.radioRows) {
+      if (!messages.includes(message)) {
+        row.remove();
+        this.radioRows.delete(message);
+      }
+    }
+    for (const message of messages) {
+      if (this.radioRows.has(message)) continue;
+      const { speaker, text } = describeRadio(message, this.language);
+      const row = document.createElement('li');
+      const { kind } = message.call;
+      row.classList.toggle('radio-priority', kind === 'warning' || kind === 'support' || kind === 'fallback');
+      const name = document.createElement('strong');
+      name.textContent = speaker;
+      const time = document.createElement('time');
+      time.textContent = this.sim.formatClock(message.time);
+      const body = document.createElement('div');
+      body.textContent = text;
+      row.append(name, time, body);
+      this.radioLog.append(row);
+      this.radioRows.set(message, row);
+    }
+    if (follow) this.radioLog.scrollTop = this.radioLog.scrollHeight;
+  }
+
+  private refreshDefenseGateBars(): void {
+    const bars = this.sim.blastGates.map((gate) => {
+      const compact = gate.label.match(/^Line (\d+) (West|East) Gate$/);
+      const name = compact
+        ? this.t(`L${compact[1]} ${compact[2]}`, `${compact[1]} 线${compact[2] === 'West' ? '西闸' : '东闸'}`)
+        : this.worldLabel(gate.label);
+      return this.gateBar(name, { ...gate, open: gate.isOpen });
+    });
+    if (this.sim.layeredKtx) {
+      bars.push(this.gateBar(this.t('KTX East Gate', '车站东闸'), this.sim.ktxGates.public));
+      bars.push(this.gateBar(this.t('KTX West Gate', '车站西闸'), this.sim.ktxGates.crew));
+      bars.push(this.gateBar(this.t('KTX Partition', '站台隔门'), this.sim.ktxGates.transfer));
+    }
+    this.defenseGateBarsEl.hidden = bars.length === 0;
+    this.defenseGateBarsEl.innerHTML = bars.join('');
+  }
+
+  private refreshNearbyGateBar(player: AgentData | null): void {
+    let closest: { name: string; gate: GateStatus } | undefined;
+    let distance = Infinity;
+    const consider = (label: string, gate: GateStatus, x: number, z: number, range: number) => {
+      if (!player) return;
+      const d = Math.hypot(x - player.x, z - player.z);
+      if (d <= range && d < distance) {
+        closest = { name: this.worldLabel(label), gate };
+        distance = d;
+      }
+    };
+    if (player) {
+      for (const gate of this.sim.blastGates) {
+        consider(gate.label, { ...gate, open: gate.isOpen }, gate.x, gate.z, 15);
+      }
+      if (this.sim.layeredKtx) {
+        for (const id of KTX_GATE_IDS) {
+          const point = KTX_GATES[id];
+          if (Math.abs(player.climbY - point.y) <= 1.5) {
+            consider(point.label, this.sim.ktxGates[id], point.x, point.z, 11);
+          }
+        }
+      }
+      const train = this.sim.expressTrain;
+      if (this.sim.firstPerson.insideTrainCar > 0) {
+        for (const door of train.doors) {
+          consider(door.label, { ...door, open: !door.isLocked, breached: door.isBroken, lastDamagedAt: door.lastHitTime },
+            train.x + door.localX, train.z, 7);
+        }
+      }
+    }
+    this.fpsGateBarEl.hidden = !closest;
+    this.fpsGateBarEl.innerHTML = closest ? this.gateBar(closest.name, closest.gate) : '';
+  }
+
+  private gateBar(name: string, gate: GateStatus): string {
+    const breached = gate.breached || gate.integrity <= 0;
+    const ratio = breached ? 0 : Math.min(1, gate.integrity / gate.maxIntegrity);
+    const percent = Math.ceil(ratio * 100);
+    const attacked = !breached && this.sim.simTime - gate.lastDamagedAt < 0.9;
+    const color = ratio <= 0.3 ? '#f87171' : ratio <= 0.6 || attacked ? '#fbbf24' : '#4ade80';
+    const state = breached ? this.t('Breached', '已失守')
+      : gate.open ? (gate.openFraction ?? 1) < 1 ? this.t('Opening', '开启中') : this.t('Open', '已开启')
+      : (gate.openFraction ?? 0) > 0 ? this.t('Closing', '关闭中') : this.t('Closed', '已关闭');
+    const status = attacked ? `${state} · ${this.t('Under attack', '受击')}` : state;
+    return `<div class="gate-status-bar" data-attacked="${attacked}" style="--gate-color:${color}">
+      <div class="gate-status-head"><span class="gate-status-name">${name}</span><b class="gate-status-value">${percent}%</b></div>
+      <div class="gate-status-track" role="progressbar" aria-label="${name}" aria-valuenow="${percent}"><div class="gate-status-fill" style="width:${ratio * 100}%"></div></div>
+      <div class="gate-status-state">${status}</div>
+    </div>`;
+  }
+
   private refreshEventLog(): void {
     const logs = this.sim.eventLog;
     if (logs.length === 0) return;
@@ -1004,7 +1498,10 @@ export class UIController {
       const item = logs[i];
       const div = document.createElement('div');
       div.className = `event-item type-${item.category}`;
-      div.innerHTML = `<span class="event-time">[${item.formattedTime}]</span>${item.message}`;
+      const time = document.createElement('span');
+      time.className = 'event-time';
+      time.textContent = `[${item.formattedTime}]`;
+      div.append(time, this.t(item.message, translateGameplayAlert(item.message)));
       div.addEventListener('click', () => {
         this.cam.followAgentMode = false;
         this.cam.autoDirectorMode = false;
@@ -1062,8 +1559,8 @@ export class UIController {
       stateStr = agent.attackMode === 'tackle_pin' ? 'PINNED ON GROUND!' : 'GRAPPLED!';
       barColor = '#ef4444';
     } else if (agent.role === 'police') {
-      stateStr = `${agent.isSwat ? 'SWAT' : 'POLICE'} • ${agent.policeState}`;
-      barColor = agent.isSwat ? '#06b6d4' : '#3b82f6';
+      stateStr = `${agent.isHunter ? this.t('HUNTER TEAM', '机动清剿队') : agent.isSwat ? 'SWAT' : 'POLICE'} • ${agent.policeState}`;
+      barColor = agent.isHunter ? '#c084fc' : agent.isSwat ? '#06b6d4' : '#3b82f6';
     } else if (agent.role === 'medic') {
       stateStr = `MEDIC • ${agent.medicState} (Cures: ${agent.cures})`;
       barColor = '#10b981';

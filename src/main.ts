@@ -7,8 +7,12 @@ import { AgentRenderer } from './agentRenderer';
 import { SoundEngine } from './audio';
 import { CameraController } from './camera';
 import { CityRenderer } from './cityRenderer';
+import { KTX_PLATFORM_Y, KTX_SURFACES } from './ktxTerminal';
+import { WALL_DECK_REAR_TRIM, WALL_DECK_RISE, wallDeckFrontZ, wallDeckSpan } from './perimeter';
 import { OutbreakSimulation } from './simulation';
-import { ScenarioConfig } from './types';
+import { PlayerSpawnPoint, PlayerWeapon, ScenarioConfig } from './types';
+import { TRAIN_WIDTH } from './trainLayout';
+import { PLAYER_WEAPONS } from './playerLoadouts';
 import { UIController } from './ui';
 import { VoxelTextureStudio } from './voxelTextures';
 
@@ -25,6 +29,14 @@ const DEFAULT_CONFIG: ScenarioConfig = {
   enableWaves: true,
   fastStrain: true
 };
+
+interface WeaponViewModel {
+  root: THREE.Group;
+  muzzle: THREE.Group;
+  flash: THREE.Group;
+  action: THREE.Group;
+  magazine: THREE.Group;
+}
 
 class ProjectOutbreakApp {
   public scene: THREE.Scene;
@@ -52,6 +64,12 @@ class ProjectOutbreakApp {
   private flashlightRig!: THREE.Group;
   private flashlightSpot!: THREE.SpotLight;
   private wasFirstPerson = false;
+  private fireHeld = false;
+  private firePressed = false;
+  private weaponModels = new Map<PlayerWeapon, WeaponViewModel>();
+  private muzzleWorld = new THREE.Vector3();
+  private missionMarkers: THREE.Mesh[] = [];
+  private spawnMarker = new THREE.Group();
   private composer!: EffectComposer;
   private bloomPass!: UnrealBloomPass;
 
@@ -98,6 +116,25 @@ class ProjectOutbreakApp {
     this.camController = new CameraController(this.camera, this.renderer.domElement);
     this.camController.setWorldBounds(this.sim.city.cityHalfX, this.sim.city.cityHalfZ);
     this.initFirstPersonFlashlight();
+    this.initFirstPersonWeapons();
+    const spawnMaterial = new THREE.MeshBasicMaterial({ color: 0x67e8f9 });
+    const spawnRing = new THREE.Mesh(new THREE.TorusGeometry(1.5, 0.085, 8, 36), spawnMaterial);
+    spawnRing.rotation.x = Math.PI / 2;
+    const spawnPointer = new THREE.Mesh(new THREE.ConeGeometry(0.38, 0.95, 8), spawnMaterial);
+    spawnPointer.position.y = 1.15;
+    spawnPointer.rotation.z = Math.PI;
+    this.spawnMarker.add(spawnRing, spawnPointer);
+    this.spawnMarker.visible = false;
+    this.scene.add(this.spawnMarker);
+    const markerGeometry = new THREE.OctahedronGeometry(0.18);
+    const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xffca63 });
+    for (let i = 0; i < 3; i++) {
+      const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+      marker.scale.y = 0.72;
+      marker.visible = false;
+      this.scene.add(marker);
+      this.missionMarkers.push(marker);
+    }
 
     this.sim.onSound = (type, x, z) => {
       const cx = this.camController.isFirstPerson ? this.camera.position.x : this.camController.target.x;
@@ -107,6 +144,10 @@ class ProjectOutbreakApp {
         this.sound.playGunshot(x, z, cx, cz, dist, false);
       } else if (type === 'swat_shot') {
         this.sound.playGunshot(x, z, cx, cz, dist, true);
+      } else if (type === 'player_pistol' || type === 'player_shotgun' || type === 'player_carbine') {
+        this.sound.playPlayerShot(type.slice(7) as PlayerWeapon);
+      } else if (type === 'player_reload') {
+        this.sound.playReload();
       } else if (type === 'radio') {
         this.sound.playRadioChirp();
       } else if (type === 'cure') {
@@ -270,14 +311,86 @@ class ProjectOutbreakApp {
     this.camera.add(this.flashlightSpot);
   }
 
+  private initFirstPersonWeapons(): void {
+    const steel = new THREE.MeshStandardMaterial({ color: 0x344055, emissive: 0x1c2a40, emissiveIntensity: 0.55, metalness: 0.55, roughness: 0.44 });
+    const polymer = new THREE.MeshStandardMaterial({ color: 0x293238, emissive: 0x122027, emissiveIntensity: 0.7, roughness: 0.78 });
+    const wood = new THREE.MeshStandardMaterial({ color: 0x745137, emissive: 0x301d16, emissiveIntensity: 0.7, roughness: 0.76 });
+    const sleeve = new THREE.MeshStandardMaterial({ color: 0x405573, emissive: 0x172942, emissiveIntensity: 0.68 });
+    const sight = new THREE.MeshBasicMaterial({ color: 0xc1e5d8 });
+    const hot = new THREE.MeshBasicMaterial({ color: new THREE.Color(3.6, 1.7, 0.48), toneMapped: false });
+    const core = new THREE.MeshBasicMaterial({ color: new THREE.Color(4.5, 3.6, 1.55), toneMapped: false });
+    for (const id of Object.keys(PLAYER_WEAPONS) as PlayerWeapon[]) {
+      const root = new THREE.Group();
+      const muzzle = new THREE.Group();
+      const flash = new THREE.Group();
+      const action = new THREE.Group();
+      const magazine = new THREE.Group();
+      const longGun = id !== 'pistol';
+      const box = (w: number, h: number, d: number, x: number, y: number, z: number, mat: THREE.Material, parent = root) => {
+        const part = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+        part.position.set(x, y, z);
+        parent.add(part);
+        return part;
+      };
+      const barrelEnd = longGun ? (id === 'shotgun' ? -0.65 : -0.58) : -0.28;
+      const surface = id === 'shotgun' ? wood : polymer;
+      box(0.14, 0.14, 0.48, 0.1, -0.13, 0.23, sleeve).rotation.y = -0.16;
+      box(0.105, 0.115, 0.14, 0.01, -0.075, 0.045, polymer);
+      box(0.106, 0.06, longGun ? 0.32 : 0.248, 0, -0.024, -0.068, polymer);
+      box(0.047, 0.047, -barrelEnd - 0.1, 0, 0.015, (barrelEnd - 0.1) / 2, steel);
+      box(0.061, 0.061, 0.045, 0, 0.015, barrelEnd + 0.018, steel);
+      box(0.024, 0.035, 0.034, 0, 0.048, barrelEnd + 0.055, steel);
+      box(0.011, 0.012, 0.009, 0, 0.065, barrelEnd + 0.067, sight);
+      for (const x of [-0.03, 0.03]) box(0.026, 0.028, 0.034, x, 0.048, 0.035, steel);
+      if (longGun) {
+        box(0.115, 0.085, 0.3, 0, 0.005, -0.075, steel);
+        box(0.10, 0.115, 0.20, 0, -0.05, 0.19, surface);
+        box(0.12, 0.095, 0.215, 0, -0.025, -0.31, surface, action);
+        box(0.13, 0.13, 0.28, -0.105, -0.115, -0.17, sleeve).rotation.y = -0.22;
+        if (id === 'carbine') {
+          box(0.070, 0.148, 0.112, 0, -0.089, -0.079, polymer, magazine).rotation.x = -0.21;
+          box(0.080, 0.016, 0.25, 0, 0.053, -0.17, polymer);
+        }
+      } else {
+        box(0.105, 0.062, 0.27, 0, 0.023, -0.105, steel, action);
+        box(0.078, 0.08, 0.075, 0, -0.10, 0.055, polymer, magazine);
+      }
+      muzzle.position.set(0, 0.015, barrelEnd - 0.012);
+      box(0.095, 0.095, 0.27, 0, 0, -0.105, core, flash);
+      for (const angle of [0.3, 1.3, 2.35]) {
+        box(0.32, 0.035, 0.22, 0, 0, -0.10, hot, flash).rotation.z = angle;
+      }
+      flash.visible = false;
+      muzzle.add(flash);
+      root.add(muzzle, action, magazine);
+      root.visible = false;
+      this.camera.add(root);
+      this.weaponModels.set(id, { root, muzzle, flash, action, magazine });
+    }
+  }
+
   private bindViewportInteractions(): void {
     const dom = this.renderer.domElement;
 
     dom.addEventListener('mousedown', (e) => {
       if (e.button === 0) {
+        if (!this.ui.isPickingSpawn && this.sim.firstPerson.active && this.sim.firstPerson.weapon) {
+          this.fireHeld = true;
+          this.firePressed = true;
+        }
         this.mouseDownPos = { x: e.clientX, y: e.clientY };
       }
     });
+
+    window.addEventListener('mouseup', (e) => {
+      if (e.button === 0) this.fireHeld = false;
+    });
+    const clearFire = () => {
+      this.fireHeld = false;
+      this.firePressed = false;
+    };
+    window.addEventListener('blur', clearFire);
+    document.addEventListener('pointerlockchange', clearFire);
 
     dom.addEventListener('mouseup', (e) => {
       if (e.button !== 0 || e.shiftKey || e.altKey) return;
@@ -309,6 +422,62 @@ class ProjectOutbreakApp {
     return res ? hit : null;
   }
 
+  private getWallIntersection(): THREE.Vector3 | null {
+    let closest: THREE.Vector3 | null = null;
+    const ray = this.raycaster.ray;
+    for (const wall of this.sim.defenseWalls) {
+      const half = wall.thickness / 2 + 0.25;
+      const hit = ray.intersectBox(
+        new THREE.Box3(
+          new THREE.Vector3(wall.minX, 0, wall.z - half),
+          new THREE.Vector3(wall.maxX, wall.height + WALL_DECK_RISE, wall.z + half)
+        ),
+        new THREE.Vector3()
+      );
+      if (hit && (!closest || ray.origin.distanceToSquared(hit) < ray.origin.distanceToSquared(closest))) {
+        closest = hit;
+      }
+    }
+    return closest;
+  }
+
+  private pickSpawnPoint(clientX: number, clientY: number): PlayerSpawnPoint | null {
+    const ground = this.getGroundIntersection(clientX, clientY);
+    if (!ground) return null;
+    const ray = this.raycaster.ray;
+    let best: PlayerSpawnPoint = { x: ground.x, z: ground.z, y: 0 };
+    let distance = ground.distanceTo(ray.origin);
+    const consider = (minX: number, maxX: number, minZ: number, maxZ: number, fromY: number, toY: number, wallId?: number) => {
+      const slope = (toY - fromY) / (maxZ - minZ);
+      const dy = ray.direction.y - slope * ray.direction.z;
+      if (Math.abs(dy) < 1e-6) return;
+      const t = (fromY + slope * (ray.origin.z - minZ) - ray.origin.y) / dy;
+      if (t < 0 || t >= distance) return;
+      const hit = ray.at(t, new THREE.Vector3());
+      if (hit.x < minX || hit.x > maxX || hit.z < minZ || hit.z > maxZ) return;
+      const wall = wallId === undefined ? undefined : this.sim.defenseWalls.find((line) => line.id === wallId);
+      if (wall && !wallDeckSpan(wall, this.sim.blastGates, hit.x)) return;
+      best = { x: hit.x, z: hit.z, y: fromY + (hit.z - minZ) * slope, wallId };
+      distance = t;
+    };
+    for (const wall of this.sim.defenseWalls) {
+      const y = wall.height + WALL_DECK_RISE;
+      consider(wall.minX, wall.maxX, wallDeckFrontZ(wall), wall.z + wall.thickness / 2 - WALL_DECK_REAR_TRIM, y, y, wall.id);
+    }
+    if (this.sim.layeredKtx) {
+      for (const surface of KTX_SURFACES) {
+        if (surface.id === 'boarding' && this.sim.expressTrain.state !== 'DOCKED') continue;
+        consider(surface.minX, surface.maxX, surface.minZ, surface.maxZ, surface.fromY, surface.toY);
+      }
+      const train = this.sim.expressTrain;
+      if (train.state === 'DOCKED') {
+        consider(train.x + train.layout.rearX, train.x + train.layout.frontX,
+          train.z - 1.95, train.z + TRAIN_WIDTH / 2, KTX_PLATFORM_Y, KTX_PLATFORM_Y);
+      }
+    }
+    return this.sim.canSpawnPlayerAt(best) ? best : null;
+  }
+
   private findClosestAgentToWorldPoint(wx: number, wz: number, maxRadius = 3.8) {
     let best = null;
     let bestDist = maxRadius;
@@ -329,6 +498,11 @@ class ProjectOutbreakApp {
   private prevFpDecoyDown = false;
 
   private handleViewportHover(clientX: number, clientY: number): void {
+    if (this.ui.isPickingSpawn) {
+      this.hoverTooltipEl.style.display = 'none';
+      this.cityRenderer.updatePlacementPreview('inspect', 0, 0, false);
+      return;
+    }
     if (this.sim.firstPerson.active) {
       this.hoverTooltipEl.style.display = 'none';
       this.cityRenderer.updatePlacementPreview('inspect', 0, 0, false);
@@ -368,6 +542,10 @@ class ProjectOutbreakApp {
       if (gate) {
         const stateText = gate.breached
           ? 'BREACHED'
+          : gate.openFraction > 0 && !gate.isOpen
+          ? 'CLOSING (Click to OPEN)'
+          : gate.openFraction < 1 && gate.isOpen
+          ? 'OPENING (Click to SEAL)'
           : gate.isOpen
           ? 'OPEN (Click to SEAL)'
           : `SEALED HP ${Math.ceil(gate.integrity)}/${gate.maxIntegrity} (Click to OPEN)`;
@@ -393,12 +571,18 @@ class ProjectOutbreakApp {
   }
 
   private handleViewportClick(clientX: number, clientY: number): void {
+    if (this.ui.isPickingSpawn) {
+      this.ui.selectSpawnPoint(this.pickSpawnPoint(clientX, clientY));
+      return;
+    }
     if (this.sim.firstPerson.active) return;
 
-    const hit = this.getGroundIntersection(clientX, clientY);
-    if (!hit) return;
-
     const tool = this.ui.activeTool;
+    const ground = this.getGroundIntersection(clientX, clientY);
+    const hit = tool === 'defend_zone' || tool === 'deploy_swat'
+      ? this.getWallIntersection() ?? ground
+      : ground;
+    if (!hit) return;
 
     if (tool === 'inspect') {
       const picked = this.findClosestAgentToWorldPoint(hit.x, hit.z, 3.6);
@@ -423,6 +607,8 @@ class ProjectOutbreakApp {
       this.sim.deployPoliceSquad(hit.x, hit.z);
     } else if (tool === 'deploy_swat') {
       this.sim.deploySwatSquad(hit.x, hit.z);
+    } else if (tool === 'deploy_hunters') {
+      this.sim.deployHunterTeam(hit.x, hit.z);
     } else if (tool === 'deploy_medic') {
       this.sim.deployMedicSquad(hit.x, hit.z);
     } else if (tool === 'lure_flare') {
@@ -477,7 +663,7 @@ class ProjectOutbreakApp {
       }
     }
 
-    const isFP = this.sim.firstPerson.active;
+    const isFP = this.sim.firstPerson.active && !this.ui.isPickingSpawn;
     if (isFP !== this.wasFirstPerson) {
       this.wasFirstPerson = isFP;
       this.camera.fov = isFP ? 62 : 46;
@@ -488,6 +674,7 @@ class ProjectOutbreakApp {
     }
 
     if (isFP) {
+      if (!this.ui.isPaused) this.camController.updateFirstPersonAim(rawDt);
       let moveForward = 0;
       let moveRight = 0;
       if (this.camController.isKeyDown('w') || this.camController.isKeyDown('arrowup')) moveForward += 1;
@@ -504,6 +691,7 @@ class ProjectOutbreakApp {
       const qDown = this.camController.isKeyDown('q');
       const decoyPressed = this.camController.consumeKeyPress('q') || (qDown && !this.prevFpDecoyDown);
       this.prevFpDecoyDown = qDown;
+      const keyboardFire = this.camController.consumeKeyPress('j') || this.camController.isKeyDown('j');
 
       const player = !this.ui.isPaused
         ? this.sim.updateFirstPersonPlayer(
@@ -515,9 +703,18 @@ class ProjectOutbreakApp {
             spacePressed,
             decoyPressed,
             this.camController.fpYaw,
-            this.camController.fpPitch
+            this.camController.fpPitch,
+            {
+              fire: this.fireHeld || this.firePressed || keyboardFire,
+              reload: this.camController.consumeKeyPress('r'),
+              requestMission: this.camController.consumeKeyPress('m')
+            }
           )
         : this.sim.getAgentById(this.sim.firstPerson.playerId);
+      this.firePressed = false;
+      if (this.sim.firstPerson.outcome !== 'PLAYING' && document.pointerLockElement === this.renderer.domElement) {
+        document.exitPointerLock();
+      }
 
       const px = player ? player.x : this.camera.position.x;
       const pz = player ? player.z : this.camera.position.z;
@@ -526,6 +723,7 @@ class ProjectOutbreakApp {
         !!player &&
         player.isAlive &&
         !player.isEvacuated &&
+        this.sim.firstPerson.wallLadder !== 'climbing' &&
         (moveForward !== 0 || moveRight !== 0);
       const sprinting = isMoving && wantSprint && (this.sim.firstPerson.adrenalineTimer > 0 || this.sim.firstPerson.stamina > 2);
       this.camController.updateFirstPerson(
@@ -535,7 +733,7 @@ class ProjectOutbreakApp {
         isMoving,
         sprinting,
         this.sim.simTime,
-        this.sim.firstPerson.vaultY,
+        (player?.climbY ?? 0) + (player?.fallY ?? 0) + this.sim.firstPerson.vaultY,
         this.sim.firstPerson.vaultRoll
       );
 
@@ -557,6 +755,8 @@ class ProjectOutbreakApp {
         this.sound.updateFirstPersonHorrorAudio(rawDt, this.sim.firstPerson.nearestZombieDist);
       }
     } else {
+      this.fireHeld = false;
+      this.firePressed = false;
       this.prevFpInteractDown = false;
       this.prevFpSpaceDown = false;
       this.prevFpDecoyDown = false;
@@ -566,13 +766,18 @@ class ProjectOutbreakApp {
     }
 
     const hiddenId = isFP ? this.sim.firstPerson.playerId : null;
+    const weapon = isFP ? this.sim.firstPerson.weapon : null;
+    this.flashlightRig.visible = isFP && !weapon;
+    this.syncWeaponView();
     this.agentRenderer.syncAgents(this.sim.agents, this.sim.selectedAgentId, this.sim.simTime, hiddenId, isFP);
     this.agentRenderer.syncVehicles(this.sim.vehicles, this.sim.simTime);
     this.cityRenderer.syncDefenseAndTrain(
       this.sim.defenseWalls,
       this.sim.blastGates,
       this.sim.expressTrain,
-      this.sim.simTime
+      this.sim.simTime,
+      this.sim.layeredKtx,
+      this.sim.ktxGates
     );
     this.cityRenderer.syncTacticalAndEffects(
       this.sim.city.buildings,
@@ -595,15 +800,75 @@ class ProjectOutbreakApp {
       this.sim.gridFlickerTimer,
       this.sim.blackoutMaxZ,
       this.sim.supplyPickups,
-      this.sim.firstPerson.insideTrainCar
+      this.sim.firstPerson.insideTrainCar,
+      this.sim.ammoCaches,
+      this.camera.position.y,
+      this.sim.layeredKtx ? this.sim.ktxGates : undefined
     );
 
+    this.syncMissionMarkers();
+    const spawnPoint = this.ui.selectedSpawnPoint;
+    this.spawnMarker.visible = !!spawnPoint;
+    if (spawnPoint) this.spawnMarker.position.set(spawnPoint.x, spawnPoint.y + 0.14, spawnPoint.z);
     this.composer.render();
 
     this.uiUpdateAccumulator += rawDt;
     if (this.uiUpdateAccumulator >= 0.2) {
       this.uiUpdateAccumulator = 0;
       this.ui.refreshUI();
+    }
+  }
+
+  private syncMissionMarkers(): void {
+    const fp = this.sim.firstPerson;
+    const targets = !this.ui.isPickingSpawn && fp.active && fp.outcome === 'PLAYING' ? fp.mission?.targetIds : null;
+    this.missionMarkers.forEach((marker, i) => {
+      const target = this.sim.getAgentById(targets?.[i] ?? null);
+      marker.visible = Boolean(target?.isAlive);
+      if (!target?.isAlive) return;
+      marker.position.set(target.x, target.climbY + target.fallY + (target.zombieVariant === 'brute' ? 3.05 : 2.43), target.z);
+      marker.rotation.y = this.sim.simTime * 1.6;
+    });
+  }
+
+  private syncWeaponView(): void {
+    const fp = this.sim.firstPerson;
+    const weapon = !this.ui.isPickingSpawn && fp.active && fp.outcome === 'PLAYING' ? fp.weapon : null;
+    this.ui.updateAimFeedback((weapon?.hitTimer ?? 0) > 0);
+    this.flashlightSpot.intensity = 22;
+    for (const [id, model] of this.weaponModels) {
+      model.root.visible = weapon?.id === id;
+      if (!weapon || !model.root.visible) continue;
+      const tuning = PLAYER_WEAPONS[id];
+      const age = weapon.shots > 0 ? tuning.interval - weapon.cooldown : Infinity;
+      const recoil = Math.max(0, 1 - age / (id === 'shotgun' ? 0.22 : 0.105)) ** 2;
+      const reload = weapon.reloadTimer > 0 ? 1 - weapon.reloadTimer / tuning.reload : 0;
+      const dip = Math.sin(Math.PI * reload);
+      const { x, y, z } = this.flashlightRig.position;
+      model.root.position.set(x - 0.095, y - 0.025 - dip * 0.20, z - 0.09 + recoil * tuning.kick * 0.65);
+      model.root.rotation.set(recoil * tuning.kick - dip * 0.5, 0.15 - dip * 0.3, -dip * 0.28);
+      model.action.position.z = id === 'shotgun'
+        ? Math.max(0, 1 - Math.abs(age - 0.23) / 0.13) * 0.13
+        : recoil * (id === 'pistol' ? 0.065 : 0.028);
+      model.magazine.position.y = -Math.max(0, 1 - Math.abs(reload - 0.48) / 0.31) * 0.25;
+      model.flash.visible = age < 0.055;
+      if (model.flash.visible) {
+        const envelope = (1 - age / 0.055) * tuning.flash;
+        model.flash.scale.setScalar(0.45 + envelope);
+        model.flash.rotation.z = weapon.shots * 2.4;
+        model.muzzle.getWorldPosition(this.muzzleWorld);
+        this.flashlightSpot.intensity += envelope * 14;
+        if (age === 0) {
+          for (const shot of this.sim.effects) {
+            if (shot.type !== 'player_shot' || shot.age !== 0 ||
+                shot.targetX === undefined || shot.targetY === undefined || shot.targetZ === undefined) continue;
+            if (Math.hypot(shot.targetX - shot.x, shot.targetY - (shot.y ?? 1.68), shot.targetZ - shot.z) < 1.3) continue;
+            shot.x = this.muzzleWorld.x;
+            shot.y = this.muzzleWorld.y;
+            shot.z = this.muzzleWorld.z;
+          }
+        }
+      }
     }
   }
 }
