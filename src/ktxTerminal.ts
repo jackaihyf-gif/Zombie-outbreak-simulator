@@ -253,54 +253,75 @@ export function ktxGroundDetour(from: Vec2, to: Vec2): Vec2[] {
 }
 
 export function ktxWaypoint(x: number, z: number, height: number, lane: KtxLane, docked: boolean,
-  gateOpen: boolean, slot = 0, mezzanineOpen = true): Vec2 & { label: string; direct?: boolean } {
+  gateOpen: boolean, slot = 0, mezzanineOpen = true, platformBusy = false): Vec2 & { label: string; direct?: boolean } {
   const at = (x: number, z: number, label: string) => ({ x, z, label });
   const gate = KTX_GATES[lane];
-  const spread = (slot % 5 - 2) * 1.15;
+  const u = ((slot * 37) % 100) / 100;
+  const v = ((slot * 53) % 100) / 100;
+  const spread = (u - 0.5) * 4.6;
   const surface = ktxSurfaceAt(x, z, height)?.id;
   switch (surface) {
     case 'east-lower': return { ...at(32 + spread, 178.6, 'KTX East Stair'), direct: true };
-    case 'west-lower': return { ...at(-43 + spread, 178.6, 'KTX West Stair'), direct: true };
+    case 'west-lower': return { ...at(-43 + (u - 0.5) * 3.4, 178.6, 'KTX West Stair'), direct: true };
     case 'east-landing':
-      if (!mezzanineOpen) {
-        return at(34 + (slot % 4) * 2.2, 178.4, 'KTX Mezzanine Holding');
+      if (!mezzanineOpen || (platformBusy && lane === 'public' && slot % 2 === 0)) {
+        return at(28.5 + u * 18.5, 177.2 + v * 2.8, 'KTX Mezzanine Holding');
       }
-      return x < 40.5 ? at(43, 178.6, 'KTX East Landing') : at(44 + spread, 183, 'KTX East Stair');
+      return x < 40.5 ? at(43 + (u - 0.5) * 2.2, 178.6, 'KTX East Landing') : at(44 + spread, 183, 'KTX East Stair');
     case 'west-landing': return x > -50.8 ? at(-53.5, 178.6, 'KTX West Landing') : at(-53.5 + spread, 183, 'KTX West Stair');
-    case 'east-upper': return at(44 + spread, 192, 'KTX Platform');
-    case 'west-upper': return at(-53.5 + spread, 192, 'KTX Platform');
-    case 'terrace': return docked ? at(x, 191, 'KTX Boarding Queue') : at(12 + slot % 10, 183, 'KTX Platform');
+    case 'east-upper': return at(44 + spread, 191.5 + v * 1.4, 'KTX Platform');
+    case 'west-upper': return at(-53.5 + (u - 0.5) * 3.2, 191.5 + v * 1.4, 'KTX Platform');
+    case 'terrace':
+      return docked
+        ? at(11.0 + u * 11.0, 191.2 + v * 1.4, 'KTX Boarding Queue')
+        : at(10.6 + u * 12.0, 160.2 + v * 26.0, 'Wait on KTX Terrace');
     case 'platform':
       if (x <= KTX_TRANSFER_X + 1) {
         return x < KTX_TRANSFER_X - 1 && Math.abs(z - KTX_GATES.transfer.z) > 0.38
           ? at(Math.max(x + 1, KTX_TRANSFER_X - 3), KTX_GATES.transfer.z, 'KTX Service Platform')
           : at(KTX_TRANSFER_X + 2.1, KTX_GATES.transfer.z, 'KTX Service Partition');
       }
-      if (!docked && slot % 2 === 0 && lane === 'public') {
-        return x < 9 || x > 23.5 ? at(16.5, 190.4, 'KTX Platform') : at(x, 185, 'KTX Platform');
+      if (!docked && slot % 3 === 0 && lane === 'public') {
+        return x < 9.5 || x > 23.0
+          ? at(16.2 + (u - 0.5) * 8.0, 190.4, 'Wait on KTX Terrace')
+          : at(11.0 + u * 11.5, 161.0 + v * 24.5, 'Wait on KTX Terrace');
       }
-      if (!docked) return at(TRAIN_BOARDING_X + (slot % 12 - 5) * 1.9, 190.3 + slot % 3, 'Wait on KTX Platform');
-      if (Math.abs(x - TRAIN_BOARDING_X) > 0.95) return at(TRAIN_BOARDING_X, 192.1, 'KTX Boarding Queue');
-      return at(TRAIN_BOARDING_X, 196, 'KTX Boarding Door');
-    case 'boarding': return docked ? at(TRAIN_BOARDING_X, 196.5, 'KTX Boarding Door') : at(TRAIN_BOARDING_X, 192.1, 'Wait on KTX Platform');
-    default:
+      if (!docked) return at(-21 + u * 108, 190.2 + v * 2.5, 'Wait on KTX Platform');
+      if (Math.abs(x - TRAIN_BOARDING_X) > 1.2) {
+        return at(TRAIN_BOARDING_X + (u - 0.5) * 1.4, 191.2 + v * 1.6, 'KTX Boarding Queue');
+      }
+      return at(TRAIN_BOARDING_X + (u - 0.5) * 0.8, 196, 'KTX Boarding Door');
+    case 'boarding':
+      return docked
+        ? at(TRAIN_BOARDING_X + (u - 0.5) * 0.8, 196.5, 'KTX Boarding Door')
+        : at(TRAIN_BOARDING_X + (u - 0.5) * 2.4, 191.6 + v * 1.4, 'Wait on KTX Platform');
+    default: {
+      const canopyHold = (label: string) => {
+        const westSide = slot % 2 === 0;
+        const rowTop = slot % 4 < 2;
+        if (westSide) {
+          return at(12.0 + u * 8.4, rowTop ? 159.4 + v * 1.6 : 163.5 + v * 1.0, label);
+        }
+        return at(40.2 + u * 9.0, rowTop ? 157.8 + v * 1.9 : 162.5 + v * 1.8, label);
+      };
       if (lane === 'public' && z < KTX_INTAKE_Z + 0.6) {
-        const insideX = 27.9 + (slot % 5 - 2) * 1.05;
-        if (z < KTX_INTAKE_Z - 0.7 && (x < 23.2 || x > 32.8)) return at(insideX, 153.3, 'KTX Intake');
-        return at(insideX, 157.2, 'KTX Intake');
+        if (x < KTX_FORECOURT_CROSSING.x - 1.2) {
+          return at(KTX_FORECOURT_CROSSING.x + 2.8, KTX_FORECOURT_CROSSING.z + (v - 0.5) * 2.2, 'KTX Forecourt');
+        }
+        const insideX = 28.0 + (u - 0.5) * 5.2;
+        if (x < 23.2 || x > 32.8) return at(insideX, 153.2 + (v - 0.5) * 1.2, 'KTX Intake');
+        return at(insideX, 157.8, 'KTX Intake');
       }
-      if (!gateOpen) {
-        const west = slot % 2 === 1;
-        const row = Math.floor(slot / 2) % 4;
-        const x = (west ? 21.25 : 43) + (slot % 7) * (west ? 0.62 : 1.05);
-        return at(x, (west ? [158, 159.9, 161.8, 163.65] : [158.1, 159.6, 163.35, 164.5])[row], 'KTX Holding Area');
+      if (!gateOpen || (platformBusy && lane === 'public' && z < 165.4 && z >= KTX_INTAKE_Z + 0.4)) {
+        return canopyHold(gateOpen ? 'KTX Canopy Holding' : 'KTX Holding Area');
       }
       if (z > 167.08 && height <= 0.05) {
         if (ktxUnderStair(x, z)) return { ...at(x, 177.2, 'KTX Ground Passage'), direct: true };
-        return lane === 'public' ? at(27.9 + spread, 153.3, 'KTX Intake') : at(gate.x + spread, 162.5, gate.label);
+        return lane === 'public' ? at(28.0 + (u - 0.5) * 4.8, 153.3, 'KTX Intake') : at(gate.x + (u - 0.5) * 3.4, 162.5, gate.label);
       }
-      if (Math.abs(x - gate.x) > gate.width / 2 - 0.85) return at(gate.x + spread, 162.5, gate.label);
-      if (z < 165) return at(gate.x + spread, 165.6, gate.label);
-      return { ...at(gate.x + spread, 170, gate.label), direct: true };
+      if (Math.abs(x - gate.x) > gate.width / 2 - 0.85) return at(gate.x + (u - 0.5) * 4.6, 162.5, gate.label);
+      if (z < 165) return at(gate.x + (u - 0.5) * 4.6, 165.6, gate.label);
+      return { ...at(gate.x + (u - 0.5) * 4.6, 170, gate.label), direct: true };
+    }
   }
 }

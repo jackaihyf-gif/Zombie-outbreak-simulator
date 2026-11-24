@@ -133,6 +133,7 @@ export class OutbreakSimulation {
   public ktxGates: KtxGates = this.newKtxGates();
   private ktxRetreat = { public: false, crew: false };
   private ktxPlatformLost = false;
+  private ktxPlatformCivilians = 0;
   private ktxLandingHoldUntil: Partial<Record<KtxLane, number>> = {};
   private stationOfficers = new Map<number, KtxLane>();
   private stationDefensePosts = new Map<number, typeof KTX_STATION_POSTS[number]>();
@@ -295,6 +296,7 @@ export class OutbreakSimulation {
     this.ktxGates = this.newKtxGates();
     this.ktxRetreat = { public: false, crew: false };
     this.ktxPlatformLost = false;
+    this.ktxPlatformCivilians = 0;
     this.ktxLandingHoldUntil = {};
     this.stationOfficers.clear();
     this.stationDefensePosts.clear();
@@ -1708,17 +1710,22 @@ export class OutbreakSimulation {
     if (!this.layeredKtx) return;
     const updatePressure = this.simTime >= this.nextKtxThreatCheck;
     if (updatePressure) this.nextKtxThreatCheck = this.simTime + 0.45;
-    if (updatePressure && !this.ktxPlatformLost) {
+    if (updatePressure) {
       let infected = 0;
+      let platformCivilians = 0;
       for (const a of this.spatial.queryRadius(20, 191.5, 86, this.neighborBuffer)) {
-        if (a.role !== 'infected' || a.climbY < KTX_PLATFORM_Y - 0.25 ||
-            a.x <= KTX_TRANSFER_X || a.z < 189) continue;
-        if (++infected >= 4 || (a.z > 191 && Math.abs(a.x - TRAIN_BOARDING_X) <= 5)) {
-          this.ktxPlatformLost = true;
-          this.ktxRetreat.public = this.ktxRetreat.crew = true;
-          break;
+        if (!a.isAlive || a.isEvacuated || a.isTrainPassenger || a.climbY < KTX_PLATFORM_Y - 0.3 ||
+            a.x <= KTX_TRANSFER_X || a.z < 188.5) continue;
+        if (a.role === 'infected') {
+          if (!this.ktxPlatformLost && (++infected >= 4 || (a.z > 191 && Math.abs(a.x - TRAIN_BOARDING_X) <= 5))) {
+            this.ktxPlatformLost = true;
+            this.ktxRetreat.public = this.ktxRetreat.crew = true;
+          }
+        } else if (a.role === 'civilian' && a.z >= 189) {
+          platformCivilians++;
         }
       }
+      this.ktxPlatformCivilians = platformCivilians;
     }
     for (const id of KTX_LANES) {
       const point = KTX_GATES[id];
@@ -1903,11 +1910,11 @@ export class OutbreakSimulation {
   }
 
   private moveThroughTerminal(agent: AgentData, dt: number, officerLane?: KtxLane): boolean {
-    if (!this.layeredKtx || agent.z < KTX_LAST_LINE_Z + 2.5 || agent.onWallDeck || agent.fallY > 0.1) return false;
+    if (!this.layeredKtx || agent.z < KTX_LAST_LINE_Z + 1.4 || agent.onWallDeck || agent.fallY > 0.1) return false;
     const infected = agent.role === 'infected';
     const lane = officerLane ?? (infected && agent.x < -10 ? 'crew' : 'public');
-    const docked = this.expressTrain.state === 'DOCKED';
-    const slot = agent.id % 36;
+    const docked = this.expressTrain.state === 'DOCKED' &&
+      (infected || !!officerLane || this.expressTrain.currentLoad < this.expressTrain.layout.capacity);
     const surface = ktxSurfaceAt(agent.x, agent.z, agent.climbY)?.id;
     const car = this.getTrainCarForPos(agent.x, agent.z, agent.climbY);
     if (docked && (surface === 'boarding' && agent.z < this.expressTrain.z - 0.35 ||
@@ -1920,9 +1927,10 @@ export class OutbreakSimulation {
       this.moveAlongTrainAisle(agent, this.expressTrain.x + this.expressTrain.cabinSwitchLocalX - 2, agent.baseSpeed, dt);
       return true;
     }
+    const platformBusy = !infected && !officerLane && this.ktxPlatformCivilians >= 72;
     const waypoint = ktxWaypoint(agent.x, agent.z, agent.climbY, lane, docked,
-      infected || !!officerLane || this.ktxGateOpen(lane), slot,
-      infected || !!officerLane || this.ktxGateOpen('mezzanine'));
+      infected || !!officerLane || this.ktxGateOpen(lane), agent.id,
+      infected || !!officerLane || this.ktxGateOpen('mezzanine'), platformBusy);
     agent.destinationLabel = waypoint.label;
     if (Math.hypot(waypoint.x - agent.x, waypoint.z - agent.z) > 0.29) {
       if (waypoint.direct) this.steerTowards(agent, waypoint.x, waypoint.z, agent.baseSpeed, dt);
@@ -1935,7 +1943,7 @@ export class OutbreakSimulation {
   }
 
   private steerAroundStationGround(agent: AgentData, goal: Vec2, speed: number, dt: number): void {
-    if (!this.layeredKtx || agent.climbY > 0.12 || agent.z < KTX_LAST_LINE_Z + 2.5 || goal.z < KTX_LAST_LINE_Z + 2.5 ||
+    if (!this.layeredKtx || agent.climbY > 0.12 || agent.z < KTX_LAST_LINE_Z + 1.4 || goal.z < KTX_LAST_LINE_Z + 1.4 ||
         ktxGroundSegmentClear(agent, goal)) {
       this.stationDetours.delete(agent);
       this.steerTowards(agent, goal.x, goal.z, speed, dt);
@@ -2794,6 +2802,7 @@ export class OutbreakSimulation {
     this.nextWallGateCheck = this.simTime + 0.65;
     for (const gate of this.blastGates) {
       let infected = 0;
+      let nearGateInfected = 0;
       let nearest = Infinity;
       let exitThreat = false;
       let inPassage = false;
@@ -2807,6 +2816,7 @@ export class OutbreakSimulation {
         if (agent.role === 'infected') {
           nearest = Math.min(nearest, distance);
           if (distance <= 24) infected++;
+          if (distance <= 13.5) nearGateInfected++;
           if (dz >= 0 && dz <= 12 && dx < gate.width / 2 + 2) exitThreat = true;
         } else if (agent.role === 'civilian') {
           if (dx < gate.width / 2 && Math.abs(dz) < 2.8) inPassage = true;
@@ -2816,8 +2826,8 @@ export class OutbreakSimulation {
           }
         }
       }
-      const pressure = infected >= 3 || nearest < 12 || exitThreat;
-      const unsafeUntil = pressure ? this.simTime + 5 : this.gateTraffic.get(gate.id)?.unsafeUntil ?? 0;
+      const pressure = nearGateInfected >= 2 || nearest < 9.5 || exitThreat;
+      const unsafeUntil = pressure ? this.simTime + 4 : this.gateTraffic.get(gate.id)?.unsafeUntil ?? 0;
       this.gateTraffic.set(gate.id, { infected, exitThreat, crowd, unsafeUntil });
       if (gate.breached || gate.z <= this.policeFrontZ || this.simTime < (this.gateCooldown.get(gate.id) ?? 0)) continue;
       const postX = wallPostX(gate.x);
@@ -2842,8 +2852,8 @@ export class OutbreakSimulation {
       } else {
         const sealedAt = this.guardSealedGates.get(gate.id);
         const initialEvacuation = this.layeredKtx && !this.gateCooldown.has(gate.id) && waiting > 0;
-        const guardsReopening = sealedAt !== undefined && this.simTime - sealedAt >= 15;
-        if (!gate.isOpen && infected === 0 && unsafeUntil <= this.simTime && (initialEvacuation || guardsReopening)) {
+        const guardsReopening = sealedAt !== undefined && this.simTime - sealedAt >= 6.5;
+        if (!gate.isOpen && nearGateInfected === 0 && !exitThreat && waiting > 0 && (initialEvacuation || guardsReopening)) {
           this.toggleBlastGate(gate.id);
           this.gateCooldown.set(gate.id, this.simTime + GATE_OPEN_SECONDS);
           this.transmitRadio({ kind: 'gateOpening', place: gate.label }, guard);
@@ -3245,6 +3255,14 @@ export class OutbreakSimulation {
     if (this.handlePinnedOrStunned(a)) return;
     if (this.reactToTrainThreat(a, dt)) return;
     if (this.moveToTrainSeat(a, dt)) return;
+    if (
+      a.avoidsEvacuation &&
+      this.layeredKtx &&
+      (a.z >= KTX_LAST_LINE_Z + 1.0 ||
+        (this.civilianEvacuationStage === 2 && (a.civState === 'FLEEING' || a.threatPos !== null)))
+    ) {
+      a.avoidsEvacuation = false;
+    }
     if (this.layeredKtx && !a.avoidsEvacuation && this.guideCivilianToKtx(a, dt)) {
       a.civState = 'EVACUATING';
       return;
@@ -3574,7 +3592,7 @@ export class OutbreakSimulation {
       this.civilianEvacuationStage === 0 && (first.breachedNotified || infectedAtOrBeyond(first.z)) ? 1 : this.civilianEvacuationStage;
     if (stage === this.civilianEvacuationStage) return;
     this.civilianEvacuationStage = stage;
-    const message = stage === 1 ? 'EVACUATION: Sector 2, rally behind Line 3.' :
+    const message = stage === 1 ? 'EVACUATION: Sector 2, proceed through Line 3 to KTX.' :
       'EVACUATION: Sector 3 and rally groups, proceed to KTX.';
     this.triggerAlert(message, 'warn');
     this.addEventLog('evac', message, 0, stage === 1 ? first.z : second.z);
@@ -3583,6 +3601,10 @@ export class OutbreakSimulation {
   private guideCivilianToKtx(a: AgentData, dt: number): boolean {
     const [first, second, last] = this.defenseWalls;
     if (!first || !second || !last) return false;
+    if (a.z >= last.z + 1.4) {
+      if (a.civState === 'SHELTERED') this.removeAgentFromShelter(a);
+      return this.moveThroughTerminal(a, dt);
+    }
     const holdBehindLine = this.civilianEvacuationStage < 2;
     if (holdBehindLine && !this.stagedCivilians.has(a.id)) {
       const inSectorTwo = a.z >= first.z && a.z < second.z;
@@ -3592,31 +3614,27 @@ export class OutbreakSimulation {
       this.stagedCivilians.add(a.id);
     }
     if (a.civState === 'SHELTERED') this.removeAgentFromShelter(a);
-    if (holdBehindLine && a.z >= last.z + last.thickness / 2 + 0.65) {
-      const slot = a.id % 36;
-      const x = slot < 18 ? -4 + (slot % 9) * 2.9 : 36 + (slot % 9) * 2.9;
-      const z = 152 + Math.floor(slot / 9) % 2 * 2.05;
-      this.moveToGateGoal(a, { x, z }, 'Rallying behind Line 3', a.baseSpeed, dt);
-      return true;
-    }
-    if (!holdBehindLine && this.moveThroughTerminal(a, dt)) return true;
-    const wall = this.defenseWalls.find((line) => a.z < line.z + (line === last ? 2.5 : line.thickness / 2 + 0.6));
+    const wall = this.defenseWalls.find((line) => a.z < line.z + (line === last ? 1.4 : line.thickness / 2 + 0.6));
     if (!wall) return false;
     const previous = this.civilianGateChoices.get(a.id);
-    const lastLine = wall.z === KTX_LAST_LINE_Z;
-    const passage = this.blastGates.find((gate) => gate.wallId === wall.id && (!lastLine || gate.x > 0) &&
+    const passage = this.blastGates.find((gate) => gate.wallId === wall.id &&
       Math.abs(a.x - gate.x) < gateClearHalfWidth(gate) - 0.45 && Math.abs(a.z - gate.z) < 2.8 &&
       !this.gateTraffic.get(gate.id)?.exitThreat);
-    const gate = passage ?? (lastLine ? this.blastGates.find((g) => g.wallId === wall.id && g.x > 0)
-      : this.chooseEvacuationGate(a, wall, previous));
+    const gate = passage ?? this.chooseEvacuationGate(a, wall, previous);
     if (!gate) return false;
     this.civilianGateChoices.set(a.id, gate);
 
-    const canCross = passage === gate || this.isGateSafe(gate);
+    const canCross = passage === gate || this.canCivilianCrossGate(gate);
+    if (!canCross) {
+      const immediateThreat = this.spatial
+        .queryRadius(a.x, a.z, 10, this.neighborBuffer)
+        .some((other) => other.isAlive && other.role === 'infected');
+      if (immediateThreat) return false;
+    }
     const lane = Math.min(2.5, Math.max(0, gateClearHalfWidth(gate) - 1)) * (a.id % 5 - 2) / 2;
-    const approach = a.z < gate.z - 4 || (a.z < gate.z - 2.6 && Math.abs(a.x - gate.x - lane) > 1);
+    const approach = a.z < gate.z - 14 || (a.z < gate.z - 2.6 && Math.abs(a.x - gate.x) > gateClearHalfWidth(gate) - 0.4);
     const goal = canCross
-      ? { x: gate.x + lane, z: gate.z + (approach ? -2.6 : 4.2) }
+      ? { x: gate.x + lane, z: gate.z + (approach ? -2.6 : 5.2) }
       : this.gateWaitingPoint(a, gate);
     const destination = canCross
       ? `${approach ? 'Approaching' : 'Evacuating through'} ${gate.label}`
@@ -3626,6 +3644,7 @@ export class OutbreakSimulation {
   }
 
   private clearInnerGateApproach(agent: AgentData, dt: number): boolean {
+    if (agent.role === 'civilian' && this.layeredKtx && agent.z >= KTX_LAST_LINE_Z + 0.5) return false;
     const gate = this.blastGates.find((g) => agent.z > g.z + 0.9 && agent.z < g.z + 8.5 &&
       Math.abs(agent.x - g.x) < g.width / 2 + 2.4 && !this.isGateSafe(g));
     if (!gate) return false;
@@ -3640,6 +3659,10 @@ export class OutbreakSimulation {
     return (this.gateTraffic.get(gate.id)?.unsafeUntil ?? 0) > this.simTime;
   }
 
+  private canCivilianCrossGate(gate: BlastGateData): boolean {
+    return (gate.isOpen || gate.breached) && gateClearHalfWidth(gate) > 1.05 && !this.gateTraffic.get(gate.id)?.exitThreat;
+  }
+
   private isGateSafe(gate: BlastGateData): boolean {
     return (gate.isOpen || gate.breached) && gateClearHalfWidth(gate) > 1.05 && !this.isGateThreatened(gate);
   }
@@ -3650,7 +3673,11 @@ export class OutbreakSimulation {
     for (const gate of this.blastGates) {
       if (gate.wallId !== wall.id) continue;
       const traffic = this.gateTraffic.get(gate.id);
-      const penalty = this.isGateThreatened(gate) ? 450 + (traffic?.infected ?? 0) * 3 : this.isGateSafe(gate) ? 0 : 205;
+      const penalty = !this.canCivilianCrossGate(gate)
+        ? 380 + (traffic?.infected ?? 0) * 3
+        : this.isGateThreatened(gate)
+        ? 140 + (traffic?.infected ?? 0) * 2
+        : 0;
       const score = Math.abs(gate.x - agent.x) + penalty + Math.min(60, traffic?.crowd ?? 0) * 1.8 - (gate === previous ? 9 : 0);
       if (score < bestScore) {
         bestScore = score;
@@ -3684,12 +3711,13 @@ export class OutbreakSimulation {
   }
 
   private moveToGateGoal(agent: AgentData, goal: Vec2, label: string, speed: number, dt: number): void {
-    if (agent.destinationLabel !== label) {
+    const previous = this.pursuitGoals.get(agent);
+    if (agent.path.length === 0 || (previous && Math.hypot(goal.x - previous.x, goal.z - previous.z) > 9)) {
       agent.path = [];
       agent.pathIndex = 0;
       agent.repathCooldown = 0;
-      agent.destinationLabel = label;
     }
+    agent.destinationLabel = label;
     if (Math.hypot(agent.x - goal.x, agent.z - goal.z) <= 0.72) {
       agent.vx = 0;
       agent.vz = 0;
@@ -5892,7 +5920,7 @@ export class OutbreakSimulation {
         if ((a.z < wall.z) === (wp.z < wall.z)) continue;
         const x = a.x + (wp.x - a.x) * (wall.z - a.z) / (wp.z - a.z);
         const passable = this.blastGates.some((gate) => gate.wallId === wall.id &&
-          this.isGateSafe(gate) && Math.abs(x - gate.x) < gateClearHalfWidth(gate) - 0.5);
+          this.canCivilianCrossGate(gate) && Math.abs(x - gate.x) < gateClearHalfWidth(gate) - 0.5);
         if (!passable) {
           a.path = [];
           a.pathIndex = 0;
