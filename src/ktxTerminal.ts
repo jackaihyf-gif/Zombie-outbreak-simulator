@@ -73,19 +73,19 @@ const links = [
 export const KTX_GROUND_ENTRIES = ['east-lower', 'west-lower', 'tower-stair'];
 
 export const KTX_STATION_POSTS = [
-  { surface: 'terrace', x: 11.6, z: 162.3 },
-  { surface: 'terrace', x: 21.3, z: 172.2 },
-  { surface: 'east-landing', x: 40.5, z: 177.2 },
-  { surface: 'east-landing', x: 45.8, z: 177.2 },
-  { surface: 'terrace', x: 11.6, z: 183.4 },
-  { surface: 'terrace', x: 21.3, z: 162.3 },
-  { surface: 'east-landing', x: 30.6, z: 179.7 },
-  { surface: 'platform', x: 30.5, z: 190.0 },
-  { surface: 'terrace', x: 11.6, z: 172.2 },
-  { surface: 'platform', x: 4.3, z: 190.0 },
-  { surface: 'terrace', x: 21.3, z: 183.4 },
-  { surface: 'east-landing', x: 37.3, z: 179.8 },
-  { surface: 'platform', x: -7.4, z: 190.0 }
+  { surface: 'terrace', x: 23.6, z: 162.5 },
+  { surface: 'terrace', x: 23.6, z: 171.5 },
+  { surface: 'east-landing', x: 31.8, z: 176.6 },
+  { surface: 'east-landing', x: 40.5, z: 176.6 },
+  { surface: 'east-landing', x: 45.8, z: 176.6 },
+  { surface: 'terrace', x: 13.5, z: 158.6 },
+  { surface: 'terrace', x: 20.5, z: 158.6 },
+  { surface: 'terrace', x: 23.6, z: 181.5 },
+  { surface: 'platform', x: 30.5, z: 189.6 },
+  { surface: 'platform', x: 4.3, z: 189.6 },
+  { surface: 'platform', x: -7.4, z: 189.6 },
+  { surface: 'platform', x: -23.0, z: 190.4 },
+  { surface: 'terrace', x: 9.0, z: 164.0 }
 ] as const;
 
 export function ktxCanWalkBetween(from: KtxSurface, to: KtxSurface): boolean {
@@ -104,14 +104,16 @@ export function ktxSurfaceHeight(surface: KtxSurface, _x: number, z: number): nu
 }
 
 export const KTX_SHOT_FLOORS = KTX_SURFACES.flatMap((surface) => {
-  const { minX, maxX, minZ, maxZ, fromY, toY } = surface;
-  if (fromY === toY) return [{ minX, maxX, minZ, maxZ, minY: fromY - 0.56, maxY: fromY }];
+  const { minX, maxX, minZ, maxZ, fromY, toY, id } = surface;
+  if (fromY === toY) return [{ surfaceId: id, isStair: false, minX, maxX, minZ, maxZ, minY: fromY - 0.56, maxY: fromY }];
   const steps = Math.ceil((toY - fromY) / 0.19);
   const depth = (maxZ - minZ) / steps;
   return Array.from({ length: steps }, (_, index) => {
     const z = minZ + (index + 0.5) * depth;
     const y = ktxSurfaceHeight(surface, minX, z);
     return {
+      surfaceId: id,
+      isStair: true,
       minX, maxX, minZ: z - (depth + 0.015) / 2, maxZ: z + (depth + 0.015) / 2,
       minY: y - 0.33, maxY: y + 0.01
     };
@@ -146,7 +148,7 @@ export const KTX_BOXES: readonly KtxBox[] = [
   { x: 43.7, z: 177.2, width: 9.6, depth: 2.2, height: 2.65, kind: 'wall' },
   ...[168, 173, 178].map((z): KtxBox =>
     ({ x: 9.3, z, y: KTX_PLATFORM_Y, width: 0.72, depth: 3.1, height: 0.94, kind: 'bench' })),
-  { x: 23.45, z: 163.5, y: KTX_PLATFORM_Y, width: 0.66, depth: 2.8, height: 1.62, kind: 'locker' },
+  { x: 15.8, z: 185.5, y: KTX_PLATFORM_Y, width: 2.6, depth: 0.68, height: 1.45, kind: 'locker' },
   { x: 13, z: 162.5, width: 3, depth: 0.74, height: 1.45, kind: 'locker' },
   { x: 52.8, z: 162.6, width: 2.8, depth: 0.8, height: 0.94, kind: 'bench' },
   ...[[149, KTX_FORECOURT_CROSSING.z - KTX_FORECOURT_CROSSING.width / 2],

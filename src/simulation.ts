@@ -493,8 +493,8 @@ export class OutbreakSimulation {
     this.spawnInitialPopulation();
     if (this.layeredKtx) {
       for (const [x, z, y, lane] of [
-        [-59, 163, 4, 'crew'], [-51, 160.6, 0, 'crew'], [-33, 161.8, 0, 'crew'],
-        [43, 162.2, 0, 'public'], [20, 160.2, 0, 'public'], [45, 178.8, 3, 'public']
+        [-55.2, 161.6, 4, 'crew'], [-51, 160.6, 0, 'crew'], [-33, 161.8, 0, 'crew'],
+        [43, 162.2, 0, 'public'], [20, 160.2, 0, 'public'], [44.8, 176.6, 3, 'public']
       ] as const) {
         const officer = this.createAgent('police', x, z, y > 0);
         officer.climbY = y;
@@ -505,7 +505,7 @@ export class OutbreakSimulation {
       }
       for (const post of KTX_STATION_POSTS.slice(0, 3)) {
         const officer = this.createAgent('police', post.x, post.z, false);
-        officer.climbY = KTX_PLATFORM_Y;
+        officer.climbY = post.surface === 'east-landing' ? 3 : KTX_PLATFORM_Y;
         officer.onTerminalFloor = true;
         this.stationOfficers.set(officer.id, 'public');
         this.stationDefensePosts.set(officer.id, post);
@@ -4655,10 +4655,10 @@ export class OutbreakSimulation {
           this.steerTowards(p, Math.max(11, Math.min(22, p.x)), 191.25, p.baseSpeed, dt);
           p.destinationLabel = 'Falling back from KTX waiting deck';
         } else if (surface === 'west-landing' || surface === 'east-landing') {
-          const until = this.ktxLandingHoldUntil[stationLane] ??= this.simTime + 3.5;
+          const until = this.ktxLandingHoldUntil[stationLane] ??= this.simTime + 5.5;
           if (this.simTime < until) {
             const x = stationLane === 'crew' ? -53 + (p.id % 4) * 3.2 : 39.2 + (p.id % 4) * 2.4;
-            this.updateGroundGuard(p, { wall: null, x, z: 177.2 }, dt);
+            this.updateGroundGuard(p, { wall: null, x, z: 176.6 }, dt);
             p.destinationLabel = 'Covering KTX stair landing';
             return;
           }
@@ -5143,10 +5143,11 @@ export class OutbreakSimulation {
   }
 
   private coverOfficerFallback(officer: AgentData, wall?: DefenseWallData): void {
-    const range = 17;
+    const range = officer.climbY > 0.5 ? (officer.isSwat ? 26 : 22) : (officer.isSwat ? 22 : 19);
+    const inStation = this.layeredKtx && ktxContains(officer.x, officer.z);
     const canTarget = (target: AgentData | null | undefined): target is AgentData =>
       !!target?.isAlive && target.role === 'infected' &&
-      Math.abs(target.climbY + target.fallY - officer.climbY) < 1.6 &&
+      (inStation ? Math.abs(target.climbY + target.fallY - officer.climbY) <= 7.5 : Math.abs(target.climbY + target.fallY - officer.climbY) < 1.9) &&
       Math.hypot(target.x - officer.x, target.z - officer.z) <= range;
     const canSee = (target: AgentData) => this.canOfficerSee(officer, target, wall);
 
@@ -5172,6 +5173,7 @@ export class OutbreakSimulation {
     }
     officer.targetAgentId = target.id;
     officer.rotationY = Math.atan2(target.x - officer.x, target.z - officer.z);
+    if (officer.climbY > 1.5) this.aimGuardAtHeight(officer, target);
     if (officer.attackCooldown <= 0 && officer.reloadTimer <= 0 && officer.ammo > 0 && canSee(target)) {
       this.firePoliceWeapon(officer, target);
     }
@@ -5184,24 +5186,32 @@ export class OutbreakSimulation {
     p.vx = 0;
     p.vz = 0;
     p.wallAimPitch = 0;
-    const deck = this.layeredKtx && p.climbY > 2.8 && !this.getTrainCarForAgent(p)
+    const deck = this.layeredKtx && p.climbY > 0.25 && !this.getTrainCarForAgent(p)
       ? ktxSurfaceAt(p.x, p.z, p.climbY) : undefined;
     const elevatedPost = deck && deck.fromY === deck.toY ? deck : undefined;
+    const stairPost = deck && deck.fromY !== deck.toY ? deck : undefined;
+    const fireRange = elevatedPost || p.climbY > 2.5 ? (p.isSwat ? 32 : 28) : (p.isSwat ? 24 : 21);
     if (p.perceptionCooldown <= 0) {
-      p.perceptionCooldown = 0.34 + (p.id % 5) * 0.03;
+      p.perceptionCooldown = 0.28 + (p.id % 5) * 0.03;
       p.targetAgentId = null;
       this.stationFiringPositions.delete(p);
       let nearest = Infinity;
-      for (const infected of this.spatial.queryRadius(p.x, p.z, 17, this.neighborBuffer)) {
+      for (const infected of this.spatial.queryRadius(p.x, p.z, fireRange, this.neighborBuffer)) {
         if (!infected.isAlive || infected.role !== 'infected') continue;
         const height = p.climbY - infected.climbY - infected.fallY;
         const lower = height > 1.9;
-        if (height < -1.9 || (lower && !elevatedPost)) continue;
+        if (elevatedPost) {
+          if (height < -2.6) continue;
+        } else if (stairPost) {
+          if (Math.abs(height) > 6.5) continue;
+        } else {
+          if (Math.abs(height) > 2.4) continue;
+        }
         const distance = Math.hypot(infected.x - p.x, infected.z - p.z, height);
-        const score = distance + (lower ? 3.5 : 0);
-        if (distance >= 17 || score >= nearest) continue;
-        const clear = elevatedPost ? this.guardHasShot(p, p.climbY, infected) : this.canOfficerSee(p, infected);
-        const spot = !clear && lower && elevatedPost ? this.stationFiringPosition(p, post, elevatedPost, infected) : undefined;
+        const score = distance + (lower ? 2.0 : 0);
+        if (distance > fireRange || score >= nearest) continue;
+        const clear = elevatedPost || stairPost ? this.guardHasShot(p, p.climbY, infected) : this.canOfficerSee(p, infected);
+        const spot = !clear && elevatedPost ? this.stationFiringPosition(p, post, elevatedPost, infected) : undefined;
         if (!clear && !spot) continue;
         if (spot) this.stationFiringPositions.set(p, spot);
         else this.stationFiringPositions.delete(p);
@@ -5211,15 +5221,15 @@ export class OutbreakSimulation {
     }
     const candidate = this.getAgentById(p.targetAgentId);
     const target = candidate?.isAlive && candidate.role === 'infected' ? candidate : null;
-    const distance = target ? Math.hypot(p.x - target.x, p.z - target.z) : Infinity;
-    const lower = !!target && !!elevatedPost && p.climbY - target.climbY - target.fallY > 1.9;
-    const firingPosition = lower ? this.stationFiringPositions.get(p) : undefined;
-    if (lower) {
+    const distance = target ? Math.hypot(p.x - target.x, p.z - target.z, p.climbY - target.climbY - target.fallY) : Infinity;
+    const hasVerticalDiff = !!target && Math.abs(p.climbY - target.climbY - target.fallY) > 1.4;
+    const firingPosition = target && elevatedPost ? this.stationFiringPositions.get(p) : undefined;
+    if (elevatedPost && target && firingPosition && !this.guardHasShot(p, p.climbY, target)) {
       p.policeState = 'ENGAGING';
-      if (firingPosition && Math.hypot(p.x - firingPosition.x, p.z - firingPosition.z) > 0.1) {
-        this.steerTowards(p, firingPosition.x, firingPosition.z, p.baseSpeed * 0.75, dt);
+      if (Math.hypot(p.x - firingPosition.x, p.z - firingPosition.z) > 0.14) {
+        this.steerTowards(p, firingPosition.x, firingPosition.z, p.baseSpeed * 0.85, dt);
       }
-    } else if (target && distance < (disengaging ? 9 : 7)) {
+    } else if (target && !hasVerticalDiff && distance < (disengaging ? 9 : 6.5)) {
       p.policeState = 'RETREATING';
       p.destinationLabel = 'Tactical Fallback';
       const awayX = p.x + (p.x - target.x) * 2;
@@ -5227,7 +5237,7 @@ export class OutbreakSimulation {
       this.steerTowards(p, awayX, awayZ, p.baseSpeed, dt);
     } else {
       if (target) p.policeState = 'ENGAGING';
-      if (Math.hypot(post.x - p.x, post.z - p.z) > 2.25) {
+      if ((!target || !elevatedPost) && Math.hypot(post.x - p.x, post.z - p.z) > 2.25) {
         if (p.climbY < 0.1 && (!this.layeredKtx || !ktxContains(p.x, p.z))) {
           this.pursuePositionSmart(p, post.x, post.z, p.baseSpeed * 0.9, dt);
         } else {
@@ -5237,25 +5247,28 @@ export class OutbreakSimulation {
     }
     if (target) {
       p.rotationY = Math.atan2(target.x - p.x, target.z - p.z);
-      if (elevatedPost) this.aimGuardAtHeight(p, target);
-      if (p.attackCooldown <= 0 && p.reloadTimer <= 0 && p.ammo > 0 && distance < 17 &&
-          (elevatedPost ? this.guardHasShot(p, p.climbY, target) : this.canOfficerSee(p, target))) {
+      if (elevatedPost || stairPost) this.aimGuardAtHeight(p, target);
+      if (p.attackCooldown <= 0 && p.reloadTimer <= 0 && p.ammo > 0 && distance <= fireRange &&
+          (elevatedPost || stairPost ? this.guardHasShot(p, p.climbY, target) : this.canOfficerSee(p, target))) {
         this.firePoliceWeapon(p, target);
       }
     }
   }
 
   private stationFiringPosition(guard: AgentData, post: Vec2, deck: KtxSurface, target: AgentData): Vec2 | undefined {
-    const margin = 0.12;
+    const margin = 0.28;
     const left = deck.minX + margin, right = deck.maxX - margin;
     const front = deck.minZ + margin, rear = deck.maxZ - margin;
     const x = Math.max(left, Math.min(right, target.x));
     const z = Math.max(front, Math.min(rear, target.z));
-    const spots = [{ x, z: front }, { x, z: rear }, { x: left, z }, { x: right, z }];
+    const spots = [
+      { x, z: front }, { x, z: rear }, { x: left, z }, { x: right, z },
+      { x: left, z: front }, { x: right, z: front }, { x: left, z: rear }, { x: right, z: rear }
+    ];
     return spots.sort((a, b) => Math.hypot(a.x - guard.x, a.z - guard.z) - Math.hypot(b.x - guard.x, b.z - guard.z))
-      .find((spot) => Math.hypot(spot.x - post.x, spot.z - post.z) <= 9 &&
+      .find((spot) => Math.hypot(spot.x - post.x, spot.z - post.z) <= 13.5 &&
         !KTX_BOXES.some((box) => Math.abs((box.y ?? 0) - guard.climbY) < 0.3 &&
-          Math.abs(spot.x - box.x) < box.width / 2 + 0.5 && Math.abs(spot.z - box.z) < box.depth / 2 + 0.5) &&
+          Math.abs(spot.x - box.x) < box.width / 2 + 0.45 && Math.abs(spot.z - box.z) < box.depth / 2 + 0.45) &&
         this.guardHasShot(spot, guard.climbY, target));
   }
 
@@ -5424,15 +5437,16 @@ export class OutbreakSimulation {
     const attackingGate = (infected: AgentData) => !!gate && gate.openFraction <= 0.22 &&
       infected.climbY + infected.fallY < 0.65 && infected.z < gate.z - 0.45 && infected.z >= gate.z - 4.1 &&
       Math.abs(infected.x - gate.x) <= gate.width / 2 + 1.5;
+    const maxWallRange = p.isSwat ? 32 : 28;
     if (p.perceptionCooldown <= 0) {
-      p.perceptionCooldown = 0.27 + (p.id % 5) * 0.035;
+      p.perceptionCooldown = 0.24 + (p.id % 5) * 0.03;
       p.targetAgentId = null;
-      let closest = 20;
-      for (const infected of this.spatial.queryRadius(p.x, p.z, closest, this.neighborBuffer)) {
+      let closest = maxWallRange;
+      for (const infected of this.spatial.queryRadius(p.x, p.z, maxWallRange, this.neighborBuffer)) {
         if (!infected.isAlive || infected.role !== 'infected') continue;
         const height = p.climbY - infected.climbY - infected.fallY;
         const distance = Math.hypot(p.x - infected.x, p.z - infected.z, height);
-        if (distance > 20) continue;
+        if (distance > maxWallRange) continue;
         const gateTarget = attackingGate(infected);
         const score = distance - (infected.onWallDeck ? 14 : gateTarget ? 6 : 0);
         if (score >= closest || !this.canWallGuardSee(p, infected, wall)) continue;
@@ -5463,7 +5477,7 @@ export class OutbreakSimulation {
     const height = p.climbY - target.climbY - target.fallY;
     const distance = Math.hypot(flatRange, height);
     this.aimGuardAtHeight(p, target);
-    if (p.attackCooldown <= 0 && p.reloadTimer <= 0 && p.ammo > 0 && distance <= 20 &&
+    if (p.attackCooldown <= 0 && p.reloadTimer <= 0 && p.ammo > 0 && distance <= maxWallRange &&
         this.canWallGuardSee(p, target, wall)) {
       p.policeState = 'ENGAGING';
       this.firePoliceWeapon(p, target);
@@ -5471,7 +5485,7 @@ export class OutbreakSimulation {
   }
 
   private canWallGuardSee(guard: AgentData, target: AgentData, wall: DefenseWallData): boolean {
-    return guard.climbY >= wall.height - 0.6 && this.guardHasShot(guard, guard.climbY, target);
+    return guard.climbY >= wall.height - 0.6 && this.guardHasShot(guard, guard.climbY, target, wall.id);
   }
 
   private aimGuardAtHeight(officer: AgentData, target: AgentData): void {
@@ -5479,18 +5493,39 @@ export class OutbreakSimulation {
     officer.wallAimPitch = Math.max(-0.55, Math.min(1.43, Math.atan2(height, Math.hypot(target.x - officer.x, target.z - officer.z))));
   }
 
-  private guardHasShot(from: Vec2, height: number, target: AgentData): boolean {
+  private guardHasShot(from: Vec2, height: number, target: AgentData, wallId?: number): boolean {
     const muzzleY = height + GUARD_MUZZLE_HEIGHT;
-    const dx = target.x - from.x, dz = target.z - from.z;
-    const dy = target.climbY + target.fallY + GUARD_TARGET_HEIGHT - muzzleY;
-    const distance = Math.hypot(dx, dy, dz);
-    const trace = new ShotTrace(from.x, muzzleY, from.z, Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)), distance);
-    trace.traceCity(this.city, this.defenseWalls, this.blastGates, this.interiorDoors, this.vehicles);
-    this.traceRailAndStationCover(trace);
-    return trace.distance >= distance - 0.025;
+    const ownSurface = height > 0.5 ? ktxSurfaceAt(from.x, from.z, height) : undefined;
+    const nearEdge =
+      wallId !== undefined ||
+      (!!ownSurface &&
+        (from.x - ownSurface.minX < 1.45 ||
+          ownSurface.maxX - from.x < 1.45 ||
+          from.z - ownSurface.minZ < 1.45 ||
+          ownSurface.maxZ - from.z < 1.45));
+    const dx0 = target.x - from.x;
+    const dz0 = target.z - from.z;
+    const horiz0 = Math.hypot(dx0, dz0);
+    const lean = nearEdge && horiz0 > 0.5 && target.climbY + target.fallY < height + 0.5 ? (wallId !== undefined ? 0.58 : 0.45) : 0;
+    const sx = lean > 0 ? from.x + (dx0 / horiz0) * lean : from.x;
+    const sz = lean > 0 ? from.z + (dz0 / horiz0) * lean : from.z;
+
+    const testAtTargetHeight = (targetHeightOffset: number): boolean => {
+      const dx = target.x - sx;
+      const dz = target.z - sz;
+      const dy = target.climbY + target.fallY + targetHeightOffset - muzzleY;
+      const distance = Math.hypot(dx, dy, dz);
+      if (distance < 0.05) return true;
+      const trace = new ShotTrace(sx, muzzleY, sz, Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)), distance);
+      trace.traceCity(this.city, this.defenseWalls, this.blastGates, this.interiorDoors, this.vehicles, wallId);
+      this.traceRailAndStationCover(trace, ownSurface?.id, dy < -0.1);
+      return trace.distance >= distance - 0.03;
+    };
+
+    return testAtTargetHeight(GUARD_TARGET_HEIGHT) || testAtTargetHeight(1.52);
   }
 
-  private traceRailAndStationCover(trace: ShotTrace): void {
+  private traceRailAndStationCover(trace: ShotTrace, ownSurfaceId?: string, shootingDown = false): void {
     const trainDeck = this.layeredKtx ? KTX_PLATFORM_Y : 0;
     const startZ = trace.ray.origin.z;
     const endZ = startZ + trace.ray.direction.z * trace.distance;
@@ -5501,6 +5536,7 @@ export class OutbreakSimulation {
     }
     if (!this.layeredKtx || maxZ < KTX_LAST_LINE_Z || minZ >= 207) return;
     for (const floor of KTX_SHOT_FLOORS) {
+      if (shootingDown && floor.isStair && floor.surfaceId === ownSurfaceId) continue;
       if (floor.minZ > maxZ || floor.maxZ < minZ) continue;
       trace.testBox(floor.minX, floor.maxX, floor.minY, floor.maxY, floor.minZ, floor.maxZ, 'dust');
     }
@@ -5526,8 +5562,13 @@ export class OutbreakSimulation {
 
   private canOfficerSee(officer: AgentData, target: AgentData, wall?: DefenseWallData): boolean {
     if (wall) return this.canWallGuardSee(officer, target, wall);
-    if (this.ridingKtx(officer) !== this.ridingKtx(target) ||
-        Math.abs(officer.climbY - target.climbY - target.fallY) > 2.1 ||
+    if (this.ridingKtx(officer) !== this.ridingKtx(target)) return false;
+    if (this.layeredKtx && (ktxContains(officer.x, officer.z) || ktxContains(target.x, target.z)) &&
+        !this.getTrainCarForAgent(officer) && !this.getTrainCarForAgent(target)) {
+      return Math.abs(officer.climbY - target.climbY - target.fallY) <= 7.5 &&
+        this.guardHasShot(officer, officer.climbY, target);
+    }
+    if (Math.abs(officer.climbY - target.climbY - target.fallY) > 2.1 ||
         this.ktxBlocksSight(officer, target)) return false;
     if (this.getTrainCarForAgent(officer) || this.getTrainCarForAgent(target)) {
       let blocked = false;

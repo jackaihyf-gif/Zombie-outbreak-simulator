@@ -57,7 +57,7 @@ export class ShotTrace {
 
   public traceCity(
     city: CityLayout, walls: DefenseWallData[], gates: BlastGateData[],
-    doors: InteriorDoorData[], vehicles: VehicleData[]
+    doors: InteriorDoorData[], vehicles: VehicleData[], ignoreWallDeckId?: number
   ): void {
     const origin = this.ray.origin;
     const end = this.ray.at(this.distance, new Vector3());
@@ -93,7 +93,9 @@ export class ShotTrace {
       if (rearEdge < minZ || frontEdge > maxZ) continue;
       const testWallSegment = (left: number, right: number) => {
         this.testBox(left, right, 0, wall.height, wall.z - half, wall.z + half, 'dust');
-        this.testBox(left, right, wall.height, wall.height + WALL_DECK_RISE, frontEdge, rearEdge, 'dust');
+        if (wall.id !== ignoreWallDeckId) {
+          this.testBox(left, right, wall.height, wall.height + WALL_DECK_RISE, frontEdge, rearEdge, 'dust');
+        }
       };
       const segments = gates.filter((gate) => gate.wallId === wall.id).sort((a, b) => a.x - b.x);
       let start = wall.minX;
