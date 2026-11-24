@@ -1,4 +1,4 @@
-import { getTrainLayout, KTX_RAIL_EXTENSION, TRAIN_SEAT_SIDES, TRAIN_WIDTH } from './trainLayout';
+import { getTrainLayout, KTX_RAIL_EXTENSION, TRAIN_BOARDING_X, TRAIN_SEAT_SIDES, TRAIN_WIDTH } from './trainLayout';
 import * as THREE from 'three';
 import { BLOCK_PITCH, CityLayout, ROAD_WIDTH } from './cityData';
 import { BLAST_GATE_WIDTH, ladderZ, WALL_DECK_OVERHANG, WALL_DECK_REAR_TRIM, wallLadderXs,
@@ -104,6 +104,8 @@ export class CityRenderer {
   private priorityMesh: THREE.Group | null = null;
 
   private expressTrainGroup: THREE.Group | null = null;
+  private trainBulkheadLocalXs: number[] = [-7.5, 7.5];
+  private lastTrainWorldX = 0;
   private stationBeaconMat: THREE.MeshBasicMaterial | null = null;
   private trainDoorVisuals: Map<number, TrainDoorVisual> = new Map();
   private trainConsoleLightMat: THREE.MeshBasicMaterial | null = null;
@@ -606,6 +608,8 @@ export class CityRenderer {
     this.streetLampCones = [];
     this.priorityMesh = null;
     this.expressTrainGroup = null;
+    this.trainBulkheadLocalXs = [-7.5, 7.5];
+    this.lastTrainWorldX = 0;
     this.ktxShutters.clear();
     this.stationBeaconMat = null;
     this.trainDoorVisuals.clear();
@@ -1353,11 +1357,22 @@ export class CityRenderer {
     const rz = layout.railZ;
     const trackY = elevated ? KTX_PLATFORM_Y - 0.52 : 0;
 
-    // Gravel ballast bed & sleepers for single or dual parallel tracks
+    // Gravel ballast bed & sleepers (InstancedMesh batched across all tracks)
     const sleeperMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.9 });
     const sleeperGeo = new THREE.BoxGeometry(0.45, 0.14, 3.6);
     const railMat = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, metalness: 0.75, roughness: 0.25 });
     const railGeo = new THREE.BoxGeometry(railSpan, 0.18, 0.2);
+
+    const sleeperStartX = -layout.cityHalfX - 12;
+    const sleeperEndX = layout.cityHalfX + 12 + extension;
+    const sleeperXs: number[] = [];
+    for (let sx = sleeperStartX; sx <= sleeperEndX; sx += 2.2) {
+      sleeperXs.push(sx);
+    }
+    const sleeperInst = new THREE.InstancedMesh(sleeperGeo, sleeperMat, tracks.length * sleeperXs.length);
+    sleeperInst.receiveShadow = true;
+    const sleeperMatrix = new THREE.Matrix4();
+    let sleeperIdx = 0;
 
     for (const tz of tracks) {
       const ballast = new THREE.Mesh(
@@ -1367,10 +1382,8 @@ export class CityRenderer {
       ballast.position.set(railCenterX, trackY + 0.08, tz);
       this.cityGroup.add(ballast);
 
-      for (let sx = -layout.cityHalfX - 12; sx <= layout.cityHalfX + 12 + extension; sx += 2.2) {
-        const sleeper = new THREE.Mesh(sleeperGeo, sleeperMat);
-        sleeper.position.set(sx, trackY + 0.16, tz);
-        this.cityGroup.add(sleeper);
+      for (const sx of sleeperXs) {
+        sleeperInst.setMatrixAt(sleeperIdx++, sleeperMatrix.makeTranslation(sx, trackY + 0.16, tz));
       }
 
       const railN = new THREE.Mesh(railGeo, railMat);
@@ -1379,6 +1392,8 @@ export class CityRenderer {
       railS.position.set(railCenterX, trackY + 0.24, tz + 1.15);
       this.cityGroup.add(railN, railS);
     }
+    sleeperInst.instanceMatrix.needsUpdate = true;
+    this.cityGroup.add(sleeperInst);
 
     this.stationBeaconMat = new THREE.MeshBasicMaterial({ color: 0x22d3ee });
     const canopyGlowMat = new THREE.MeshBasicMaterial({
@@ -1503,6 +1518,7 @@ export class CityRenderer {
     const trainConeMat = this.textureStudio.createVolumetricConeMaterial(0xfef08a, 0.24);
 
     const trainLayout = getTrainLayout(layout.mapId === 'citadel_express');
+    this.trainBulkheadLocalXs = [...trainLayout.bulkheads];
     const { centers, carLength, seatRows, rearX, frontX } = trainLayout;
     const carWidth = TRAIN_WIDTH;
     const wallH = 2.95;
@@ -1727,93 +1743,332 @@ export class CityRenderer {
     this.expressTrainGroup = trainGroup;
   }
 
-  private ktxShutters = new Map<KtxGateId, THREE.Mesh>();
+  private ktxShutters = new Map<
+    KtxGateId,
+    { mesh: THREE.Mesh; closedY: number; height: number; beaconMat: THREE.MeshBasicMaterial }
+  >();
 
   private buildKtxBase(railSpan: number, railCenterX: number, railEndX: number): void {
     const group = new THREE.Group();
-    const concrete = new THREE.MeshStandardMaterial({ color: 0x5b6370, roughness: 0.87 });
-    const tile = new THREE.MeshStandardMaterial({ color: 0x777986, roughness: 0.85 });
-    const steel = new THREE.MeshStandardMaterial({ color: 0x253546, roughness: 0.66 });
-    const gatePanel = new THREE.MeshStandardMaterial({ map: this.textureStudio.getBlastGateTexture(), metalness: 0.44, roughness: 0.65 });
-    const amber = new THREE.MeshBasicMaterial({ color: 0xf6b761 });
-    const cyan = new THREE.MeshBasicMaterial({ color: 0x5bd6e8 });
+    const concrete = new THREE.MeshStandardMaterial({
+      map: this.textureStudio.getConcreteWallTexture(3),
+      color: 0x9aa6b8,
+      roughness: 0.85
+    });
+    const tile = new THREE.MeshStandardMaterial({
+      map: this.textureStudio.getInteriorFloorTexture('terminal', 12, 4),
+      color: 0xbac4d1,
+      roughness: 0.42,
+      metalness: 0.18,
+      envMapIntensity: 1.25
+    });
+    const asphalt = new THREE.MeshStandardMaterial({
+      map: this.textureStudio.getAsphaltTexture(18),
+      color: 0x8c97ad,
+      roughness: 0.44,
+      metalness: 0.24,
+      envMapIntensity: 1.35
+    });
+    const steel = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.48, metalness: 0.65 });
+    const glass = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.26,
+      roughness: 0.12,
+      metalness: 0.28,
+      envMapIntensity: 1.55,
+      depthWrite: false,
+      side: THREE.DoubleSide
+    });
+    const sandbag = new THREE.MeshStandardMaterial({ color: 0xb2986b, roughness: 0.94 });
+    const gatePanel = new THREE.MeshStandardMaterial({
+      map: this.textureStudio.getBlastGateTexture(),
+      metalness: 0.48,
+      roughness: 0.56
+    });
+    const cyanHdr = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.28, 1.55, 1.85), toneMapped: false });
+    const amberHdr = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.72, 1.08, 0.22), toneMapped: false });
+    const warmHdr = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.62, 1.38, 0.96), toneMapped: false });
+    const redHdr = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.05, 0.22, 0.22), toneMapped: false });
     const seat = new THREE.MeshStandardMaterial({ color: 0x177082, roughness: 0.72 });
-    const cabinet = new THREE.MeshStandardMaterial({ color: 0x65746c, roughness: 0.77 });
-    const red = new THREE.MeshBasicMaterial({ color: 0xf05c54 });
-    const block = (x: number, y: number, z: number, width: number, height: number, depth: number, material: THREE.Material) => {
+    const cabinet = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.75 });
+
+    const unitGeo = new THREE.BoxGeometry(1, 1, 1);
+    const steelMats: THREE.Matrix4[] = [];
+    const tileMats: THREE.Matrix4[] = [];
+    const concreteMats: THREE.Matrix4[] = [];
+    const amberMats: THREE.Matrix4[] = [];
+    const cyanMats: THREE.Matrix4[] = [];
+    const warmMats: THREE.Matrix4[] = [];
+    const glassMats: THREE.Matrix4[] = [];
+    const sandbagMats: THREE.Matrix4[] = [];
+    const redMats: THREE.Matrix4[] = [];
+
+    const tmpPos = new THREE.Vector3();
+    const tmpScale = new THREE.Vector3();
+    const tmpQuat = new THREE.Quaternion();
+    const upAxis = new THREE.Vector3(0, 0, 1);
+    const dirVec = new THREE.Vector3();
+
+    const pushBox = (
+      list: THREE.Matrix4[],
+      x: number,
+      y: number,
+      z: number,
+      w: number,
+      h: number,
+      d: number
+    ) => {
+      const m = new THREE.Matrix4();
+      tmpPos.set(x, y, z);
+      tmpScale.set(Math.max(0.01, w), Math.max(0.01, h), Math.max(0.01, d));
+      tmpQuat.identity();
+      m.compose(tmpPos, tmpQuat, tmpScale);
+      list.push(m);
+    };
+
+    const pushSpan = (
+      list: THREE.Matrix4[],
+      ax: number,
+      ay: number,
+      az: number,
+      bx: number,
+      by: number,
+      bz: number,
+      w: number,
+      h: number
+    ) => {
+      const dx = bx - ax;
+      const dy = by - ay;
+      const dz = bz - az;
+      const len = Math.hypot(dx, dy, dz);
+      if (len < 0.02) return;
+      dirVec.set(dx, dy, dz).divideScalar(len);
+      tmpPos.set((ax + bx) * 0.5, (ay + by) * 0.5, (az + bz) * 0.5);
+      tmpQuat.setFromUnitVectors(upAxis, dirVec);
+      tmpScale.set(w, h, len);
+      const m = new THREE.Matrix4();
+      m.compose(tmpPos, tmpQuat, tmpScale);
+      list.push(m);
+    };
+
+    const block = (
+      x: number,
+      y: number,
+      z: number,
+      width: number,
+      height: number,
+      depth: number,
+      material: THREE.Material
+    ) => {
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
       mesh.position.set(x, y, z);
       mesh.receiveShadow = true;
       group.add(mesh);
       return mesh;
     };
-    const railing = (ax: number, az: number, bx: number, bz: number, y: number, endY = y) => {
-      const dx = bx - ax, dz = bz - az, dy = endY - y;
+
+    const addSandbagWall = (ax: number, az: number, bx: number, bz: number, baseY: number) => {
+      const len = Math.hypot(bx - ax, bz - az);
+      const alongX = Math.abs(bx - ax) >= Math.abs(bz - az);
+      const count = Math.max(2, Math.floor(len / 0.85));
+      for (let row = 0; row < 2; row++) {
+        const y = baseY + 0.19 + row * 0.34;
+        const n = count - row;
+        for (let i = 0; i < n; i++) {
+          const t = (i + 0.5 + row * 0.5) / count;
+          const x = ax + (bx - ax) * t;
+          const z = az + (bz - az) * t;
+          pushBox(
+            sandbagMats,
+            x,
+            y,
+            z,
+            alongX ? 0.78 : 0.54,
+            0.34,
+            alongX ? 0.54 : 0.78
+          );
+        }
+      }
+    };
+
+    const railing = (ax: number, az: number, bx: number, bz: number, y: number, endY = y, glassFill = true) => {
+      const dx = bx - ax;
+      const dz = bz - az;
+      const dy = endY - y;
       const length = Math.hypot(dx, dz, dy);
-      for (const h of [0.5, 1.02]) {
-        const bar = block((ax + bx) / 2, (y + endY) / 2 + h, (az + bz) / 2, 0.075, 0.06, length, steel);
-        bar.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(dx, dy, dz).normalize());
+      if (length < 0.1) return;
+      for (const h of [0.5, 1.04]) {
+        pushSpan(steelMats, ax, y + h, az, bx, endY + h, bz, 0.08, 0.065);
+      }
+      if (glassFill && Math.abs(dy) < 0.05 && length > 0.6) {
+        pushSpan(glassMats, ax, y + 0.56, az, bx, endY + 0.56, bz, 0.04, 0.86);
       }
       const posts = Math.max(1, Math.ceil(length / 3));
       for (let i = 0; i <= posts; i++) {
         const t = i / posts;
-        block(ax + dx * t, y + dy * t + 0.51, az + dz * t, 0.085, 1.03, 0.085, steel);
+        pushBox(steelMats, ax + dx * t, y + dy * t + 0.52, az + dz * t, 0.09, 1.05, 0.09);
       }
     };
-    const sign = (x: number, y: number, z: number, width: number, name: string, detail: string, color = '#66dfed') => {
+
+    const addGlassWall = (
+      ax: number,
+      az: number,
+      bx: number,
+      bz: number,
+      baseY: number,
+      height: number,
+      mullionStep = 3.1
+    ) => {
+      const dx = bx - ax;
+      const dz = bz - az;
+      const len = Math.hypot(dx, dz);
+      if (len < 0.3) return;
+      const cx = (ax + bx) * 0.5;
+      const cz = (az + bz) * 0.5;
+      const alongX = Math.abs(dx) >= Math.abs(dz);
+      pushBox(glassMats, cx, baseY + height * 0.5, cz, alongX ? len : 0.08, height - 0.16, alongX ? 0.08 : len);
+      const count = Math.max(1, Math.round(len / mullionStep));
+      for (let i = 0; i <= count; i++) {
+        const t = i / count;
+        pushBox(steelMats, ax + dx * t, baseY + height * 0.5, az + dz * t, 0.16, height, 0.16);
+      }
+      for (let ry = 3.0; ry <= height; ry += 3.0) {
+        pushSpan(steelMats, ax, baseY + ry, az, bx, baseY + ry, bz, 0.15, 0.14);
+      }
+      pushSpan(steelMats, ax, baseY + 0.12, az, bx, baseY + 0.12, bz, 0.2, 0.24);
+    };
+
+    const sign = (x: number, y: number, z: number, width: number, name: string, detail: string, color = '#38bdf8') => {
       const canvas = document.createElement('canvas');
       canvas.width = 512;
       canvas.height = 128;
       const ctx = canvas.getContext('2d')!;
-      ctx.fillStyle = '#101d28';
+      ctx.fillStyle = '#07111e';
       ctx.fillRect(0, 0, 512, 128);
       ctx.fillStyle = color;
-      ctx.fillRect(0, 0, 512, 7);
-      ctx.font = 'bold 48px "Microsoft YaHei", sans-serif';
-      ctx.fillText(name, 20, 61, 472);
-      ctx.font = '24px sans-serif';
-      ctx.fillStyle = '#e7f2f5';
-      ctx.fillText(detail, 20, 103, 472);
+      ctx.fillRect(0, 0, 512, 8);
+      ctx.fillRect(0, 120, 512, 8);
+      ctx.font = 'bold 46px "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = color;
+      ctx.fillText(name, 22, 62, 468);
+      ctx.font = 'bold 24px monospace';
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillText(detail, 22, 102, 468);
       const texture = new THREE.CanvasTexture(canvas);
       texture.colorSpace = THREE.SRGBColorSpace;
       const height = width / 4;
-      block(x, y, z, width + 0.11, height + 0.08, 0.12, steel);
-      const panel = new THREE.Mesh(new THREE.PlaneGeometry(width, height),
-        new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide }));
-      panel.position.set(x, y, z - 0.065);
-      panel.rotation.y = Math.PI;
-      group.add(panel);
+      pushBox(steelMats, x, y, z, width + 0.18, height + 0.14, 0.16);
+      const trimMat =
+        color === '#ff8377' ? redHdr : color === '#f6b761' ? amberHdr : cyanHdr;
+      const topStrip = new THREE.Mesh(new THREE.BoxGeometry(width + 0.2, 0.08, 0.19), trimMat);
+      topStrip.position.set(x, y + height * 0.5 + 0.05, z);
+      const botStrip = new THREE.Mesh(new THREE.BoxGeometry(width + 0.2, 0.08, 0.19), trimMat);
+      botStrip.position.set(x, y - height * 0.5 - 0.05, z);
+      const faceMat = new THREE.MeshBasicMaterial({ map: texture, toneMapped: false });
+      const front = new THREE.Mesh(new THREE.PlaneGeometry(width, height), faceMat);
+      front.position.set(x, y, z - 0.09);
+      front.rotation.y = Math.PI;
+      const back = new THREE.Mesh(new THREE.PlaneGeometry(width, height), faceMat);
+      back.position.set(x, y, z + 0.09);
+      group.add(topStrip, botStrip, front, back);
     };
-    // The continuous deck sits on discrete piers. The service road stays open below it.
+
+    // 1. Layer 1 Wet Dusk Forecourt Apron + Continuous Viaduct Slab & Under-Road
+    const forecourtApron = new THREE.Mesh(new THREE.PlaneGeometry(168, 22), asphalt);
+    forecourtApron.rotation.x = -Math.PI / 2;
+    forecourtApron.position.set(20, 0.025, 158);
+    forecourtApron.receiveShadow = true;
+    group.add(forecourtApron);
+
     block(railCenterX, KTX_PLATFORM_Y - 0.91, 200, railSpan, 0.86, 13.8, concrete);
     block(railCenterX, 0.04, 199, railSpan, 0.07, 4.9, steel);
+    for (let x = -116; x < 145; x += 8) {
+      pushBox(amberMats, x, 0.085, 199, 3, 0.014, 0.085);
+    }
+
+    // Paired Concrete Portal-Frame Viaduct Piers & Transverse Cap Girders (zero skinny floating sticks)
+    const pierXs = [-56, -28, 0, 28, 56, 84, 106];
+    for (let px = 132; px < railEndX - 3; px += 28) pierXs.push(px);
+    for (const px of pierXs) {
+      if (px > 106) {
+        pushBox(concreteMats, px, 2.75, 199, 2.3, 5.5, 3.2);
+      }
+      pushBox(concreteMats, px, 2.62, 193.8, 1.15, 5.24, 1.15);
+      pushBox(concreteMats, px, 2.62, 205.8, 1.15, 5.24, 1.15);
+      pushBox(concreteMats, px, 5.18, 199.8, 1.38, 0.72, 13.2);
+    }
+
+    // Symmetrical Concrete Structural Portal Frames for 6m Waiting Terrace & 3m Landings
+    for (const pz of [158.8, 173.5, 187.5]) {
+      pushBox(concreteMats, 16.25, 5.34, pz, 15.2, 0.62, 0.96);
+    }
+    for (const lx of [27.0, 48.5]) {
+      for (const lz of [176.5, 180.5]) {
+        pushBox(concreteMats, lx, 1.36, lz, 0.62, 2.72, 0.62);
+      }
+    }
+    pushBox(concreteMats, 37.75, 2.62, 178.5, 22.2, 0.42, 4.4);
+    for (const lx of [-56.6, -40.0]) {
+      for (const lz of [176.5, 180.5]) {
+        pushBox(concreteMats, lx, 1.36, lz, 0.62, 2.72, 0.62);
+      }
+    }
+    pushBox(concreteMats, -48.3, 2.62, 178.5, 17.2, 0.42, 4.4);
+
+    // Forecourt Pedestrian Crossing Arch & Intake Stanchion Queue Guides
     const crossing = KTX_FORECOURT_CROSSING;
-    block(crossing.x, 2.94, crossing.z, 0.61, 0.32, crossing.width + 0.24, steel);
+    pushBox(steelMats, crossing.x, 2.94, crossing.z, 0.62, 0.32, crossing.width + 0.24);
     for (const z of [crossing.z - crossing.width / 2 + 0.53, crossing.z + crossing.width / 2 - 0.53]) {
-      block(crossing.x, 0.055, z, 4, 0.02, 0.095, cyan);
-      block(crossing.x, 2.69, z, 0.52, 0.08, 0.16, cyan);
+      pushBox(cyanMats, crossing.x, 0.055, z, 4, 0.02, 0.095);
+      pushBox(cyanMats, crossing.x, 2.69, z, 0.52, 0.08, 0.16);
     }
-    for (let x = 140; x < railEndX - 3; x += 28) {
-      block(x, 2.75, 199, 2.3, 5.5, 3.2, concrete);
+    for (const x of [24.2, 31.6]) {
+      for (let z = 152.2; z <= 164.8; z += 2.1) {
+        pushBox(steelMats, x, 0.5, z, 0.1, 1.0, 0.1);
+      }
+      pushBox(cyanMats, x, 0.92, 158.5, 0.06, 0.06, 12.6);
     }
-    const checkpointX = railEndX - 5;
-    for (const z of [193.3, 206.7]) {
-      block(checkpointX, 8.55, z, 0.6, 5.1, 0.6, steel);
-      block(checkpointX, 9.8, z, 0.69, 0.45, 0.69, amber);
+    for (const x of [29.5, 34.5]) {
+      for (let z = 151.8; z < 166; z += 2.2) {
+        pushBox(cyanMats, x, 0.05, z, 0.095, 0.025, 0.98);
+      }
     }
-    block(checkpointX, 11, 200, 0.68, 0.7, 14, steel);
-    sign(checkpointX - 3, 10.3, 193.24, 5.7, '隔离终点', 'KTX QUARANTINE CHECKPOINT', '#f6b761');
-    for (let x = -116; x < 118; x += 8) block(x, 0.082, 199, 3, 0.014, 0.08, amber);
+    for (let z = 154; z < 165.5; z += 2.2) {
+      pushBox(amberMats, -43, 0.05, z, 0.105, 0.025, 0.95);
+    }
+
+    // Forecourt Weather Canopies + Benches
+    for (const x of [15.5, 46.4]) {
+      pushBox(steelMats, x, 2.6, 160.0, 9.4, 0.24, 5.6);
+      pushBox(glassMats, x, 2.72, 160.0, 9.2, 0.06, 5.4);
+      for (const dx of [-4.4, 4.4]) {
+        for (const dz of [-2.5, 2.5]) pushBox(steelMats, x + dx, 1.25, 160.0 + dz, 0.17, 2.5, 0.17);
+      }
+      for (const dz of [-1.25, 0.9]) {
+        pushBox(concreteMats, x, 0.31, 160.0 + dz, 6.7, 0.33, 0.56);
+        pushBox(steelMats, x, 0.62, 160.28 + dz, 6.7, 0.43, 0.10);
+      }
+      pushBox(cyanMats, x, 2.43, 158.1, 5.4, 0.08, 0.12);
+    }
+
+    // 2. Collision Props & Upgraded Forecourt Architectural Pavilions
     for (const box of KTX_BOXES) {
       const y = box.y ?? 0;
       if (box.kind === 'bench') {
         const alongZ = box.depth > box.width;
         block(box.x, y + 0.43, box.z, box.width, 0.13, box.depth, seat);
-        block(box.x - (alongZ ? box.width * 0.38 : 0), y + 0.71, box.z + (alongZ ? 0 : box.depth * 0.37),
-          alongZ ? 0.12 : box.width, 0.45, alongZ ? box.depth : 0.12, seat);
+        block(
+          box.x - (alongZ ? box.width * 0.38 : 0),
+          y + 0.71,
+          box.z + (alongZ ? 0 : box.depth * 0.37),
+          alongZ ? 0.12 : box.width,
+          0.45,
+          alongZ ? box.depth : 0.12,
+          seat
+        );
         for (const offset of [-0.32, 0.32]) {
-          block(box.x + (alongZ ? 0 : box.width * offset), y + 0.18, box.z + (alongZ ? box.depth * offset : 0),
-            0.18, 0.36, 0.18, steel);
+          pushBox(steelMats, box.x + (alongZ ? 0 : box.width * offset), y + 0.18, box.z + (alongZ ? box.depth * offset : 0), 0.18, 0.36, 0.18);
         }
         continue;
       }
@@ -1821,123 +2076,291 @@ export class CityRenderer {
         block(box.x, y + box.height / 2, box.z, box.width, box.height, box.depth, cabinet);
         const alongZ = box.depth > box.width;
         for (let slot = -1; slot <= 1; slot++) {
-          const x = box.x + (alongZ ? -box.width / 2 - 0.013 : slot * box.width / 3);
-          const z = box.z + (alongZ ? slot * box.depth / 3 : -box.depth / 2 - 0.013);
-          block(x, y + box.height * 0.52, z, alongZ ? 0.043 : 0.19, 0.07, alongZ ? 0.19 : 0.043, amber);
+          const lx = box.x + (alongZ ? -box.width / 2 - 0.013 : slot * box.width / 3);
+          const lz = box.z + (alongZ ? slot * box.depth / 3 : -box.depth / 2 - 0.013);
+          pushBox(amberMats, lx, y + box.height * 0.52, lz, alongZ ? 0.043 : 0.19, 0.07, alongZ ? 0.19 : 0.043);
         }
         continue;
       }
-      block(box.x, y + box.height / 2, box.z, box.width, box.height, box.depth, box.kind === 'supply' ? steel : concrete);
-      block(box.x, y + Math.min(box.height - 0.17, 2.2), box.z - box.depth / 2 - 0.018,
-        Math.min(box.width * 0.56, 1.6), 0.13, 0.05, box.kind === 'wall' ? cyan : amber);
+      if (box.kind === 'supply') {
+        // Architectural Glass-Curtain Medical Triage Pavilion (East Wing x=53) & Ribbed Depot (x=4)
+        const isClinic = box.x > 40;
+        pushBox(concreteMats, box.x, 0.26, box.z, box.width, 0.52, box.depth);
+        for (const cx of [-box.width * 0.47, box.width * 0.47]) {
+          for (const cz of [-box.depth * 0.47, box.depth * 0.47]) {
+            pushBox(steelMats, box.x + cx, box.height * 0.5, box.z + cz, 0.22, box.height, 0.22);
+          }
+        }
+        pushBox(steelMats, box.x, box.height + 0.12, box.z - (isClinic ? 0.35 : 0), box.width + 0.55, 0.24, box.depth + (isClinic ? 0.9 : 0.4));
+        pushBox(warmMats, box.x, box.height - 0.12, box.z, box.width * 0.65, 0.08, box.depth * 0.55);
+        pushBox(glassMats, box.x, 1.42, box.z, box.width * 0.92, 1.75, box.depth * 0.92);
+        pushBox(concreteMats, box.x + 0.5, box.height + 0.48, box.z + 0.2, 0.95, 0.48, 0.95);
+        if (isClinic) {
+          pushBox(redMats, box.x, 1.9, box.z - box.depth * 0.5 - 0.06, 0.24, 0.9, 0.08);
+          pushBox(redMats, box.x, 1.9, box.z - box.depth * 0.5 - 0.06, 0.9, 0.24, 0.08);
+          pushBox(redMats, box.x - 1.1, box.height + 0.32, box.z, 0.2, 0.14, 0.85);
+          pushBox(redMats, box.x - 1.1, box.height + 0.32, box.z, 0.85, 0.14, 0.2);
+          sign(53, 3.15, 155.3, 3.8, '医疗分诊', 'MEDICAL TRIAGE', '#ff8377');
+        } else {
+          pushBox(amberMats, box.x, box.height - 0.15, box.z - box.depth * 0.5 - 0.04, box.width * 0.6, 0.1, 0.06);
+          sign(4, 2.05, 173.75, 4.2, '勤务仓库', 'SUPPLY / MAINTENANCE', '#f6b761');
+        }
+        continue;
+      }
+      if (box.kind === 'pier') {
+        pushBox(concreteMats, box.x, y + box.height / 2, box.z, box.width, box.height, box.depth);
+        continue;
+      }
+      block(box.x, y + box.height / 2, box.z, box.width, box.height, box.depth, concrete);
+      const stripList = box.kind === 'wall' ? cyanMats : amberMats;
+      pushBox(stripList, box.x, y + Math.min(box.height - 0.17, 2.2), box.z - box.depth / 2 - 0.018, Math.min(box.width * 0.56, 1.6), 0.12, 0.05);
     }
+
+    // 3. Layer 2 & 3 Two-Story Glass Atrium, Turnstiles, Giant KTX-101 Display & Mezzanine Sandbags
+    addGlassWall(24.8, 166.2, 24.8, 188.6, 0, 9.1, 3.2);
+    addGlassWall(50.2, 166.2, 50.2, 188.6, 0, 9.1, 3.2);
+    addGlassWall(25.0, 166.0, 50.0, 166.0, 3.15, 5.95, 3.1);
+    for (const tz of [167, 172.5, 178, 183.5, 188.5]) {
+      pushBox(steelMats, 37.5, 9.12, tz, 25.6, 0.34, 0.38);
+      pushBox(warmMats, 37.5, 8.92, tz, 21.0, 0.08, 0.16);
+    }
+    pushBox(glassMats, 37.5, 9.32, 177.4, 25.6, 0.08, 22.8);
+
+    // West Elevated Glass Crew Sky-Corridor (x = -57..-39.5)
+    addGlassWall(-57.1, 176.0, -57.1, 189.0, 3.0, 3.2, 2.6);
+    addGlassWall(-39.4, 176.0, -39.4, 181.2, 3.0, 3.2, 2.6);
+    addGlassWall(-49.8, 181.0, -49.8, 189.0, 3.0, 5.9, 2.6);
+    pushBox(steelMats, -48.3, 6.25, 178.5, 17.8, 0.2, 5.2);
+    pushBox(warmMats, -48.3, 6.12, 178.5, 14.0, 0.07, 0.18);
+
+    // Giant Glowing HDR KTX-101 BUSAN Departure Display on Mezzanine Fascia
+    const boardMat = new THREE.MeshBasicMaterial({ map: this.textureStudio.getKtxBoardTexture(), toneMapped: false });
+    pushBox(steelMats, 43.7, 1.65, 176.02, 8.2, 2.15, 0.24);
+    pushBox(cyanMats, 43.7, 2.75, 175.95, 8.3, 0.1, 0.28);
+    pushBox(cyanMats, 43.7, 0.55, 175.95, 8.3, 0.1, 0.28);
+    const boardFace = new THREE.Mesh(new THREE.PlaneGeometry(7.7, 1.9), boardMat);
+    boardFace.position.set(43.7, 1.65, 175.88);
+    boardFace.rotation.y = Math.PI;
+    group.add(boardFace);
+
+    // East Atrium Ticket Turnstile Row (in front of screen, clear of stair lane 26.5..37.5)
+    for (let tx = 39.2; tx <= 48.0; tx += 1.45) {
+      pushBox(steelMats, tx, 0.52, 170.6, 0.24, 1.04, 1.15);
+      pushBox(cyanMats, tx, 1.06, 170.6, 0.18, 0.06, 0.85);
+    }
+
+    // Tactical Sandbags on 3m Mezzanine, 6m Terrace Overlook, West Tower & Gate 4 Platform Line
+    addSandbagWall(38.4, 175.85, 48.4, 175.85, 3.02);
+    addSandbagWall(9.6, 157.8, 23.0, 157.8, KTX_PLATFORM_Y);
+    addSandbagWall(-24.2, 189.45, -20.6, 189.45, KTX_PLATFORM_Y);
+    addSandbagWall(-9.0, 189.45, -5.6, 189.45, KTX_PLATFORM_Y);
+    addSandbagWall(2.4, 189.45, 5.8, 189.45, KTX_PLATFORM_Y);
+    addSandbagWall(29.0, 189.45, 32.2, 189.45, KTX_PLATFORM_Y);
+
+    // 4. Batched Stairs, Landings, Railings & Full 6-Car Platform Deck
     for (const surface of KTX_SURFACES) {
       const { minX, maxX, minZ, maxZ, fromY, toY, id } = surface;
-      const x = (minX + maxX) / 2, z = (minZ + maxZ) / 2;
-      const width = maxX - minX, length = maxZ - minZ;
+      const x = (minX + maxX) / 2;
+      const z = (minZ + maxZ) / 2;
+      const width = maxX - minX;
+      const length = maxZ - minZ;
       if (fromY !== toY) {
         const steps = Math.ceil((toY - fromY) / 0.19);
         for (let step = 0; step < steps; step++) {
           const sz = minZ + (step + 0.5) * length / steps;
           const y = ktxSurfaceHeight(surface, x, sz);
-          block(x, y - 0.16, sz, width, 0.34, length / steps + 0.015, tile);
-          block(x, y + 0.008, sz - length / steps * 0.3, width - 0.24, 0.021, 0.055, amber);
+          pushBox(tileMats, x, y - 0.16, sz, width, 0.34, length / steps + 0.015);
+          pushBox(amberMats, x, y + 0.008, sz - length / steps * 0.3, width - 0.24, 0.022, 0.055);
         }
-        railing(minX, minZ, minX, maxZ, fromY, toY);
-        railing(maxX, minZ, maxX, maxZ, fromY, toY);
+        railing(minX, minZ, minX, maxZ, fromY, toY, true);
+        railing(maxX, minZ, maxX, maxZ, fromY, toY, true);
       } else {
         block(x, fromY - 0.28, z, width, 0.56, length, tile);
         if (id === 'tower' || id.endsWith('landing')) {
-          railing(minX, minZ, minX, maxZ, fromY);
-          railing(maxX, minZ, maxX, maxZ, fromY);
-          block(x, fromY / 2 - 0.12, z, 0.58, fromY - 0.24, 0.65, steel);
+          railing(minX, minZ, minX, maxZ, fromY, fromY, true);
+          railing(maxX, minZ, maxX, maxZ, fromY, fromY, true);
         }
       }
     }
-    // Rails leave deliberate apertures at both stairheads and the actual boarding door.
-    for (const [a, b] of [[-61, -57], [-50, 8], [24.5, 39], [49, 56]]) railing(a, 189, b, 189, KTX_PLATFORM_Y);
+
+    // Platform & Terrace Edge Railings + Full 163m HDR Safety Line + Deck Joints
+    for (const [a, b] of [[-61, -57], [-50, 8], [24.5, 39], [49, 104]]) {
+      railing(a, 189, b, 189, KTX_PLATFORM_Y);
+    }
     railing(8, 157.5, 24.5, 157.5, KTX_PLATFORM_Y);
     for (const x of [8, 24.5]) railing(x, 157.5, x, 189, KTX_PLATFORM_Y);
     const door = KTX_SURFACES[KTX_SURFACES.length - 1];
     railing(-61, 194, door.minX, 194, KTX_PLATFORM_Y);
-    railing(door.maxX, 194, 56, 194, KTX_PLATFORM_Y);
+    railing(door.maxX, 194, 104, 194, KTX_PLATFORM_Y);
     railing(-61, 189, -61, 194, KTX_PLATFORM_Y);
-    railing(56, 189, 56, 194, KTX_PLATFORM_Y);
-    block(0, KTX_PLATFORM_Y + 0.015, 193.4, 113, 0.03, 0.12, amber);
-    for (const z of [189.35, 193.78]) block(-2.5, 6.008, z, 115, 0.012, 0.17, steel);
-    for (let x = -59; x < 55; x += 3) {
-      block(x, 6.007, 191.5, 0.025, 0.012, 3.7, steel);
-    }
-    for (const x of [-43, -23, -4, 17, 37, 53]) {
-      block(x, 7.85, 189.5, 0.26, 3.7, 0.26, steel);
-      block(x, 9.45, 191.1, 5.4, 0.17, 0.13, cyan);
-    }
-    block(5, 9.75, 191.15, 99, 0.28, 4.4, steel);
-    sign(-15, 8.55, 193.75, 4.2, '01 登车口', 'BOARDING  ·  TRACK 1');
-    sign(14, 8.65, 188.93, 5, '候车区', 'OPEN-AIR WAITING DECK');
-    sign(-44, 8.62, 191.1, 4.7, '西侧勤务通道', 'SERVICE ACCESS', '#f6b761');
-    sign(29, 3.14, 155.36, 5.3, '疏散入口  →', 'EVACUATION INTAKE');
-    for (const x of [24.45, 32.95]) {
-      block(x, 1.43, 155.37, 0.16, 2.86, 0.19, steel);
-      block(x, 2.66, 155.24, 0.29, 0.18, 0.14, cyan);
+    railing(104, 189, 104, 194, KTX_PLATFORM_Y);
+
+    pushBox(amberMats, 21.5, KTX_PLATFORM_Y + 0.016, 193.45, 163, 0.028, 0.14);
+    for (const z of [189.35, 193.78]) pushBox(steelMats, 21.5, KTX_PLATFORM_Y + 0.008, z, 164, 0.014, 0.16);
+    for (let x = -59; x < 103; x += 4) {
+      pushBox(steelMats, x, KTX_PLATFORM_Y + 0.008, 191.5, 0.03, 0.012, 3.7);
     }
 
+    // Car-6 Single Rear Boarding Door Portal Frame
+    for (const px of [door.minX - 0.14, door.maxX + 0.14]) {
+      pushBox(steelMats, px, KTX_PLATFORM_Y + 1.45, 194.0, 0.26, 2.9, 0.28);
+      pushBox(cyanMats, px, KTX_PLATFORM_Y + 1.45, 193.84, 0.1, 2.6, 0.08);
+    }
+    pushBox(steelMats, TRAIN_BOARDING_X, KTX_PLATFORM_Y + 2.95, 194.0, 3.6, 0.28, 0.34);
+    pushBox(cyanMats, TRAIN_BOARDING_X, KTX_PLATFORM_Y + 2.92, 193.8, 3.2, 0.12, 0.08);
+    pushBox(cyanMats, TRAIN_BOARDING_X, KTX_PLATFORM_Y + 0.02, 193.7, 3.2, 0.02, 0.62);
+
+    // 5. Three-Bay Sweeping Arched Steel-Truss Glass Canopy Covering Full 6-Car KTX Platform
+    const canopyBays: Array<[number, number]> = [
+      [-34, 10],
+      [12, 56],
+      [58, 102]
+    ];
+    const zNorth = 188.9;
+    const zSouth = 200.0;
+    const yEave = KTX_PLATFORM_Y + 3.25;
+    const yPeak = KTX_PLATFORM_Y + 5.95;
+    const archSteps = 6;
+    const archPts: Array<[number, number]> = [];
+    for (let s = 0; s <= archSteps; s++) {
+      const th = Math.PI * (s / archSteps);
+      const cz = (zNorth + zSouth) * 0.5 - Math.cos(th) * ((zSouth - zNorth) * 0.5);
+      const cy = yEave + Math.sin(th) * (yPeak - yEave);
+      archPts.push([cz, cy]);
+    }
+    for (const [bayStart, bayEnd] of canopyBays) {
+      const bayLen = bayEnd - bayStart;
+      const bayCx = (bayStart + bayEnd) * 0.5;
+      for (const [cz, cy] of archPts) {
+        pushBox(steelMats, bayCx, cy, cz, bayLen, 0.12, 0.14);
+      }
+      for (const lx of [bayStart + 2.2, bayCx, bayEnd - 2.2]) {
+        // Vertical perimeter support posts cleanly outside track & walkway clearance
+        pushBox(steelMats, lx, (KTX_PLATFORM_Y + yEave) * 0.5, zNorth, 0.28, yEave - KTX_PLATFORM_Y, 0.28);
+        pushBox(steelMats, lx, (KTX_PLATFORM_Y + yEave) * 0.5, zSouth, 0.28, yEave - KTX_PLATFORM_Y, 0.28);
+      }
+      for (let rx = bayStart; rx <= bayEnd + 0.01; rx += 4.4) {
+        for (let s = 0; s < archSteps; s++) {
+          const [z0, y0] = archPts[s];
+          const [z1, y1] = archPts[s + 1];
+          pushSpan(steelMats, rx, y0, z0, rx, y1, z1, 0.22, 0.24);
+        }
+      }
+      for (let s = 0; s < archSteps; s++) {
+        const [z0, y0] = archPts[s];
+        const [z1, y1] = archPts[s + 1];
+        const pitchLen = Math.hypot(z1 - z0, y1 - y0);
+        const angle = Math.atan2(y1 - y0, z1 - z0);
+        const g = new THREE.Matrix4();
+        tmpPos.set(bayCx, (y0 + y1) * 0.5 + 0.08, (z0 + z1) * 0.5);
+        tmpQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -angle);
+        tmpScale.set(bayLen, 0.05, pitchLen);
+        g.compose(tmpPos, tmpQuat, tmpScale);
+        glassMats.push(g);
+      }
+      pushBox(cyanMats, bayCx, yPeak - 0.18, 191.6, bayLen - 2.4, 0.09, 0.24);
+      pushBox(warmMats, bayCx, yPeak - 0.14, 194.4, bayLen - 2.4, 0.09, 0.26);
+      pushBox(cyanMats, bayCx, yPeak - 0.18, 197.2, bayLen - 2.4, 0.09, 0.24);
+    }
+
+    // 6. HDR Station Signage + East Track Quarantine Checkpoint Gantry
+    const checkpointX = railEndX - 5;
+    for (const z of [193.3, 206.7]) {
+      pushBox(steelMats, checkpointX, 8.55, z, 0.6, 5.1, 0.6);
+      pushBox(amberMats, checkpointX, 9.8, z, 0.7, 0.45, 0.7);
+    }
+    pushBox(steelMats, checkpointX, 11, 200, 0.68, 0.7, 14);
+    sign(checkpointX - 3, 10.3, 193.24, 5.7, '隔离终点', 'KTX QUARANTINE CHECKPOINT', '#f6b761');
+    sign(-15, 9.0, 191.6, 4.8, '01 登车口', 'BOARDING  ·  KTX-101');
+    sign(16.2, 8.65, 188.6, 5.2, '候车区', 'WAITING DECK');
+    sign(-45, 8.65, 191.2, 4.9, '西侧勤务通道', 'SERVICE ACCESS', '#f6b761');
+    sign(28.7, 3.25, 155.3, 5.4, '疏散入口  →', 'EVACUATION INTAKE');
+    for (const x of [24.45, 32.95]) {
+      pushBox(steelMats, x, 1.43, 155.37, 0.18, 2.86, 0.22);
+      pushBox(cyanMats, x, 2.66, 155.24, 0.3, 0.18, 0.16);
+    }
+
+    // 7. 4 Progressive Animated Steel Rolling Shutters (public, crew, mezzanine, transfer)
     for (const id of KTX_GATE_IDS) {
       const g = KTX_GATES[id];
       const box = ktxGateBox(id);
-      const light = id === 'public' ? cyan : amber;
-      this.ktxShutters.set(id, block(g.x, g.y + box.height / 2, g.z, box.width, box.height, box.depth, gatePanel));
+      const shutterMesh = block(g.x, g.y + box.height / 2, g.z, box.width, box.height, box.depth, gatePanel);
+      const beaconMat = new THREE.MeshBasicMaterial({
+        color: id === 'public' || id === 'mezzanine' ? new THREE.Color(0.25, 1.5, 1.8) : new THREE.Color(1.85, 1.05, 0.16),
+        toneMapped: false
+      });
+      this.ktxShutters.set(id, {
+        mesh: shutterMesh,
+        closedY: g.y + box.height / 2,
+        height: box.height,
+        beaconMat
+      });
       const alongX = g.axis === 'x';
       for (const side of [-1, 1]) {
         const offset = side * g.width / 2;
-        block(g.x + (alongX ? offset : 0), g.y + 1.53, g.z + (alongX ? 0 : offset), 0.47, 3.06, 0.47, steel);
+        pushBox(steelMats, g.x + (alongX ? offset : 0), g.y + 1.58, g.z + (alongX ? 0 : offset), 0.52, 3.16, 0.52);
       }
-      block(g.x, g.y + 2.98, g.z, alongX ? g.width + 0.45 : 0.6, 0.34, alongX ? 0.6 : g.width + 0.45, steel);
+      // Roller drum box above the doorway so retracted shutters visibly roll overhead
+      pushBox(steelMats, g.x, g.y + box.height + 0.26, g.z, alongX ? g.width + 0.55 : 0.66, 0.48, alongX ? 0.66 : g.width + 0.55);
       if (alongX) {
-        block(g.x, g.y + 2.98, g.z - 0.31, g.width * 0.62, 0.115, 0.04, light);
+        const barN = new THREE.Mesh(new THREE.BoxGeometry(g.width * 0.64, 0.13, 0.06), beaconMat);
+        barN.position.set(g.x, g.y + box.height + 0.26, g.z - 0.34);
+        const barS = barN.clone();
+        barS.position.z = g.z + 0.34;
+        group.add(barN, barS);
       } else {
         for (const side of [-1, 1]) {
-          block(g.x + side * 0.31, g.y + 2.98, g.z, 0.04, 0.115, g.width * 0.64, light);
+          const barSide = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.13, g.width * 0.66), beaconMat);
+          barSide.position.set(g.x + side * 0.34, g.y + box.height + 0.26, g.z);
+          group.add(barSide);
         }
       }
     }
 
-    for (const x of [15.5, 46.4]) {
-      block(x, 2.6, 160.0, 9.4, 0.24, 5.6, steel);
-      for (const dx of [-4.4, 4.4]) for (const dz of [-2.5, 2.5]) block(x + dx, 1.25, 160.0 + dz, 0.17, 2.5, 0.17, steel);
-      for (const dz of [-1.25, 0.9]) {
-        block(x, 0.31, 160.0 + dz, 6.7, 0.33, 0.56, concrete);
-        block(x, 0.62, 160.28 + dz, 6.7, 0.43, 0.10, steel);
+    // 8. West Sandbag Watchtower + Cross-Bracing + Volumetric Searchlight Cone
+    for (const x of [-62, -56]) {
+      for (const z of [161.4, 164.6]) {
+        pushBox(steelMats, x, 3.25, z, 0.3, 6.5, 0.3);
       }
-      block(x, 2.43, 158.1, 5, 0.06, 0.11, cyan);
     }
-    for (const x of [29.5, 34.5]) for (let z = 151.8; z < 166; z += 2.2) {
-      block(x, 0.05, z, 0.095, 0.025, 0.98, cyan);
-    }
-    for (let z = 154; z < 165.5; z += 2.2) block(-43, 0.05, z, 0.105, 0.025, 0.95, amber);
-    for (const x of [-62, -56]) for (const z of [161.4, 164.6]) {
-      block(x, 3.25, z, 0.28, 6.5, 0.28, steel);
-    }
-    railing(-64, 165, -54, 165, 4);
-    railing(-64, 161, -64, 165, 4);
-    railing(-54, 161, -54, 165, 4);
-    block(-59, 6.55, 163, 10.3, 0.26, 4.6, steel);
-    block(-59, 6.94, 161.85, 1.1, 0.54, 0.69, steel);
-    block(-59, 6.94, 161.48, 0.65, 0.28, 0.06, cyan);
+    pushSpan(steelMats, -62, 0.2, 161.4, -56, 3.8, 161.4, 0.12, 0.12);
+    pushSpan(steelMats, -56, 0.2, 161.4, -62, 3.8, 161.4, 0.12, 0.12);
+    addSandbagWall(-63.6, 161.25, -54.4, 161.25, 4.02);
+    pushBox(steelMats, -59, 6.55, 163, 10.3, 0.26, 4.6);
+    pushBox(steelMats, -59, 6.94, 161.85, 1.1, 0.54, 0.69);
+    pushBox(cyanMats, -59, 6.94, 161.48, 0.65, 0.28, 0.06);
     const beamGeometry = new THREE.ConeGeometry(3.4, 15.5, 12, 1, true);
     beamGeometry.translate(0, -7.75, 0);
-    const beam = new THREE.Mesh(beamGeometry, this.textureStudio.createVolumetricConeMaterial(0xa7dcff, 0.17));
+    const beam = new THREE.Mesh(beamGeometry, this.textureStudio.createVolumetricConeMaterial(0xffedd5, 0.2));
     beam.position.set(-59, 6.9, 161.5);
     beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), new THREE.Vector3(0.27, -0.41, -0.87).normalize());
     group.add(beam);
-    block(47, 3.57, 176.18, 3.5, 1.14, 0.28, concrete);
-    block(47, 4.02, 176.02, 2.4, 0.095, 0.05, cyan);
-    block(53, 2.62, 157.5, 5.1, 0.23, 4.35, steel);
-    sign(53, 2.92, 155.65, 3.45, '医疗分诊', 'FIRST AID / TRIAGE', '#ff8377');
-    block(50.75, 1.67, 157.5, 0.06, 0.75, 0.22, red);
-    block(50.75, 1.67, 157.5, 0.06, 0.22, 0.75, red);
-    block(4, 2.56, 176, 8, 0.26, 5, steel);
-    sign(4, 1.84, 173.95, 3.8, '勤务仓库', 'SUPPLY / MAINTENANCE', '#f6b761');
+
+    // 9. Flush Batched Station Geometries into Minimal Draw Calls
+    const flushInstanced = (
+      mats: THREE.Matrix4[],
+      mat: THREE.Material,
+      castShadow = false,
+      receiveShadow = false
+    ) => {
+      if (mats.length === 0) return;
+      const inst = new THREE.InstancedMesh(unitGeo, mat, mats.length);
+      for (let i = 0; i < mats.length; i++) inst.setMatrixAt(i, mats[i]);
+      inst.instanceMatrix.needsUpdate = true;
+      inst.castShadow = castShadow;
+      inst.receiveShadow = receiveShadow;
+      group.add(inst);
+    };
+    flushInstanced(concreteMats, concrete, true, true);
+    flushInstanced(tileMats, tile, false, true);
+    flushInstanced(steelMats, steel, true, true);
+    flushInstanced(glassMats, glass, false, false);
+    flushInstanced(sandbagMats, sandbag, true, true);
+    flushInstanced(amberMats, amberHdr, false, false);
+    flushInstanced(cyanMats, cyanHdr, false, false);
+    flushInstanced(warmMats, warmHdr, false, false);
+    flushInstanced(redMats, redHdr, false, false);
+
     this.cityGroup.add(group);
   }
 
@@ -3701,10 +4124,25 @@ export class CityRenderer {
     if (this.expressTrainGroup) {
       this.expressTrainGroup.visible = train.active && train.state !== 'COOLDOWN';
       this.expressTrainGroup.position.set(train.x, layeredTerminal ? KTX_PLATFORM_Y - 0.23 : 0.25, train.z);
+      this.lastTrainWorldX = train.x;
     }
-    for (const [id, mesh] of this.ktxShutters) {
+    for (const [id, vis] of this.ktxShutters) {
       const gate = stationGates?.[id];
-      mesh.visible = !!gate && !gate.open && gate.integrity > 0;
+      if (!gate || gate.integrity <= 0) {
+        vis.mesh.visible = false;
+        vis.beaconMat.color.setRGB(2.2, 0.2, 0.25);
+        continue;
+      }
+      const frac = gate.openFraction ?? (gate.open ? 1 : 0);
+      const scaleY = Math.max(0.05, 1 - frac * 0.95);
+      vis.mesh.visible = frac < 0.985;
+      vis.mesh.scale.y = scaleY;
+      vis.mesh.position.y = vis.closedY + frac * vis.height * 0.475;
+      if (gate.open) {
+        vis.beaconMat.color.setRGB(0.25, 1.5, 1.8);
+      } else {
+        vis.beaconMat.color.setRGB(1.85, 1.05, 0.16);
+      }
     }
     if (this.trainConsoleLightMat) {
       const pulse = Math.sin(time * 7) > 0;
@@ -3918,7 +4356,18 @@ export class CityRenderer {
       this.interiorPointLight.distance = 16;
       this.interiorPointLight.position.set(fpCamX, fpCamY + 0.35, 196.0);
       this.interiorPointLight.intensity = 2.05;
-      const bulkheadX = fpCamX < 0 ? -7.5 : 7.5;
+      let bulkheadX = this.lastTrainWorldX + (fpCamX < this.lastTrainWorldX ? -7.5 : 7.5);
+      if (this.trainBulkheadLocalXs.length > 0) {
+        let bestDist = Infinity;
+        for (const lx of this.trainBulkheadLocalXs) {
+          const wx = this.lastTrainWorldX + lx;
+          const d = Math.abs(wx - fpCamX);
+          if (d < bestDist) {
+            bestDist = d;
+            bulkheadX = wx;
+          }
+        }
+      }
       this.trainRedPointLight.position.set(bulkheadX, fpCamY + 0.15, 196.0);
       this.trainRedPointLight.intensity = 3.4;
     } else {

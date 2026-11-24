@@ -14,19 +14,25 @@ export const KTX_BOARDING = { x: TRAIN_BOARDING_X, z: KTX_RAIL_Z };
 export const KTX_GATES = {
   public: { x: 32, z: 166, width: 11, y: 0, axis: 'x', label: 'KTX East Gate' },
   crew: { x: -43, z: 166, width: 7, y: 0, axis: 'x', label: 'KTX West Gate' },
+  mezzanine: { x: 44, z: 181, width: 10, y: 3, axis: 'x', label: 'KTX Mezzanine Gate' },
   transfer: { x: KTX_TRANSFER_X, z: 191.45, width: 2.5, y: KTX_PLATFORM_Y, axis: 'z', label: 'KTX Service Partition' }
 } as const;
 export type KtxGateId = keyof typeof KTX_GATES;
-export type KtxLane = Exclude<KtxGateId, 'transfer'>;
+export type KtxLane = 'public' | 'crew';
 export const KTX_LANES = ['public', 'crew'] as const;
-export const KTX_GATE_IDS = ['public', 'crew', 'transfer'] as const;
+export const KTX_GATE_IDS = ['public', 'crew', 'mezzanine', 'transfer'] as const;
 export function ktxGateBox(id: KtxGateId) {
   const g = KTX_GATES[id];
-  return { x: g.x, z: g.z, y: g.y, width: g.axis === 'x' ? g.width : 0.34,
-    depth: g.axis === 'z' ? g.width : 0.34, height: 2.65 };
+  return {
+    x: g.x, z: g.z, y: g.y,
+    width: g.axis === 'x' ? g.width : 0.34,
+    depth: g.axis === 'z' ? g.width : 0.34,
+    height: 2.65
+  };
 }
 export interface KtxGateState {
   open: boolean;
+  openFraction: number;
   integrity: number;
   maxIntegrity: number;
   lastDamagedAt: number;
@@ -54,7 +60,7 @@ export const KTX_SURFACES: readonly KtxSurface[] = [
   { id: 'tower-stair', minX: -62, maxX: -58, minZ: 153, maxZ: 161, fromY: 0, toY: 4 },
   { id: 'tower', minX: -64, maxX: -54, minZ: 161, maxZ: 165, fromY: 4, toY: 4 },
   { id: 'terrace', minX: 8, maxX: 24.5, minZ: 157.5, maxZ: 189, fromY: 6, toY: 6 },
-  { id: 'platform', minX: -61, maxX: 56, minZ: 189, maxZ: 194, fromY: 6, toY: 6 },
+  { id: 'platform', minX: -61, maxX: 104, minZ: 189, maxZ: 194, fromY: 6, toY: 6 },
   { id: 'boarding', minX: TRAIN_BOARDING_X - 1.5, maxX: TRAIN_BOARDING_X + 1.5, minZ: 194, maxZ: 196.4, fromY: 6, toY: 6 }
 ];
 
@@ -69,6 +75,8 @@ export const KTX_GROUND_ENTRIES = ['east-lower', 'west-lower', 'tower-stair'];
 export const KTX_STATION_POSTS = [
   { surface: 'terrace', x: 11.6, z: 162.3 },
   { surface: 'terrace', x: 21.3, z: 172.2 },
+  { surface: 'east-landing', x: 40.5, z: 177.2 },
+  { surface: 'east-landing', x: 45.8, z: 177.2 },
   { surface: 'terrace', x: 11.6, z: 183.4 },
   { surface: 'terrace', x: 21.3, z: 162.3 },
   { surface: 'east-landing', x: 30.6, z: 179.7 },
@@ -111,7 +119,7 @@ export const KTX_SHOT_FLOORS = KTX_SURFACES.flatMap((surface) => {
 });
 
 export function ktxContains(x: number, z: number): boolean {
-  return x > -68 && x < 64 && z >= 152 && z < 207;
+  return x > -68 && x < 108 && z >= 152 && z < 207;
 }
 
 interface KtxBox extends Vec2 {
@@ -134,6 +142,8 @@ export const KTX_BOXES: readonly KtxBox[] = [
   { x: 18, z: 158, width: 5, depth: 1, height: 1.05, kind: 'cover' },
   { x: 4, z: 176, width: 7, depth: 4, height: 2.4, kind: 'supply' },
   { x: 53, z: 157.5, width: 4.4, depth: 3.6, height: 2.5, kind: 'supply' },
+  // Ground-floor atrium fascia wall supporting the KTX-101 BUSAN display beneath the 3m mezzanine
+  { x: 43.7, z: 177.2, width: 9.6, depth: 2.2, height: 2.65, kind: 'wall' },
   ...[168, 173, 178].map((z): KtxBox =>
     ({ x: 9.3, z, y: KTX_PLATFORM_Y, width: 0.72, depth: 3.1, height: 0.94, kind: 'bench' })),
   { x: 23.45, z: 163.5, y: KTX_PLATFORM_Y, width: 0.66, depth: 2.8, height: 1.62, kind: 'locker' },
@@ -147,12 +157,15 @@ export const KTX_BOXES: readonly KtxBox[] = [
   { x: 6, z: 160.65, width: 0.54, depth: 11.2, height: 2.65, kind: 'wall' },
   { x: 56, z: 160.65, width: 0.54, depth: 11.2, height: 2.65, kind: 'wall' },
   { x: 9.85, z: 166, width: 7.7, depth: 0.6, height: 2.65, kind: 'wall' },
-  { x: 9, z: 158.8, width: 0.76, depth: 0.76, height: 5.72, kind: 'pier' },
-  { x: 23.5, z: 169.5, width: 0.76, depth: 0.76, height: 5.72, kind: 'pier' },
-  { x: 9, z: 181.5, width: 0.76, depth: 0.76, height: 5.72, kind: 'pier' },
+  // Symmetrical concrete frame columns supporting the 6m waiting terrace
+  ...[158.8, 173.5, 187.5].flatMap((z): KtxBox[] => [
+    { x: 9.2, z, width: 0.92, depth: 0.92, height: 5.72, kind: 'pier' },
+    { x: 23.3, z, width: 0.92, depth: 0.92, height: 5.72, kind: 'pier' }
+  ]),
   { x: KTX_TRANSFER_X, z: 189.6, y: KTX_PLATFORM_Y, width: 0.5, depth: 1.2, height: 3, kind: 'wall' },
   { x: KTX_TRANSFER_X, z: 193.35, y: KTX_PLATFORM_Y, width: 0.5, depth: 1.3, height: 3, kind: 'wall' },
-  ...[-112, -84, -56, -28, 0, 28, 56, 84, 112].map((x): KtxBox =>
+  // Sturdy concrete viaduct support piers extending east under the 6-car elevated terminal
+  ...[-112, -84, -56, -28, 0, 28, 56, 84, 106].map((x): KtxBox =>
     ({ x, z: 199, width: 2.3, depth: 3.2, height: 5.5, kind: 'pier' }))
 ];
 
@@ -194,7 +207,7 @@ export function ktxGroundSegmentClear(from: Vec2, to: Vec2): boolean {
 const groundCorners = groundObstacles.flatMap((box) =>
   [box.minX - 0.45, box.maxX + 0.45].flatMap((x) =>
     [box.minZ - 0.45, box.maxZ + 0.45].map((z) => ({ x, z }))))
-  .filter((node) => node.x >= -67 && node.x <= 63 && node.z > 150.55 && node.z < 195 &&
+  .filter((node) => node.x >= -67 && node.x <= 105 && node.z > 150.55 && node.z < 195 &&
     ktxGroundSegmentClear(node, node));
 const groundLinks = groundCorners.map((from) => groundCorners
   .map((to, index) => ({ to, index }))
@@ -240,7 +253,7 @@ export function ktxGroundDetour(from: Vec2, to: Vec2): Vec2[] {
 }
 
 export function ktxWaypoint(x: number, z: number, height: number, lane: KtxLane, docked: boolean,
-  gateOpen: boolean, slot = 0): Vec2 & { label: string; direct?: boolean } {
+  gateOpen: boolean, slot = 0, mezzanineOpen = true): Vec2 & { label: string; direct?: boolean } {
   const at = (x: number, z: number, label: string) => ({ x, z, label });
   const gate = KTX_GATES[lane];
   const spread = (slot % 5 - 2) * 1.15;
@@ -248,7 +261,11 @@ export function ktxWaypoint(x: number, z: number, height: number, lane: KtxLane,
   switch (surface) {
     case 'east-lower': return { ...at(32 + spread, 178.6, 'KTX East Stair'), direct: true };
     case 'west-lower': return { ...at(-43 + spread, 178.6, 'KTX West Stair'), direct: true };
-    case 'east-landing': return x < 40.5 ? at(43, 178.6, 'KTX East Landing') : at(44 + spread, 183, 'KTX East Stair');
+    case 'east-landing':
+      if (!mezzanineOpen) {
+        return at(34 + (slot % 4) * 2.2, 178.4, 'KTX Mezzanine Holding');
+      }
+      return x < 40.5 ? at(43, 178.6, 'KTX East Landing') : at(44 + spread, 183, 'KTX East Stair');
     case 'west-landing': return x > -50.8 ? at(-53.5, 178.6, 'KTX West Landing') : at(-53.5 + spread, 183, 'KTX West Stair');
     case 'east-upper': return at(44 + spread, 192, 'KTX Platform');
     case 'west-upper': return at(-53.5 + spread, 192, 'KTX Platform');

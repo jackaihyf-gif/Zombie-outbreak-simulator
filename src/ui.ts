@@ -1427,6 +1427,7 @@ export class UIController {
     if (this.sim.layeredKtx) {
       bars.push(this.gateBar(this.t('KTX East Gate', '车站东闸'), this.sim.ktxGates.public));
       bars.push(this.gateBar(this.t('KTX West Gate', '车站西闸'), this.sim.ktxGates.crew));
+      bars.push(this.gateBar(this.t('KTX Mezzanine', '夹层咽喉闸'), this.sim.ktxGates.mezzanine));
       bars.push(this.gateBar(this.t('KTX Partition', '站台隔门'), this.sim.ktxGates.transfer));
     }
     this.defenseGateBarsEl.hidden = bars.length === 0;

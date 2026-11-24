@@ -142,9 +142,10 @@ export class OutbreakSimulation {
 
   private newKtxGates(): KtxGates {
     return {
-      public: { open: true, integrity: 240, maxIntegrity: 240, lastDamagedAt: -Infinity, manualUntil: 0 },
-      crew: { open: false, integrity: 200, maxIntegrity: 200, lastDamagedAt: -Infinity, manualUntil: 0 },
-      transfer: { open: false, integrity: 340, maxIntegrity: 340, lastDamagedAt: -Infinity, manualUntil: 0 }
+      public: { open: true, openFraction: 1, integrity: 240, maxIntegrity: 240, lastDamagedAt: -Infinity, manualUntil: 0 },
+      crew: { open: false, openFraction: 0, integrity: 200, maxIntegrity: 200, lastDamagedAt: -Infinity, manualUntil: 0 },
+      mezzanine: { open: true, openFraction: 1, integrity: 280, maxIntegrity: 280, lastDamagedAt: -Infinity, manualUntil: 0 },
+      transfer: { open: false, openFraction: 0, integrity: 340, maxIntegrity: 340, lastDamagedAt: -Infinity, manualUntil: 0 }
     };
   }
   private trainPassengers = new Set<number>();
@@ -1709,7 +1710,7 @@ export class OutbreakSimulation {
     if (updatePressure) this.nextKtxThreatCheck = this.simTime + 0.45;
     if (updatePressure && !this.ktxPlatformLost) {
       let infected = 0;
-      for (const a of this.spatial.queryRadius(5, 191.5, 58, this.neighborBuffer)) {
+      for (const a of this.spatial.queryRadius(20, 191.5, 86, this.neighborBuffer)) {
         if (a.role !== 'infected' || a.climbY < KTX_PLATFORM_Y - 0.25 ||
             a.x <= KTX_TRANSFER_X || a.z < 189) continue;
         if (++infected >= 4 || (a.z > 191 && Math.abs(a.x - TRAIN_BOARDING_X) <= 5)) {
@@ -1773,6 +1774,45 @@ export class OutbreakSimulation {
     this.damageKtxGate('transfer', attackers, dt);
     if (updatePressure && this.simTime >= gate.manualUntil && !occupied) {
       this.setKtxGate('transfer', friendlyWaiting && !infectedNear);
+    }
+
+    const mezzPt = KTX_GATES.mezzanine;
+    const mezzGate = this.ktxGates.mezzanine;
+    let mezzAttackers = 0;
+    let mezzOccupied = false;
+    let mezzFriendlyWaiting = false;
+    let mezzInfectedNear = 0;
+    for (const a of this.spatial.queryRadius(mezzPt.x, mezzPt.z, 14, this.neighborBuffer)) {
+      if (!a.isAlive || a.isEvacuated || Math.abs(a.climbY - mezzPt.y) > 1.25) continue;
+      const dx = Math.abs(a.x - mezzPt.x);
+      const dz = Math.abs(a.z - mezzPt.z);
+      if (a.role === 'infected') {
+        if (a.z <= mezzPt.z + 2.2 && dx < mezzPt.width / 2 + 6) mezzInfectedNear++;
+        if (a.z <= mezzPt.z + 0.5 && dx < mezzPt.width / 2 + 0.65 && dz < 2.25 &&
+            a.targetAgentId === null && a.stunnedTimer <= 0) {
+          mezzAttackers += a.zombieVariant === 'brute' ? 3 : 1;
+        }
+      } else if (a.role === 'police' || a.role === 'civilian') {
+        if (dx < mezzPt.width / 2 && dz < 1.35) mezzOccupied = true;
+        if (a.z <= mezzPt.z && dx < mezzPt.width / 2 + 5 && dz < 5.5 &&
+            (this.stationOfficers.get(a.id) === 'public' || a.role === 'civilian')) {
+          mezzFriendlyWaiting = true;
+        }
+      }
+    }
+    this.damageKtxGate('mezzanine', mezzAttackers, dt);
+    if (updatePressure && this.simTime >= mezzGate.manualUntil && !mezzOccupied) {
+      const sealThreat = this.ktxRetreat.public ? mezzInfectedNear >= 1 : mezzInfectedNear >= 3;
+      const allowPassage = !sealThreat || (mezzFriendlyWaiting && mezzAttackers === 0 && mezzInfectedNear < 2);
+      this.setKtxGate('mezzanine', allowPassage);
+    }
+
+    for (const id of KTX_GATE_IDS) {
+      const ktxGate = this.ktxGates[id];
+      const target = (ktxGate.open || ktxGate.integrity <= 0) ? 1 : 0;
+      const step = dt * 2.4;
+      if (ktxGate.openFraction < target) ktxGate.openFraction = Math.min(target, ktxGate.openFraction + step);
+      else if (ktxGate.openFraction > target) ktxGate.openFraction = Math.max(target, ktxGate.openFraction - step);
     }
   }
 
@@ -1881,7 +1921,8 @@ export class OutbreakSimulation {
       return true;
     }
     const waypoint = ktxWaypoint(agent.x, agent.z, agent.climbY, lane, docked,
-      infected || !!officerLane || this.ktxGateOpen(lane), slot);
+      infected || !!officerLane || this.ktxGateOpen(lane), slot,
+      infected || !!officerLane || this.ktxGateOpen('mezzanine'));
     agent.destinationLabel = waypoint.label;
     if (Math.hypot(waypoint.x - agent.x, waypoint.z - agent.z) > 0.29) {
       if (waypoint.direct) this.steerTowards(agent, waypoint.x, waypoint.z, agent.baseSpeed, dt);
@@ -4588,8 +4629,8 @@ export class OutbreakSimulation {
         } else if (surface === 'west-landing' || surface === 'east-landing') {
           const until = this.ktxLandingHoldUntil[stationLane] ??= this.simTime + 3.5;
           if (this.simTime < until) {
-            const x = (stationLane === 'crew' ? -53 : 32) + (p.id % 4) * 3.2;
-            this.updateGroundGuard(p, { wall: null, x, z: 177.1 }, dt);
+            const x = stationLane === 'crew' ? -53 + (p.id % 4) * 3.2 : 39.2 + (p.id % 4) * 2.4;
+            this.updateGroundGuard(p, { wall: null, x, z: 177.2 }, dt);
             p.destinationLabel = 'Covering KTX stair landing';
             return;
           }
