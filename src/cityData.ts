@@ -4,6 +4,7 @@ import {
   BuildingData,
   BuildingInteriorData,
   DefenseWallData,
+  ExplosiveHazardData,
   InteriorBox,
   InteriorDoorData,
   MapId,
@@ -14,7 +15,8 @@ import {
   RoadblockData,
   SkybridgeData,
   StaticObstacleData,
-  Vec2
+  Vec2,
+  WayfindingSignData
 } from './types';
 import { SeededRNG } from './rng';
 import { KTX_LAST_LINE_Z } from './ktxTerminal';
@@ -80,6 +82,8 @@ export class CityLayout {
   public occupiedBlockKeys = new Set<string>();
   public overpasses: OverpassData[] = [];
   public skybridges: SkybridgeData[] = [];
+  public explosiveHazards: ExplosiveHazardData[] = [];
+  public wayfindingSigns: WayfindingSignData[] = [];
   public highwayZone: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
   public terminalPlaza: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
 
@@ -337,6 +341,24 @@ export class CityLayout {
       this.stationPos = { x: 0, z: 80 };
       this.evacSpawnPoints = [];
     } else if (this.mapId === 'twin_bridges') {
+      this.wallDefs = [
+        {
+          z: -18,
+          height: 7.6,
+          thickness: 2.4,
+          label: 'Line 1 • North Bridgehead Wall',
+          layerIndex: 1,
+          gateXs: [-48, 48]
+        },
+        {
+          z: 18,
+          height: 7.6,
+          thickness: 2.4,
+          label: 'Line 2 • South Bridgehead Wall',
+          layerIndex: 2,
+          gateXs: [-48, 48]
+        }
+      ];
       this.rivers.push({ minX: -130, maxX: 130, minZ: -11.5, maxZ: 11.5 });
       this.bridges.push(
         { x: -48, z: 0, width: 13.0, length: 32, axis: 'z', name: 'West Twin Bridge' },
@@ -699,6 +721,200 @@ export class CityLayout {
         });
       }
     }
+
+    if (this.mapId === 'twin_bridges') {
+      const twinWrecks: Array<[number, number, number, 'car' | 'taxi' | 'jersey_barrier']> = [
+        [-45.0, -40.0, 0.2, 'taxi'],
+        [45.0, -40.0, -0.22, 'car'],
+        [-51.8, 39.0, 0.14, 'jersey_barrier'],
+        [51.8, 39.0, -0.14, 'jersey_barrier']
+      ];
+      for (const [ox, oz, rot, kind] of twinWrecks) {
+        this.addObstacle({
+          x: ox,
+          z: oz,
+          width: kind === 'jersey_barrier' ? 2.4 : 1.85,
+          depth: kind === 'jersey_barrier' ? 0.75 : 3.7,
+          height: kind === 'jersey_barrier' ? 1.0 : 1.32,
+          rotationY: rot,
+          kind,
+          color: kind === 'taxi' ? 0xeab308 : kind === 'jersey_barrier' ? 0x64748b : 0x475569
+        });
+      }
+
+      this.addExplosiveHazard({
+        kind: 'fuel_truck',
+        x: -51.4,
+        z: -29.0,
+        rotationY: 0.16,
+        label: 'West Bridgehead Fuel Tanker'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_barrel',
+        x: -45.6,
+        z: -26.5,
+        rotationY: 0.3,
+        label: 'West Bridgehead Hazard Drums'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_truck',
+        x: 51.4,
+        z: -29.0,
+        rotationY: -0.16,
+        label: 'East Bridgehead Fuel Tanker'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_barrel',
+        x: 45.6,
+        z: -26.5,
+        rotationY: -0.3,
+        label: 'East Bridgehead Hazard Drums'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_barrel',
+        x: -51.2,
+        z: -4.0,
+        rotationY: 0.1,
+        label: 'West Bridge Deck Fuel Drums'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_barrel',
+        x: 51.2,
+        z: -4.0,
+        rotationY: -0.1,
+        label: 'East Bridge Deck Fuel Drums'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_truck',
+        x: -51.2,
+        z: 30.0,
+        rotationY: -0.12,
+        label: 'South West Approach Tanker'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_truck',
+        x: 51.2,
+        z: 30.0,
+        rotationY: 0.12,
+        label: 'South East Approach Tanker'
+      });
+
+      this.wayfindingSigns.push(
+        {
+          x: -48,
+          z: -33,
+          y: 6.2,
+          width: 7.4,
+          height: 1.9,
+          rotationY: 0,
+          title: 'WEST TWIN BRIDGE ↓',
+          subtitle: 'LINE 1 NORTH BRIDGEHEAD',
+          accentColor: '#38bdf8',
+          gantrySpan: 12.6
+        },
+        {
+          x: 48,
+          z: -33,
+          y: 6.2,
+          width: 7.4,
+          height: 1.9,
+          rotationY: 0,
+          title: 'EAST TWIN BRIDGE ↓',
+          subtitle: 'LINE 1 NORTH BRIDGEHEAD',
+          accentColor: '#38bdf8',
+          gantrySpan: 12.6
+        },
+        {
+          x: -48,
+          z: 27,
+          y: 6.2,
+          width: 7.4,
+          height: 1.9,
+          rotationY: 0,
+          title: 'LINE 2 SOUTH GATE ↓',
+          subtitle: 'SOUTH SAFE ZONE & PRECINCT',
+          accentColor: '#22c55e',
+          gantrySpan: 12.6
+        },
+        {
+          x: 48,
+          z: 27,
+          y: 6.2,
+          width: 7.4,
+          height: 1.9,
+          rotationY: 0,
+          title: 'LINE 2 SOUTH GATE ↓',
+          subtitle: 'SOUTH HARBOR EVAC ROUTE',
+          accentColor: '#22c55e',
+          gantrySpan: 12.6
+        }
+      );
+    } else if (this.mapId === 'grand_metropolis') {
+      this.addExplosiveHazard({
+        kind: 'fuel_truck',
+        x: -45.5,
+        z: -28,
+        rotationY: 0.15,
+        label: 'West Downtown Fuel Tanker'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_barrel',
+        x: -49.5,
+        z: -25,
+        rotationY: 0.4,
+        label: 'West Downtown Fuel Drums'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_truck',
+        x: 45.5,
+        z: -28,
+        rotationY: -0.15,
+        label: 'East Downtown Fuel Tanker'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_truck',
+        x: -18.5,
+        z: 36,
+        rotationY: 0.1,
+        label: 'Midtown South Fuel Tanker'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_barrel',
+        x: 18.5,
+        z: 36,
+        rotationY: -0.25,
+        label: 'Midtown Plaza Hazard Drums'
+      });
+    } else if (this.mapId === 'quarantine_citadel') {
+      this.addExplosiveHazard({
+        kind: 'fuel_truck',
+        x: -18.5,
+        z: -30,
+        rotationY: 0.12,
+        label: 'North West Quarantine Tanker'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_barrel',
+        x: 18.5,
+        z: -30,
+        rotationY: 0.2,
+        label: 'North East Hazard Drums'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_truck',
+        x: 18.5,
+        z: 30,
+        rotationY: -0.12,
+        label: 'South East Quarantine Tanker'
+      });
+      this.addExplosiveHazard({
+        kind: 'fuel_barrel',
+        x: -18.5,
+        z: 30,
+        rotationY: -0.2,
+        label: 'South West Hazard Drums'
+      });
+    }
   }
 
   private addBuilding(params: {
@@ -1034,6 +1250,42 @@ export class CityLayout {
         this.obstacleCells[r][c].push(fullObs);
       }
     }
+  }
+
+  private addExplosiveHazard(params: {
+    kind: 'fuel_truck' | 'fuel_barrel';
+    x: number;
+    z: number;
+    rotationY: number;
+    label: string;
+  }): void {
+    const isTruck = params.kind === 'fuel_truck';
+    const width = isTruck ? 2.35 : 1.5;
+    const depth = isTruck ? 6.2 : 1.5;
+    const height = isTruck ? 2.6 : 1.35;
+    const hp = isTruck ? 90 : 40;
+    const cosR = Math.cos(params.rotationY);
+    const sinR = Math.sin(params.rotationY);
+    this.explosiveHazards.push({
+      id: this.explosiveHazards.length + 1,
+      kind: params.kind,
+      x: params.x,
+      z: params.z,
+      width,
+      depth,
+      height,
+      rotationY: params.rotationY,
+      hp,
+      maxHp: hp,
+      blastRadius: isTruck ? 13.5 : 9.0,
+      damage: isTruck ? 340 : 240,
+      detonated: false,
+      burningTimer: 0,
+      label: params.label,
+      cosR,
+      sinR,
+      boundR: Math.hypot(width * 0.5, depth * 0.5) + 0.25
+    });
   }
 
   private addParkingLotVehicles(
@@ -1585,6 +1837,68 @@ export class CityLayout {
           continue;
         }
 
+        if (r === 4 && c === 2) {
+          // Walkable dual-door pass-through Arcade Mart next to West Commercial Skybridge
+          this.occupiedBlockKeys.add(`${r}:${c}`);
+          const arcade = this.addBuilding({
+            id: 'BLD-ARCADE',
+            name: 'Midtown Arcade Mart',
+            district: 'Sector 2 • West Commercial',
+            blockRow: r,
+            blockCol: c,
+            x: cx,
+            z: cz,
+            width: 19,
+            depth: 15,
+            height: 11.5,
+            doorSide: 'W',
+            color: 0x6d3f35,
+            accentColor: 0x22d3ee,
+            roofType: 'flat',
+            isShelterCapable: true,
+            shelterCapacity: 18
+          });
+          this.configureWalkableInterior(
+            arcade,
+            'mart',
+            [
+              {
+                side: 'W',
+                offset: 0,
+                width: 3.4,
+                isGlass: true,
+                label: 'Arcade West Blvd Glass Door'
+              },
+              {
+                side: 'E',
+                offset: 0,
+                width: 3.4,
+                isGlass: true,
+                label: 'Arcade East Alley Glass Door'
+              },
+              {
+                side: 'S',
+                offset: 0,
+                width: 3.2,
+                isGlass: false,
+                label: 'Arcade South Shortcut Door'
+              }
+            ],
+            [
+              { minX: cx - 7.5, maxX: cx - 3.2, minZ: cz - 5.5, maxZ: cz - 4.2, height: 1.15, kind: 'counter' },
+              { minX: cx + 2.2, maxX: cx + 7.5, minZ: cz - 5.6, maxZ: cz - 4.4, height: 1.9, kind: 'shelf' },
+              { minX: cx - 7.2, maxX: cx - 3.0, minZ: cz + 4.2, maxZ: cz + 5.5, height: 2.2, kind: 'cooler' },
+              { minX: cx + 2.5, maxX: cx + 7.5, minZ: cz + 4.2, maxZ: cz + 5.4, height: 1.9, kind: 'shelf' }
+            ],
+            [
+              { x: cx - 4.5, z: cz, flickerSeed: 1.1 },
+              { x: cx + 4.5, z: cz, flickerSeed: 2.9 },
+              { x: cx, z: cz + 3.5, flickerSeed: 4.4 }
+            ]
+          );
+          continue;
+        }
+
         if (r === 5 && c === 2) {
           // St. Jude Medical Center right north of Line 2
           this.occupiedBlockKeys.add(`${r}:${c}`);
@@ -1642,7 +1956,67 @@ export class CityLayout {
           continue;
         }
 
-        // Sector 3 Precinct & South Parking
+        // Sector 3 Dual-Door Through-Shop, Precinct & South Parking
+        if (r === 8 && c === 2) {
+          this.occupiedBlockKeys.add(`${r}:${c}`);
+          const pharm = this.addBuilding({
+            id: 'BLD-PHARM-S3',
+            name: 'Southside 24H Pharmacy',
+            district: 'Sector 3 • South Residences',
+            blockRow: r,
+            blockCol: c,
+            x: cx,
+            z: cz,
+            width: 19,
+            depth: 15,
+            height: 12.0,
+            doorSide: 'W',
+            color: 0x475569,
+            accentColor: 0x34d399,
+            roofType: 'flat',
+            isShelterCapable: true,
+            shelterCapacity: 20
+          });
+          this.configureWalkableInterior(
+            pharm,
+            'clinic',
+            [
+              {
+                side: 'W',
+                offset: 0,
+                width: 3.4,
+                isGlass: true,
+                label: 'Pharmacy West Blvd Glass Door'
+              },
+              {
+                side: 'E',
+                offset: 0,
+                width: 3.4,
+                isGlass: true,
+                label: 'Pharmacy Precinct Alley Door'
+              },
+              {
+                side: 'S',
+                offset: 0,
+                width: 3.2,
+                isGlass: false,
+                label: 'Pharmacy South Station Door'
+              }
+            ],
+            [
+              { minX: cx - 7.5, maxX: cx - 3.0, minZ: cz - 5.5, maxZ: cz - 4.2, height: 1.15, kind: 'counter' },
+              { minX: cx + 2.5, maxX: cx + 7.5, minZ: cz - 5.6, maxZ: cz - 4.4, height: 1.9, kind: 'shelf' },
+              { minX: cx - 7.0, maxX: cx - 2.8, minZ: cz + 4.2, maxZ: cz + 5.2, height: 0.75, kind: 'bench' },
+              { minX: cx + 2.5, maxX: cx + 7.5, minZ: cz + 4.2, maxZ: cz + 5.4, height: 1.9, kind: 'shelf' }
+            ],
+            [
+              { x: cx - 4.5, z: cz, flickerSeed: 0.6 },
+              { x: cx + 4.5, z: cz, flickerSeed: 2.5 },
+              { x: cx, z: cz - 3.2, flickerSeed: 4.8 }
+            ]
+          );
+          continue;
+        }
         if (r === 8 && c === 3) {
           this.occupiedBlockKeys.add(`${r}:${c}`);
           this.precinctPos = { x: cx, z: cz + 14 };
@@ -1752,7 +2126,8 @@ export class CityLayout {
         length: 16.5,
         width: 3.2,
         deckY: 4.8,
-        label: 'West Commercial Skybridge'
+        label: 'West Commercial Skybridge',
+        ladderXs: [-58.2, -45.8]
       },
       {
         axis: 'EW',
@@ -1761,7 +2136,188 @@ export class CityLayout {
         length: 16.5,
         width: 3.2,
         deckY: 4.8,
-        label: 'Midtown Plaza Skybridge'
+        label: 'Midtown Plaza Skybridge',
+        ladderXs: [19.8, 32.2]
+      }
+    );
+
+    // 3d. Shootable Explosive Fuel Tankers & Hazard Barrels + Illuminated Overhead Wayfinding Gantries
+    this.addExplosiveHazard({
+      kind: 'fuel_truck',
+      x: -55.0,
+      z: -154.0,
+      rotationY: 0.14,
+      label: 'West Blvd Fuel Tanker'
+    });
+    this.addExplosiveHazard({
+      kind: 'fuel_barrel',
+      x: -52.5,
+      z: -159.0,
+      rotationY: 0.25,
+      label: 'West Blvd Fuel Drums'
+    });
+    this.addExplosiveHazard({
+      kind: 'fuel_barrel',
+      x: -48.6,
+      z: -134.5,
+      rotationY: -0.2,
+      label: 'Line 1 West Approach Drums'
+    });
+    this.addExplosiveHazard({
+      kind: 'fuel_truck',
+      x: 23.8,
+      z: -126.5,
+      rotationY: -0.15,
+      label: 'Line 1 East Fuel Tanker'
+    });
+    this.addExplosiveHazard({
+      kind: 'fuel_barrel',
+      x: 29.2,
+      z: -127.0,
+      rotationY: 0.3,
+      label: 'Line 1 East Fuel Drums'
+    });
+    this.addExplosiveHazard({
+      kind: 'fuel_barrel',
+      x: -49.0,
+      z: -39.5,
+      rotationY: 0.12,
+      label: 'Skybridge North Fuel Drums'
+    });
+    this.addExplosiveHazard({
+      kind: 'fuel_truck',
+      x: -54.8,
+      z: -10.5,
+      rotationY: 0.12,
+      label: 'Midtown West Fuel Tanker'
+    });
+    this.addExplosiveHazard({
+      kind: 'fuel_truck',
+      x: 29.6,
+      z: 11.5,
+      rotationY: -0.18,
+      label: 'Canal Bridgehead Fuel Tanker'
+    });
+    this.addExplosiveHazard({
+      kind: 'fuel_barrel',
+      x: 68.0,
+      z: 29.0,
+      rotationY: 0.15,
+      label: 'East Canal Bridge Drums'
+    });
+    this.addExplosiveHazard({
+      kind: 'fuel_barrel',
+      x: -54.5,
+      z: 42.0,
+      rotationY: -0.1,
+      label: 'Line 2 West Approach Drums'
+    });
+    this.addExplosiveHazard({
+      kind: 'fuel_truck',
+      x: 23.5,
+      z: 92.0,
+      rotationY: 0.22,
+      label: 'Midtown Plaza Fuel Tanker'
+    });
+    this.addExplosiveHazard({
+      kind: 'fuel_barrel',
+      x: -48.6,
+      z: 134.5,
+      rotationY: 0.2,
+      label: 'Line 3 West Approach Drums'
+    });
+    this.addExplosiveHazard({
+      kind: 'fuel_truck',
+      x: 29.2,
+      z: 133.5,
+      rotationY: -0.14,
+      label: 'Line 3 East Fuel Tanker'
+    });
+
+    this.wayfindingSigns.push(
+      {
+        x: -52,
+        z: -130,
+        y: 6.4,
+        width: 8.2,
+        height: 1.95,
+        rotationY: 0,
+        title: 'LINE 1 · OUTER WALL ↓',
+        subtitle: 'HOLD PERIMETER OR RETREAT SOUTH',
+        accentColor: '#f59e0b',
+        gantrySpan: 13.6
+      },
+      {
+        x: 26,
+        z: -130,
+        y: 6.4,
+        width: 8.2,
+        height: 1.95,
+        rotationY: 0,
+        title: 'LINE 1 · EAST GATE ↓',
+        subtitle: 'HIGHWAY FUNNEL • KTX 320m ↓',
+        accentColor: '#38bdf8',
+        gantrySpan: 13.6
+      },
+      {
+        x: -52,
+        z: -38,
+        y: 6.4,
+        width: 8.2,
+        height: 1.95,
+        rotationY: 0,
+        title: 'SKYBRIDGE & ARCADE ↑',
+        subtitle: 'LINE 2 DEFENSE 85m SOUTH ↓',
+        accentColor: '#22d3ee',
+        gantrySpan: 13.6
+      },
+      {
+        x: 26,
+        z: 18,
+        y: 6.4,
+        width: 8.2,
+        height: 1.95,
+        rotationY: 0,
+        title: 'MIDTOWN CANAL BRIDGE ↓',
+        subtitle: 'LINE 2 EAST GATE 30m SOUTH',
+        accentColor: '#38bdf8',
+        gantrySpan: 13.6
+      },
+      {
+        x: -52,
+        z: 34,
+        y: 6.4,
+        width: 8.2,
+        height: 1.95,
+        rotationY: 0,
+        title: 'LINE 2 · INNER WALL ↓',
+        subtitle: 'SECTOR 3 SAFE ROUTE SOUTH',
+        accentColor: '#f59e0b',
+        gantrySpan: 13.6
+      },
+      {
+        x: -52,
+        z: 132,
+        y: 6.4,
+        width: 8.2,
+        height: 1.95,
+        rotationY: 0,
+        title: 'LINE 3 · KTX TERMINAL ↓',
+        subtitle: 'EVACUATION PLATFORM ENTRANCE',
+        accentColor: '#22c55e',
+        gantrySpan: 13.6
+      },
+      {
+        x: 26,
+        z: 132,
+        y: 6.4,
+        width: 8.2,
+        height: 1.95,
+        rotationY: 0,
+        title: 'KTX EXPRESS PLATFORM ↓',
+        subtitle: 'BOARD SOUTH CONCOURSE TRAINS',
+        accentColor: '#22c55e',
+        gantrySpan: 13.6
       }
     );
 

@@ -249,9 +249,50 @@ function pushOutBox(
   }
 }
 
+function pushOutOBB(
+  pos: Vec2,
+  radius: number,
+  obs: {
+    x: number;
+    z: number;
+    width: number;
+    depth: number;
+    rotationY: number;
+    cosR?: number;
+    sinR?: number;
+    boundR?: number;
+  }
+): void {
+  const hw = obs.width * 0.5 + radius;
+  const hd = obs.depth * 0.5 + radius;
+  const dx = pos.x - obs.x;
+  const dz = pos.z - obs.z;
+  const rBound = (obs.boundR ?? Math.max(hw, hd) + 1.5) + radius;
+  if (Math.abs(dx) > rBound || Math.abs(dz) > rBound) return;
+
+  const cosR = obs.cosR ?? Math.cos(obs.rotationY);
+  const sinR = obs.sinR ?? Math.sin(obs.rotationY);
+  const lx = dx * cosR - dz * sinR;
+  const lz = dx * sinR + dz * cosR;
+
+  if (Math.abs(lx) < hw && Math.abs(lz) < hd) {
+    const penX = hw - Math.abs(lx);
+    const penZ = hd - Math.abs(lz);
+    let pushLx = 0;
+    let pushLz = 0;
+    if (penX < penZ) {
+      pushLx = (lx >= 0 ? 1 : -1) * (penX + 0.02);
+    } else {
+      pushLz = (lz >= 0 ? 1 : -1) * (penZ + 0.02);
+    }
+    pos.x += pushLx * cosR + pushLz * sinR;
+    pos.z += -pushLx * sinR + pushLz * cosR;
+  }
+}
+
 /**
  * Pushes position (x, z) out of nearby building footprints (or walkable 1st-floor interior walls/props/locked doors),
- * open river channels, static pileup obstacles / shipping containers, and closed defense walls.
+ * open river channels, static pileup obstacles / shipping containers, explosive hazards, and closed defense walls.
  */
 export function resolveWorldCollisions(
   pos: Vec2,
@@ -310,31 +351,13 @@ export function resolveWorldCollisions(
   // Push out of spatial static wrecked vehicles, jersey barriers, burning trucks & shipping containers (OBB)
   const nearObs = city.getObstaclesNearPos(pos.x, pos.z, obsScratch, radius + 0.8);
   for (let i = 0; i < nearObs.length; i++) {
-    const obs = nearObs[i];
-    const hw = obs.width * 0.5 + radius;
-    const hd = obs.depth * 0.5 + radius;
-    const dx = pos.x - obs.x;
-    const dz = pos.z - obs.z;
-    const rBound = (obs.boundR ?? Math.max(hw, hd) + 1.5) + radius;
-    if (Math.abs(dx) > rBound || Math.abs(dz) > rBound) continue;
+    pushOutOBB(pos, radius, nearObs[i]);
+  }
 
-    const cosR = obs.cosR ?? Math.cos(obs.rotationY);
-    const sinR = obs.sinR ?? Math.sin(obs.rotationY);
-    const lx = dx * cosR - dz * sinR;
-    const lz = dx * sinR + dz * cosR;
-
-    if (Math.abs(lx) < hw && Math.abs(lz) < hd) {
-      const penX = hw - Math.abs(lx);
-      const penZ = hd - Math.abs(lz);
-      let pushLx = 0;
-      let pushLz = 0;
-      if (penX < penZ) {
-        pushLx = (lx >= 0 ? 1 : -1) * (penX + 0.02);
-      } else {
-        pushLz = (lz >= 0 ? 1 : -1) * (penZ + 0.02);
-      }
-      pos.x += pushLx * cosR + pushLz * sinR;
-      pos.z += -pushLx * sinR + pushLz * cosR;
+  // Push out of street-level explosive fuel tankers & barrel clusters (both intact and charred wrecks act as solid cover)
+  if (climbY < 3.2) {
+    for (let i = 0; i < city.explosiveHazards.length; i++) {
+      pushOutOBB(pos, radius, city.explosiveHazards[i]);
     }
   }
 

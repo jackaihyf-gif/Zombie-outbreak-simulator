@@ -73,7 +73,14 @@ export class AgentRenderer {
 
   private tmpColor = new THREE.Color();
   private whiteColor = new THREE.Color(0xffffff);
+  private corpseColor = new THREE.Color(0x827070);
+  private flashBodyColor = new THREE.Color(0xff9e9e);
+  private flashHeadColor = new THREE.Color(0xffd4d4);
   private zeroMatrix = new THREE.Matrix4().makeScale(0, 0, 0);
+  private frustum = new THREE.Frustum();
+  private projScreenMatrix = new THREE.Matrix4();
+  private cullSphere = new THREE.Sphere(new THREE.Vector3(), 2.8);
+  private camPos = new THREE.Vector3();
 
   private rootBasis: Mat3 = {
     r00: 1,
@@ -320,7 +327,8 @@ export class AgentRenderer {
     selectedAgentId: number | null,
     simTime: number,
     hiddenAgentId: number | null = null,
-    isFirstPerson = false
+    isFirstPerson = false,
+    camera?: THREE.Camera
   ): void {
     for (const bucket of this.buckets.values()) {
       bucket.activeCount = 0;
@@ -333,11 +341,42 @@ export class AgentRenderer {
     const shadowArr = this.shadowInst.instanceMatrix.array as Float32Array;
     const weaponArr = this.weaponInst.instanceMatrix.array as Float32Array;
 
+    let useCulling = false;
+    if (camera) {
+      camera.updateMatrixWorld();
+      camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+      this.projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      this.frustum.setFromProjectionMatrix(this.projScreenMatrix);
+      this.camPos.setFromMatrixPosition(camera.matrixWorld);
+      useCulling = true;
+    }
+
     for (let i = 0; i < agents.length; i++) {
       const a = agents[i];
-      if (!a.isAlive || a.isEvacuated || (a.isTrainPassenger && !a.onTerminalFloor) || a.civState === 'SHELTERED' || a.id === hiddenAgentId) {
+      const isDeadCorpse = !a.isAlive && (a.deathTimer ?? 0) > 0;
+      if (
+        (!a.isAlive && !isDeadCorpse) ||
+        a.isEvacuated ||
+        (a.isTrainPassenger && !a.onTerminalFloor) ||
+        a.civState === 'SHELTERED' ||
+        a.id === hiddenAgentId
+      ) {
         continue;
       }
+
+      let distSq = 0;
+      if (useCulling) {
+        const yCenter = a.climbY + a.fallY + 1.1;
+        this.cullSphere.center.set(a.x, yCenter, a.z);
+        if (selectedAgentId !== a.id && !this.frustum.intersectsSphere(this.cullSphere)) {
+          continue;
+        }
+        const dxC = a.x - this.camPos.x;
+        const dyC = yCenter - this.camPos.y;
+        const dzC = a.z - this.camPos.z;
+        distSq = dxC * dxC + dyC * dyC + dzC * dzC;
+      }
+      const isDistant = useCulling && distSq > 15625;
 
       const arch = this.resolveArchetype(a);
       const bucket = this.buckets.get(arch)!;
@@ -384,7 +423,26 @@ export class AgentRenderer {
       let lLegRoll = 0;
       let rLegRoll = 0;
 
-      if (isConvulsing) {
+      if (isDeadCorpse) {
+        const fallP = Math.min(1, (a.deathAge ?? 0) / 0.34);
+        const ease = 1 - (1 - fallP) * (1 - fallP);
+        const fx = Math.sin(a.rotationY);
+        const fz = Math.cos(a.rotationY);
+        const hitDot = (a.deathDirX ?? 0) * fx + (a.deathDirZ ?? 0) * fz;
+        const collapseSign = hitDot >= 0 ? 1 : -1;
+        rootPitch = collapseSign * 1.48 * ease;
+        rootRoll = ((a.id % 2 === 0 ? 1 : -1) * 0.25) * ease;
+        headPitch = collapseSign * 0.28 * ease;
+        headRoll = ((a.id % 3) - 1) * 0.22 * ease;
+        lArmPitch = (-0.65 - ((a.id % 4) * 0.22)) * ease;
+        rArmPitch = (-0.55 - (((a.id + 1) % 4) * 0.24)) * ease;
+        lArmRoll = (0.42 + ((a.id % 3) * 0.14)) * ease;
+        rArmRoll = (-0.42 - ((a.id % 3) * 0.14)) * ease;
+        lLegPitch = 0.16 * ease;
+        rLegPitch = -0.14 * ease;
+        lLegRoll = 0.14 * ease;
+        rLegRoll = -0.14 * ease;
+      } else if (isConvulsing) {
         // Train-to-Busan brutal bone-snapping convulsion before turning
         const p = a.animPhase + simTime * 22;
         const jitter = Math.sin(p * 2.1 + a.id);
@@ -583,6 +641,15 @@ export class AgentRenderer {
           lLegPitch = Math.sin(ph) * 0.42;
           rLegPitch = -Math.sin(ph) * 0.28;
         }
+
+        if ((a.hitFlinchTimer ?? 0) > 0) {
+          const fl = Math.min(1, a.hitFlinchTimer! / 0.25);
+          rootPitch -= fl * 0.52;
+          headPitch -= fl * 0.42;
+          rootYawOffset += (a.id % 2 === 0 ? 1 : -1) * fl * 0.34;
+          lArmPitch -= fl * 0.35;
+          rArmPitch -= fl * 0.35;
+        }
       } else if (a.role === 'police') {
         const swing = speed > 0.15 ? Math.sin(a.animPhase) * 0.65 : 0;
         const coveringRetreat = a.policeState === 'RETREATING' && a.targetAgentId !== null;
@@ -639,8 +706,8 @@ export class AgentRenderer {
         }
       }
 
-      const jitterX = isConvulsing ? Math.sin(simTime * 58 + a.id) * 0.12 : 0;
-      const jitterZ = isConvulsing ? Math.cos(simTime * 51 + a.id) * 0.12 : 0;
+      const jitterX = !isDistant && isConvulsing ? Math.sin(simTime * 58 + a.id) * 0.12 : 0;
+      const jitterZ = !isDistant && isConvulsing ? Math.cos(simTime * 51 + a.id) * 0.12 : 0;
       const ax = a.x + jitterX;
       const az = a.z + jitterZ;
       const pinnedDrop =
@@ -657,12 +724,16 @@ export class AgentRenderer {
             ? 0.48 * Math.min(1, a.stunnedTimer / 0.65)
             : 0.42 * Math.min(1, a.stunnedTimer / 1.1)
           : 0;
+      const corpseSink = isDeadCorpse
+        ? (Math.min(1, (a.deathAge ?? 0) / 0.34) * 0.05) +
+          ((a.deathTimer ?? 0) < 1.2 ? (1 - (a.deathTimer ?? 0) / 1.2) * 0.48 : 0)
+        : 0;
       const ay =
         (isConvulsing ? -0.14 : 0.22) +
         a.climbY +
         a.fallY +
         strideBounce -
-        Math.max(stunDrop, pinnedDrop, feedDrop);
+        Math.max(stunDrop, pinnedDrop, feedDrop, corpseSink);
 
       this.computeBasis(
         this.rootBasis,
@@ -751,7 +822,7 @@ export class AgentRenderer {
         rLegRoll
       );
 
-      // Per-instance colors: civilian outfits/skin varied dynamically; other archetypes stay static white
+      // Per-instance colors: civilian outfits/skin varied dynamically; zombie hit-flash/corpse tints; others static white
       if (arch === 'civilian') {
         if (a.isIncubating) {
           this.tmpColor.setHex(0xb4b8a4); // Subtle pale sickly complexion without neon tinting
@@ -768,10 +839,26 @@ export class AgentRenderer {
         this.tmpColor.setHex(a.pantsColor);
         bucket.leftLegInst.setColorAt(slot, this.tmpColor);
         bucket.rightLegInst.setColorAt(slot, this.tmpColor);
+      } else if (arch === 'zombie_normal' || arch === 'zombie_runner' || arch === 'zombie_brute') {
+        let headTint = this.whiteColor;
+        let bodyTint = this.whiteColor;
+        if (isDeadCorpse) {
+          headTint = this.corpseColor;
+          bodyTint = this.corpseColor;
+        } else if ((a.hitFlashTimer ?? 0) > 0) {
+          headTint = this.flashHeadColor;
+          bodyTint = this.flashBodyColor;
+        }
+        bucket.headInst.setColorAt(slot, headTint);
+        bucket.torsoInst.setColorAt(slot, bodyTint);
+        bucket.leftArmInst.setColorAt(slot, bodyTint);
+        bucket.rightArmInst.setColorAt(slot, bodyTint);
+        bucket.leftLegInst.setColorAt(slot, bodyTint);
+        bucket.rightLegInst.setColorAt(slot, bodyTint);
       }
 
       // Grounded drop shadow
-      if (shadowCount < this.maxShadows) {
+      if (!isDistant && !isDeadCorpse && shadowCount < this.maxShadows) {
         const shIdx = shadowCount * 16;
         shadowArr[shIdx + 0] = scaleMult;
         shadowArr[shIdx + 1] = 0;
@@ -837,7 +924,12 @@ export class AgentRenderer {
         bucket.leftLegInst.instanceMatrix.needsUpdate = true;
         bucket.rightLegInst.instanceMatrix.needsUpdate = true;
 
-        if (bucket.archetype === 'civilian') {
+        if (
+          bucket.archetype === 'civilian' ||
+          bucket.archetype === 'zombie_normal' ||
+          bucket.archetype === 'zombie_runner' ||
+          bucket.archetype === 'zombie_brute'
+        ) {
           if (bucket.headInst.instanceColor) bucket.headInst.instanceColor.needsUpdate = true;
           if (bucket.torsoInst.instanceColor) bucket.torsoInst.instanceColor.needsUpdate = true;
           if (bucket.leftArmInst.instanceColor) bucket.leftArmInst.instanceColor.needsUpdate = true;

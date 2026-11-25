@@ -31,11 +31,19 @@ export class CameraController {
   public isFirstPerson = false;
   public fpYaw = Math.PI;
   public fpPitch = -0.02;
+  public fpMouseSensitivity = 1.0;
+  public fpBaseFov = 68;
+  public enableCameraShake = true;
+  private fpIsAds = false;
   private fpDragButton = 0;
   private fpAllowLeftDrag = true;
   private fpIgnoreLockedMotionUntil = 0;
   private fpBob = 0;
   private fpRoll = 0;
+  private fpRecoilPitch = 0;
+  private fpRecoilYaw = 0;
+  private fpShake = 0;
+  private fpShakePhase = 0;
   private domElement: HTMLElement;
 
   constructor(camera: THREE.PerspectiveCamera, domElement: HTMLElement) {
@@ -130,9 +138,10 @@ export class CameraController {
         const moveY = locked ? e.movementY : dy;
         if (!Number.isFinite(moveX) || !Number.isFinite(moveY) || Math.hypot(moveX, moveY) > 320) return;
         const limit = locked ? 100 : 54;
-        this.fpYaw -= Math.max(-limit, Math.min(limit, moveX)) * (locked ? 0.0024 : 0.0042);
+        const sens = this.fpMouseSensitivity * (this.fpIsAds ? 0.62 : 1.0);
+        this.fpYaw -= Math.max(-limit, Math.min(limit, moveX)) * (locked ? 0.0024 : 0.0042) * sens;
         this.fpPitch = Math.max(-1.52, Math.min(1.15,
-          this.fpPitch - Math.max(-limit, Math.min(limit, moveY)) * (locked ? 0.0022 : 0.0038)));
+          this.fpPitch - Math.max(-limit, Math.min(limit, moveY)) * (locked ? 0.0022 : 0.0038) * sens));
         return;
       }
 
@@ -247,21 +256,40 @@ export class CameraController {
     this.fpAllowLeftDrag = !armed;
     this.fpBob = 0;
     this.fpRoll = 0;
+    this.fpRecoilPitch = 0;
+    this.fpRecoilYaw = 0;
+    this.fpShake = 0;
     if (active) {
       if (document.activeElement instanceof HTMLElement) {
         document.activeElement.blur();
       }
       this.fpYaw = initialYaw;
       this.fpPitch = -0.02;
+      this.fpIsAds = false;
       this.followAgentMode = false;
       this.autoDirectorMode = false;
+      this.camera.fov = this.fpBaseFov;
+      this.camera.updateProjectionMatrix();
     } else {
       if (document.pointerLockElement === this.domElement) {
         document.exitPointerLock?.();
       }
+      this.camera.fov = 46;
+      this.camera.updateProjectionMatrix();
       this.camera.rotation.set(0, 0, 0);
       this.updateCameraTransform(1);
     }
+  }
+
+  public addFirstPersonRecoil(pitchKick: number, yawKick: number): void {
+    const scale = this.enableCameraShake ? 1 : 0.35;
+    this.fpRecoilPitch = Math.min(0.14, this.fpRecoilPitch + pitchKick * scale);
+    this.fpRecoilYaw = Math.max(-0.08, Math.min(0.08, this.fpRecoilYaw + yawKick * scale));
+  }
+
+  public addFirstPersonShake(intensity: number): void {
+    if (!this.enableCameraShake) return;
+    this.fpShake = Math.min(0.12, Math.max(this.fpShake, intensity));
   }
 
   public isKeyDown(key: string): boolean {
@@ -290,20 +318,53 @@ export class CameraController {
     sprinting: boolean,
     time: number,
     vaultY = 0,
-    vaultRoll = 0
+    vaultRoll = 0,
+    ads = false
   ): void {
+    this.fpIsAds = ads;
+    const bobScale = this.enableCameraShake ? 1 : 0.25;
+    const rollScale = this.enableCameraShake ? 1 : 0.2;
     const bob = isMoving
-      ? Math.sin(time * (sprinting ? 14 : 9)) * (sprinting ? 0.045 : 0.026)
+      ? Math.sin(time * (sprinting ? 14 : 9)) * (sprinting ? 0.045 : 0.026) * bobScale
       : 0;
     const roll = isMoving
-      ? Math.cos(time * (sprinting ? 7 : 4.5)) * (sprinting ? 0.007 : 0.003)
+      ? Math.cos(time * (sprinting ? 7 : 4.5)) * (sprinting ? 0.007 : 0.003) * rollScale
       : 0;
     const blend = 1 - Math.exp(-16 * dt);
     this.fpBob += (bob - this.fpBob) * blend;
     this.fpRoll += (roll + vaultRoll * 0.5 - this.fpRoll) * blend;
+
+    const recoilDecay = Math.exp(-16 * dt);
+    this.fpRecoilPitch *= recoilDecay;
+    this.fpRecoilYaw *= recoilDecay;
+    if (this.fpShake > 0.0002) {
+      this.fpShakePhase += dt * 42;
+      this.fpShake *= Math.exp(-11 * dt);
+    } else {
+      this.fpShake = 0;
+    }
+    const shakeX = this.fpShake * Math.sin(this.fpShakePhase);
+    const shakeY = this.fpShake * Math.cos(this.fpShakePhase * 1.37) * 0.85;
+    const shakeRoll = this.fpShake * Math.sin(this.fpShakePhase * 1.7) * 0.7;
+
+    const targetFov = ads
+      ? Math.max(46, this.fpBaseFov - 14)
+      : sprinting && isMoving
+      ? this.fpBaseFov + 5
+      : this.fpBaseFov;
+    const nextFov = this.camera.fov + (targetFov - this.camera.fov) * (1 - Math.exp(-8 * dt));
+    if (Math.abs(nextFov - this.camera.fov) > 0.02) {
+      this.camera.fov = nextFov;
+      this.camera.updateProjectionMatrix();
+    }
+
     this.camera.position.set(x, 1.68 + this.fpBob + vaultY, z);
     this.camera.rotation.order = 'YXZ';
-    this.camera.rotation.set(this.fpPitch, this.fpYaw, this.fpRoll);
+    this.camera.rotation.set(
+      this.fpPitch + this.fpRecoilPitch + shakeX,
+      this.fpYaw + this.fpRecoilYaw + shakeY,
+      this.fpRoll + shakeRoll
+    );
   }
 
   public update(

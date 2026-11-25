@@ -1,24 +1,44 @@
 import { Box3, Ray, Vector3 } from 'three';
 import type { CityLayout } from './cityData';
 import { gateClearHalfWidth, WALL_DECK_OVERHANG, WALL_DECK_REAR_TRIM, WALL_DECK_RISE } from './perimeter';
-import type { AgentData, BlastGateData, DefenseWallData, InteriorDoorData, VehicleData } from './types';
+import type {
+  AgentData,
+  BlastGateData,
+  BuildingData,
+  DefenseWallData,
+  InteriorDoorData,
+  StaticObstacleData,
+  VehicleData
+} from './types';
 
 export type ShotSurface = 'dust' | 'metal' | 'infected';
 
 export class ShotTrace {
-  public readonly ray: Ray;
-  public distance: number;
+  public readonly ray = new Ray(new Vector3(), new Vector3());
+  public distance = 0;
   public surface?: ShotSurface;
   public target: AgentData | null = null;
+  public hitHead = false;
   private box = new Box3();
   private contact = new Vector3();
   private localRay = new Ray();
+  private endVec = new Vector3();
+  private buildingBuf: BuildingData[] = [];
+  private obstacleBuf: StaticObstacleData[] = [];
+  private wallGateBuf: BlastGateData[] = [];
 
   constructor(x: number, y: number, z: number, yaw: number, pitch: number, range: number) {
-    this.ray = new Ray(new Vector3(x, y, z), new Vector3(
-      -Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch)
-    ));
+    this.reset(x, y, z, yaw, pitch, range);
+  }
+
+  public reset(x: number, y: number, z: number, yaw: number, pitch: number, range: number): this {
+    const cosPitch = Math.cos(pitch);
+    this.ray.origin.set(x, y, z);
+    this.ray.direction.set(-Math.sin(yaw) * cosPitch, Math.sin(pitch), -Math.cos(yaw) * cosPitch);
     this.distance = range;
+    this.surface = undefined;
+    this.target = null;
+    this.hitHead = false;
     if (this.ray.direction.y < 0) {
       const ground = (0.22 - y) / this.ray.direction.y;
       if (ground > 0 && ground < range) {
@@ -26,11 +46,12 @@ export class ShotTrace {
         this.surface = 'dust';
       }
     }
+    return this;
   }
 
   public testBox(
     minX: number, maxX: number, minY: number, maxY: number, minZ: number, maxZ: number,
-    surface: ShotSurface, target: AgentData | null = null, ray = this.ray
+    surface: ShotSurface, target: AgentData | null = null, ray = this.ray, headshot = false
   ): void {
     if (minX >= maxX || minZ >= maxZ || minY >= maxY) return;
     this.box.min.set(minX, minY, minZ);
@@ -42,9 +63,11 @@ export class ShotTrace {
     this.distance = distance;
     this.surface = surface;
     this.target = target;
+    this.hitHead = headshot;
   }
 
-  public testRotatedBox(x: number, z: number, width: number, depth: number, height: number, yaw: number): void {
+  public testRotatedBox(x: number, z: number, width: number, depth: number, height: number, yaw: number): boolean {
+    const prevDist = this.distance;
     const dx = this.ray.origin.x - x;
     const dz = this.ray.origin.z - z;
     const cos = Math.cos(yaw);
@@ -53,19 +76,22 @@ export class ShotTrace {
     this.localRay.origin.set(dx * cos - dz * sin, this.ray.origin.y, dx * sin + dz * cos);
     this.localRay.direction.set(direction.x * cos - direction.z * sin, direction.y, direction.x * sin + direction.z * cos);
     this.testBox(-width / 2, width / 2, 0.1, height, -depth / 2, depth / 2, 'metal', null, this.localRay);
+    return this.distance < prevDist;
   }
 
   public traceCity(
     city: CityLayout, walls: DefenseWallData[], gates: BlastGateData[],
-    doors: InteriorDoorData[], vehicles: VehicleData[], ignoreWallDeckId?: number
+    doors: InteriorDoorData[], vehicles: VehicleData[], ignoreWallDeckId?: number,
+    gatesByWall?: Map<number, BlastGateData[]>
   ): void {
     const origin = this.ray.origin;
-    const end = this.ray.at(this.distance, new Vector3());
+    const end = this.ray.at(this.distance, this.endVec);
     const minX = Math.min(origin.x, end.x);
     const maxX = Math.max(origin.x, end.x);
     const minZ = Math.min(origin.z, end.z);
     const maxZ = Math.max(origin.z, end.z);
-    for (const b of city.getBuildingsInBox(minX, maxX, minZ, maxZ, [])) {
+    this.buildingBuf.length = 0;
+    for (const b of city.getBuildingsInBox(minX, maxX, minZ, maxZ, this.buildingBuf)) {
       if (b.interior) {
         const ceiling = b.interior.floorHeight;
         this.testBox(b.minX, b.maxX, ceiling, b.height, b.minZ, b.maxZ, 'dust');
@@ -97,7 +123,17 @@ export class ShotTrace {
           this.testBox(left, right, wall.height, wall.height + WALL_DECK_RISE, frontEdge, rearEdge, 'dust');
         }
       };
-      const segments = gates.filter((gate) => gate.wallId === wall.id).sort((a, b) => a.x - b.x);
+      let segments = gatesByWall?.get(wall.id);
+      if (!segments) {
+        this.wallGateBuf.length = 0;
+        for (let i = 0; i < gates.length; i++) {
+          if (gates[i].wallId === wall.id) this.wallGateBuf.push(gates[i]);
+        }
+        if (this.wallGateBuf.length > 1) {
+          this.wallGateBuf.sort((a, b) => a.x - b.x);
+        }
+        segments = this.wallGateBuf;
+      }
       let start = wall.minX;
       for (const gate of segments) {
         const left = gate.x - gate.width / 2;
@@ -112,7 +148,8 @@ export class ShotTrace {
       testWallSegment(start, wall.maxX);
     }
     const reach = Math.max(maxX - minX, maxZ - minZ) * 0.5 + 1;
-    for (const obstacle of city.getObstaclesNearPos((minX + maxX) / 2, (minZ + maxZ) / 2, [], reach)) {
+    this.obstacleBuf.length = 0;
+    for (const obstacle of city.getObstaclesNearPos((minX + maxX) / 2, (minZ + maxZ) / 2, this.obstacleBuf, reach)) {
       this.testRotatedBox(obstacle.x, obstacle.z, obstacle.width, obstacle.depth, obstacle.height, obstacle.rotationY);
     }
     for (const vehicle of vehicles) {

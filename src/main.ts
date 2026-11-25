@@ -9,8 +9,9 @@ import { CameraController } from './camera';
 import { CityRenderer } from './cityRenderer';
 import { KTX_PLATFORM_Y, KTX_SURFACES } from './ktxTerminal';
 import { WALL_DECK_REAR_TRIM, WALL_DECK_RISE, wallDeckFrontZ, wallDeckSpan } from './perimeter';
-import { OutbreakSimulation } from './simulation';
-import { PlayerSpawnPoint, PlayerWeapon, ScenarioConfig } from './types';
+import { DEFAULT_SETTINGS, GameSettings, loadSettings, saveSettings } from './settings';
+import { OutbreakSimulation, SIEGE_WAVE_SIZES } from './simulation';
+import { GraphicsQuality, MapId, PlayerSpawnPoint, PlayerWeapon, ScenarioConfig, ScenarioId } from './types';
 import { TRAIN_WIDTH } from './trainLayout';
 import { PLAYER_WEAPONS } from './playerLoadouts';
 import { UIController } from './ui';
@@ -30,6 +31,77 @@ const DEFAULT_CONFIG: ScenarioConfig = {
   fastStrain: true
 };
 
+const VALID_MAPS = new Set<MapId>(['citadel_express', 'grand_metropolis', 'twin_bridges', 'quarantine_citadel']);
+const VALID_SCENARIOS = new Set<ScenarioId>([
+  'wwz_busan',
+  'patient_zero',
+  'multi_epicenter',
+  'horde_invasion',
+  'breach_siege',
+  'delayed_response',
+  'super_spreader',
+  'no_intervention'
+]);
+
+function buildInitialConfig(): ScenarioConfig {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const mapParam = params.get('map') as MapId | null;
+    const scenarioParam = params.get('scenario') as ScenarioId | null;
+    const seedParam = params.get('seed');
+    const popParam = params.get('pop');
+
+    if (!mapParam && !scenarioParam && !seedParam && !popParam) {
+      return DEFAULT_CONFIG;
+    }
+
+    const id: ScenarioId = scenarioParam && VALID_SCENARIOS.has(scenarioParam) ? scenarioParam : DEFAULT_CONFIG.id;
+    const siege = id === 'breach_siege';
+    const mapId: MapId = siege
+      ? mapParam === 'twin_bridges'
+        ? 'twin_bridges'
+        : 'citadel_express'
+      : mapParam && VALID_MAPS.has(mapParam)
+      ? mapParam
+      : DEFAULT_CONFIG.mapId;
+    const seed = seedParam ? seedParam.trim().slice(0, 32) || DEFAULT_CONFIG.seed : DEFAULT_CONFIG.seed;
+    const parsedPop = popParam ? parseInt(popParam, 10) : NaN;
+    const population = Number.isFinite(parsedPop)
+      ? Math.max(200, Math.min(2200, parsedPop))
+      : DEFAULT_CONFIG.population;
+    const fastStrain = id === 'super_spreader' || id === 'wwz_busan' || siege;
+
+    return {
+      id,
+      mapId,
+      seed,
+      population,
+      incubationSeconds: id === 'super_spreader' ? 2.5 : id === 'wwz_busan' || siege ? 2.8 : 7,
+      initialPolice:
+        id === 'horde_invasion' || siege ? 24 : id === 'wwz_busan' ? 22 : id === 'super_spreader' ? 20 : 18,
+      initialInfected: siege
+        ? SIEGE_WAVE_SIZES[0]
+        : id === 'horde_invasion'
+        ? 55
+        : id === 'wwz_busan'
+        ? 18
+        : id === 'multi_epicenter'
+        ? 5
+        : id === 'super_spreader'
+        ? 3
+        : id === 'delayed_response'
+        ? 2
+        : 1,
+      dispatchDelaySeconds: id === 'delayed_response' ? 35 : id === 'horde_invasion' || id === 'wwz_busan' || siege ? 2 : 3,
+      allowPlayerIntervention: id !== 'no_intervention',
+      enableWaves: id === 'horde_invasion' || id === 'wwz_busan' || siege,
+      fastStrain
+    };
+  } catch {
+    return DEFAULT_CONFIG;
+  }
+}
+
 interface WeaponViewModel {
   root: THREE.Group;
   muzzle: THREE.Group;
@@ -39,15 +111,15 @@ interface WeaponViewModel {
 }
 
 class ProjectOutbreakApp {
-  public scene: THREE.Scene;
-  public camera: THREE.PerspectiveCamera;
-  public renderer: THREE.WebGLRenderer;
-  public sound: SoundEngine;
-  public sim: OutbreakSimulation;
-  public cityRenderer: CityRenderer;
-  public agentRenderer: AgentRenderer;
-  public camController: CameraController;
-  public ui: UIController;
+  public scene!: THREE.Scene;
+  public camera!: THREE.PerspectiveCamera;
+  public renderer!: THREE.WebGLRenderer;
+  public sound!: SoundEngine;
+  public sim!: OutbreakSimulation;
+  public cityRenderer!: CityRenderer;
+  public agentRenderer!: AgentRenderer;
+  public camController!: CameraController;
+  public ui!: UIController;
 
   private raycaster = new THREE.Raycaster();
   private mouseNDC = new THREE.Vector2();
@@ -55,23 +127,36 @@ class ProjectOutbreakApp {
   private hoverTooltipEl = document.getElementById('hover-tooltip')!;
 
   private lastFrameTime = performance.now();
+  private simAccumulator = 0;
   private uiUpdateAccumulator = 0;
   private fpsCounterEl = document.getElementById('fps-counter');
   private fpsFrames = 0;
   private fpsAccum = 0;
+  private lowFpsDuration = 0;
+  private manualQualityOverride = false;
+  private contextLost = false;
   private mouseDownPos = { x: 0, y: 0 };
-  private textureStudio: VoxelTextureStudio;
+  private textureStudio!: VoxelTextureStudio;
   private flashlightRig!: THREE.Group;
   private flashlightSpot!: THREE.SpotLight;
+  private flashlightBeam!: THREE.Mesh;
   private wasFirstPerson = false;
   private fireHeld = false;
   private firePressed = false;
+  private adsHeld = false;
+  private adsLerp = 0;
   private weaponModels = new Map<PlayerWeapon, WeaponViewModel>();
   private muzzleWorld = new THREE.Vector3();
   private missionMarkers: THREE.Mesh[] = [];
   private spawnMarker = new THREE.Group();
   private composer!: EffectComposer;
   private bloomPass!: UnrealBloomPass;
+  public settings: GameSettings = loadSettings();
+  public quality: GraphicsQuality = this.settings.quality;
+  private prevWeaponShots = 0;
+  private prevDamageFlash = 0;
+  private webglOverlayEl = document.getElementById('webgl-overlay');
+  private webglOverlayMsgEl = document.getElementById('webgl-overlay-msg');
 
   constructor() {
     const container = document.getElementById('canvas-container')!;
@@ -85,9 +170,15 @@ class ProjectOutbreakApp {
     );
     this.scene.add(this.camera);
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    try {
+      this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    } catch {
+      this.showWebglOverlay('WebGL 渲染初始化失败，请确认浏览器已开启硬件加速或刷新重试。');
+      return;
+    }
+    const initialConfig = buildInitialConfig();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.applyOptimalPixelRatio(DEFAULT_CONFIG.population);
+    this.applyOptimalPixelRatio(initialConfig.population);
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -95,9 +186,29 @@ class ProjectOutbreakApp {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(this.renderer.domElement);
 
+    this.renderer.domElement.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this.contextLost = true;
+      this.fireHeld = false;
+      this.firePressed = false;
+      this.adsHeld = false;
+      this.showWebglOverlay('WebGL 上下文已丢失，正在尝试恢复渲染…');
+    });
+    this.renderer.domElement.addEventListener('webglcontextrestored', () => {
+      this.contextLost = false;
+      this.hideWebglOverlay();
+      this.onResize();
+    });
+
     this.textureStudio = new VoxelTextureStudio();
     this.sound = new SoundEngine();
-    this.sim = new OutbreakSimulation(DEFAULT_CONFIG);
+    this.sound.setVolumes({
+      master: this.settings.masterVolume,
+      sfx: this.settings.sfxVolume,
+      ambient: this.settings.ambientVolume,
+      radio: this.settings.radioVolume
+    });
+    this.sim = new OutbreakSimulation(initialConfig);
     this.cityRenderer = new CityRenderer(this.scene, this.sim.city, this.textureStudio);
     this.cityRenderer.initEnvironment(this.renderer);
 
@@ -111,10 +222,10 @@ class ProjectOutbreakApp {
     );
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(new OutputPass());
-    this.applyOptimalPixelRatio(DEFAULT_CONFIG.population);
     this.agentRenderer = new AgentRenderer(this.scene, this.textureStudio);
     this.camController = new CameraController(this.camera, this.renderer.domElement);
     this.camController.setWorldBounds(this.sim.city.cityHalfX, this.sim.city.cityHalfZ);
+    this.applySettings(this.settings, false);
     this.initFirstPersonFlashlight();
     this.initFirstPersonWeapons();
     const spawnMaterial = new THREE.MeshBasicMaterial({ color: 0x67e8f9 });
@@ -145,9 +256,32 @@ class ProjectOutbreakApp {
       } else if (type === 'swat_shot') {
         this.sound.playGunshot(x, z, cx, cz, dist, true);
       } else if (type === 'player_pistol' || type === 'player_shotgun' || type === 'player_carbine') {
-        this.sound.playPlayerShot(type.slice(7) as PlayerWeapon);
+        this.sound.playPlayerShot(type.slice(7) as PlayerWeapon, this.sim.firstPerson.weapon?.ammo);
       } else if (type === 'player_reload') {
         this.sound.playReload();
+      } else if (type === 'player_dry_fire') {
+        this.sound.playDryFire();
+      } else if (type === 'active_reload_ok') {
+        this.sound.playActiveReload(true);
+      } else if (type === 'active_reload_jam') {
+        this.sound.playActiveReload(false);
+      } else if (type === 'flashlight_click') {
+        this.sound.playFlashlightClick();
+      } else if (type === 'adrenaline_surge') {
+        this.sound.playAdrenalineSurge();
+      } else if (type === 'brute_down') {
+        this.sound.playBruteDown();
+        if (this.camController.isFirstPerson) {
+          this.camController.addFirstPersonShake(0.038);
+        }
+      } else if (type === 'crisis_warn') {
+        this.sound.playCrisisChime('warn');
+      } else if (type === 'crisis_danger') {
+        this.sound.playCrisisChime('danger');
+      } else if (type === 'hit_flesh') {
+        this.sound.playHitFlesh();
+      } else if (type === 'headshot') {
+        this.sound.playHeadshot();
       } else if (type === 'radio') {
         this.sound.playRadioChirp();
       } else if (type === 'cure') {
@@ -158,6 +292,13 @@ class ProjectOutbreakApp {
         this.sound.playAlertSiren();
       } else if (type === 'explosion') {
         this.sound.playExplosion(x, z, cx, cz, dist);
+        if (this.camController.isFirstPerson) {
+          const dExp = Math.hypot(x - cx, z - cz);
+          if (dExp < 36) {
+            this.camController.addFirstPersonShake(0.065 * (1 - dExp / 36));
+            this.sim.firstPerson.flashlightFlickerTimer = Math.max(this.sim.firstPerson.flashlightFlickerTimer ?? 0, 0.35);
+          }
+        }
       } else if (type === 'train_horn') {
         this.sound.playTrainHorn();
       } else if (type === 'gate_slam') {
@@ -192,33 +333,116 @@ class ProjectOutbreakApp {
       () => this.cityRenderer.cycleAtmosphere(),
       (newCfg: ScenarioConfig) => {
         this.resetSimulation(newCfg);
-      }
+      },
+      () => this.cycleQuality(),
+      this.quality,
+      () => this.settings,
+      (partial, isManualQuality) => this.applySettings(partial, isManualQuality)
     );
 
     this.bindViewportInteractions();
     window.addEventListener('resize', () => this.onResize());
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        this.fireHeld = false;
+        this.firePressed = false;
+        this.adsHeld = false;
+        if (this.settings.autoPauseOnBlur && !this.ui.isPaused) {
+          this.ui.setPaused(true);
+        }
+        this.sound.suspend();
+      } else {
+        this.lastFrameTime = performance.now();
+        this.simAccumulator = 0;
+        if (this.sound.enabled) {
+          this.sound.resume();
+        }
+      }
+    });
 
-    this.agentRenderer.syncAgents(this.sim.agents, this.sim.selectedAgentId, this.sim.simTime);
+    this.agentRenderer.syncAgents(this.sim.agents, this.sim.selectedAgentId, this.sim.simTime, null, false, this.camera);
     this.agentRenderer.syncVehicles(this.sim.vehicles, this.sim.simTime);
     this.ui.refreshUI();
 
     requestAnimationFrame((t) => this.animate(t));
   }
 
+  private showWebglOverlay(msg: string): void {
+    if (this.webglOverlayMsgEl) this.webglOverlayMsgEl.textContent = msg;
+    if (this.webglOverlayEl) this.webglOverlayEl.classList.remove('hidden');
+  }
+
+  private hideWebglOverlay(): void {
+    if (this.webglOverlayEl) this.webglOverlayEl.classList.add('hidden');
+  }
+
+  public applySettings(partial: Partial<GameSettings>, isManualQuality = false): void {
+    this.settings = { ...this.settings, ...partial };
+    saveSettings(this.settings);
+    if (this.camController) {
+      this.camController.fpMouseSensitivity = this.settings.mouseSensitivity;
+      this.camController.fpBaseFov = this.settings.fpFov;
+      this.camController.enableCameraShake = this.settings.cameraShake;
+    }
+    if (this.sound) {
+      this.sound.setVolumes({
+        master: this.settings.masterVolume,
+        sfx: this.settings.sfxVolume,
+        ambient: this.settings.ambientVolume,
+        radio: this.settings.radioVolume
+      });
+    }
+    if (partial.quality !== undefined) {
+      if (isManualQuality) {
+        this.manualQualityOverride = true;
+        this.lowFpsDuration = 0;
+      }
+      this.applyQualityPreset(this.settings.quality);
+      this.ui?.syncQualityButton(this.settings.quality);
+    }
+    if (partial.autoQuality) {
+      this.manualQualityOverride = false;
+      this.lowFpsDuration = 0;
+    }
+  }
+
+  public cycleQuality(): GraphicsQuality {
+    const next: GraphicsQuality =
+      this.quality === 'high' ? 'medium' : this.quality === 'medium' ? 'low' : 'high';
+    this.applySettings({ quality: next }, true);
+    return next;
+  }
+
+  public applyQualityPreset(quality: GraphicsQuality): void {
+    this.quality = quality;
+    this.settings.quality = quality;
+    saveSettings(this.settings);
+    if (this.cityRenderer) {
+      this.cityRenderer.setQualityPreset(quality);
+    }
+    this.applyOptimalPixelRatio(this.sim.config.population);
+  }
+
   private applyOptimalPixelRatio(pop: number): void {
-    const maxDpr = pop >= 1500 ? 1.25 : 1.5;
-    const dpr = Math.min(window.devicePixelRatio, maxDpr);
+    const qualityMax = this.quality === 'low' ? 1.0 : this.quality === 'medium' ? 1.25 : 1.5;
+    const popMax = pop >= 1500 ? 1.25 : 1.5;
+    const dpr = Math.min(window.devicePixelRatio || 1, Math.min(qualityMax, popMax));
     this.renderer.setPixelRatio(dpr);
     if (this.composer) {
       this.composer.setPixelRatio(dpr);
       this.composer.setSize(window.innerWidth, window.innerHeight);
     }
     if (this.bloomPass) {
-      this.bloomPass.setSize(Math.floor(window.innerWidth / 2), Math.floor(window.innerHeight / 2));
+      const div = this.quality === 'high' ? 2 : 4;
+      this.bloomPass.setSize(
+        Math.max(1, Math.floor(window.innerWidth / div)),
+        Math.max(1, Math.floor(window.innerHeight / div))
+      );
     }
   }
 
   public resetSimulation(cfg: ScenarioConfig): void {
+    this.simAccumulator = 0;
     this.agentRenderer.clearAll();
     this.applyOptimalPixelRatio(cfg.population);
     this.sim.reset(cfg);
@@ -238,7 +462,7 @@ class ProjectOutbreakApp {
       this.camController.focusOn(0, 0, overviewDist);
     }
 
-    this.agentRenderer.syncAgents(this.sim.agents, this.sim.selectedAgentId, this.sim.simTime);
+    this.agentRenderer.syncAgents(this.sim.agents, this.sim.selectedAgentId, this.sim.simTime, null, false, this.camera);
     this.agentRenderer.syncVehicles(this.sim.vehicles, this.sim.simTime);
     this.ui.refreshUI();
   }
@@ -296,6 +520,7 @@ class ProjectOutbreakApp {
     const beamMat = this.textureStudio.createVolumetricConeMaterial(0xffe9a6, 0.28);
     const beamCone = new THREE.Mesh(beamGeo, beamMat);
     beamCone.position.set(0, 0, -0.24);
+    this.flashlightBeam = beamCone;
 
     this.flashlightRig.add(arm, hand, barrel, gripBand, powerBtn, bezel, frontRim, beamCone);
     this.flashlightRig.visible = false;
@@ -379,15 +604,22 @@ class ProjectOutbreakApp {
           this.firePressed = true;
         }
         this.mouseDownPos = { x: e.clientX, y: e.clientY };
+      } else if (e.button === 2) {
+        if (!this.ui.isPickingSpawn && this.sim.firstPerson.active && this.sim.firstPerson.weapon &&
+            document.pointerLockElement === dom) {
+          this.adsHeld = true;
+        }
       }
     });
 
     window.addEventListener('mouseup', (e) => {
       if (e.button === 0) this.fireHeld = false;
+      if (e.button === 2) this.adsHeld = false;
     });
     const clearFire = () => {
       this.fireHeld = false;
       this.firePressed = false;
+      this.adsHeld = false;
     };
     window.addEventListener('blur', clearFire);
     document.addEventListener('pointerlockchange', clearFire);
@@ -557,6 +789,20 @@ class ProjectOutbreakApp {
       }
     }
 
+    for (const h of this.sim.explosiveHazards) {
+      const r = Math.max(h.width, h.depth) * 0.6 + 1.4;
+      if (Math.hypot(hit.x - h.x, hit.z - h.z) <= r) {
+        const stateText = h.detonated
+          ? this.ui.t('Charred Wreck', '已引爆残骸')
+          : this.ui.t(`HP ${Math.ceil(h.hp)}/${h.maxHp} — Shoot in FP or Frag Bomb`, `耐久 ${Math.ceil(h.hp)}/${h.maxHp} · 射击或投弹引爆`);
+        this.hoverTooltipEl.textContent = `⛽ ${h.label} • ${stateText}`;
+        this.hoverTooltipEl.style.left = `${clientX + 14}px`;
+        this.hoverTooltipEl.style.top = `${clientY + 14}px`;
+        this.hoverTooltipEl.style.display = 'block';
+        return;
+      }
+    }
+
     for (const b of this.sim.city.buildings) {
       if (hit.x >= b.minX && hit.x <= b.maxX && hit.z >= b.minZ && hit.z <= b.maxZ) {
         this.hoverTooltipEl.textContent = `${b.name} (${b.district}) • Shelter: ${b.shelteredAgentIds.length}/${b.shelterCapacity}`;
@@ -637,6 +883,7 @@ class ProjectOutbreakApp {
 
   private animate(now: number): void {
     requestAnimationFrame((t) => this.animate(t));
+    if (this.contextLost) return;
 
     const elapsedSec = Math.max(0.0001, (now - this.lastFrameTime) / 1000);
     const rawDt = Math.min(0.05, elapsedSec);
@@ -645,28 +892,57 @@ class ProjectOutbreakApp {
     this.fpsFrames++;
     this.fpsAccum += elapsedSec;
     if (this.fpsAccum >= 0.45) {
+      const fps = Math.max(1, Math.round(this.fpsFrames / this.fpsAccum));
       if (this.fpsCounterEl) {
-        const fps = Math.max(1, Math.round(this.fpsFrames / this.fpsAccum));
         this.fpsCounterEl.textContent = `${fps} FPS`;
         this.fpsCounterEl.style.color = fps >= 50 ? '#4ade80' : fps >= 30 ? '#fbbf24' : '#ef4444';
+      }
+      if (!this.ui.isPaused && this.settings.autoQuality && !this.manualQualityOverride && this.quality !== 'low') {
+        if (fps < 24) {
+          this.lowFpsDuration += this.fpsAccum;
+          if (this.lowFpsDuration >= 5.0) {
+            this.lowFpsDuration = 0;
+            const next: GraphicsQuality = this.quality === 'high' ? 'medium' : 'low';
+            this.applySettings({ quality: next });
+            const label = next === 'medium' ? '中画质 / Medium' : '低画质 / Low';
+            this.sim.triggerAlert(`⚙ AUTO QUALITY: Stepped down to ${label} for smoother FPS`, 'info');
+          }
+        } else {
+          this.lowFpsDuration = 0;
+        }
+      } else {
+        this.lowFpsDuration = 0;
       }
       this.fpsFrames = 0;
       this.fpsAccum = 0;
     }
 
-    if (!this.ui.isPaused) {
-      const substeps = this.sim.firstPerson.active ? 1 : this.ui.simSpeed;
+    const FIXED_DT = 1 / 60;
+    if (this.ui.isPaused) {
+      this.simAccumulator = 0;
+    } else {
+      const speedMult = this.sim.firstPerson.active ? 1 : this.ui.simSpeed;
+      this.simAccumulator = Math.min(0.15 * speedMult, this.simAccumulator + rawDt * speedMult);
       const budgetStart = performance.now();
-      for (let s = 0; s < substeps; s++) {
-        this.sim.step(rawDt);
-        if (performance.now() - budgetStart > 13) break;
+      let steps = 0;
+      while (this.simAccumulator >= FIXED_DT && steps < 10) {
+        this.sim.step(FIXED_DT);
+        this.simAccumulator -= FIXED_DT;
+        steps++;
+        if (performance.now() - budgetStart > 13) {
+          this.simAccumulator = Math.min(this.simAccumulator, FIXED_DT * 2);
+          break;
+        }
       }
     }
 
     const isFP = this.sim.firstPerson.active && !this.ui.isPickingSpawn;
     if (isFP !== this.wasFirstPerson) {
       this.wasFirstPerson = isFP;
-      this.camera.fov = isFP ? 62 : 46;
+      this.prevWeaponShots = this.sim.firstPerson.weapon?.shots ?? 0;
+      this.prevDamageFlash = 0;
+      this.adsHeld = false;
+      this.adsLerp = 0;
       this.camera.near = isFP ? 0.15 : 0.25;
       this.camera.updateProjectionMatrix();
       this.flashlightRig.visible = isFP;
@@ -692,6 +968,8 @@ class ProjectOutbreakApp {
       const decoyPressed = this.camController.consumeKeyPress('q') || (qDown && !this.prevFpDecoyDown);
       this.prevFpDecoyDown = qDown;
       const keyboardFire = this.camController.consumeKeyPress('j') || this.camController.isKeyDown('j');
+      const adsInput = (this.adsHeld || this.camController.isKeyDown('v')) && Boolean(this.sim.firstPerson.weapon);
+      const toggleFlashlight = this.camController.consumeKeyPress('t');
 
       const player = !this.ui.isPaused
         ? this.sim.updateFirstPersonPlayer(
@@ -707,7 +985,9 @@ class ProjectOutbreakApp {
             {
               fire: this.fireHeld || this.firePressed || keyboardFire,
               reload: this.camController.consumeKeyPress('r'),
-              requestMission: this.camController.consumeKeyPress('m')
+              requestMission: this.camController.consumeKeyPress('m'),
+              aim: adsInput,
+              toggleFlashlight
             }
           )
         : this.sim.getAgentById(this.sim.firstPerson.playerId);
@@ -724,8 +1004,9 @@ class ProjectOutbreakApp {
         player.isAlive &&
         !player.isEvacuated &&
         this.sim.firstPerson.wallLadder !== 'climbing' &&
+        this.sim.firstPerson.skybridgeLadder !== 'climbing' &&
         (moveForward !== 0 || moveRight !== 0);
-      const sprinting = isMoving && wantSprint && (this.sim.firstPerson.adrenalineTimer > 0 || this.sim.firstPerson.stamina > 2);
+      const sprinting = isMoving && this.sim.firstPerson.sprinting;
       this.camController.updateFirstPerson(
         px,
         pz,
@@ -734,7 +1015,8 @@ class ProjectOutbreakApp {
         sprinting,
         this.sim.simTime,
         (player?.climbY ?? 0) + (player?.fallY ?? 0) + this.sim.firstPerson.vaultY,
-        this.sim.firstPerson.vaultRoll
+        this.sim.firstPerson.vaultRoll,
+        Boolean(this.sim.firstPerson.aiming)
       );
 
       // Sway handheld voxel flashlight dynamically with sprint/breathing
@@ -751,15 +1033,21 @@ class ProjectOutbreakApp {
         0
       );
 
-      if (!this.ui.isPaused) {
-        this.sound.updateFirstPersonHorrorAudio(rawDt, this.sim.firstPerson.nearestZombieDist);
+      if (!this.ui.isPaused && player) {
+        const hpRatio = player.maxHealth > 0 ? Math.max(0, player.health / player.maxHealth) : 1;
+        this.sound.updateFirstPersonHorrorAudio(rawDt, this.sim.firstPerson.nearestZombieDist, hpRatio, this.sim.firstPerson.pursuers);
+      } else {
+        this.sound.resetDangerFilter();
       }
     } else {
       this.fireHeld = false;
       this.firePressed = false;
+      this.adsHeld = false;
+      this.adsLerp = 0;
       this.prevFpInteractDown = false;
       this.prevFpSpaceDown = false;
       this.prevFpDecoyDown = false;
+      this.sound.resetDangerFilter();
       const followedAgent = this.sim.getAgentById(this.sim.selectedAgentId);
       const hotspot = this.camController.autoDirectorMode ? this.sim.getHotspotPosition() : null;
       this.camController.update(rawDt, followedAgent, hotspot);
@@ -767,9 +1055,25 @@ class ProjectOutbreakApp {
 
     const hiddenId = isFP ? this.sim.firstPerson.playerId : null;
     const weapon = isFP ? this.sim.firstPerson.weapon : null;
+    const fpDamageFlash = isFP ? (this.sim.firstPerson.damageFlashTimer ?? 0) : 0;
+    if (isFP && fpDamageFlash > this.prevDamageFlash + 0.05) {
+      this.camController.addFirstPersonShake(0.045);
+    }
+    this.prevDamageFlash = fpDamageFlash;
+
+    if (weapon && weapon.shots > this.prevWeaponShots) {
+      this.prevWeaponShots = weapon.shots;
+      const pitchKick = weapon.id === 'shotgun' ? 0.036 : weapon.id === 'pistol' ? 0.016 : 0.011;
+      const yawKick = (((weapon.shots * 73) % 100) / 100 - 0.5) * (weapon.id === 'shotgun' ? 0.016 : 0.008);
+      this.camController.addFirstPersonRecoil(pitchKick, yawKick);
+    } else if (!weapon) {
+      this.prevWeaponShots = 0;
+    }
+
     this.flashlightRig.visible = isFP && !weapon;
-    this.syncWeaponView();
-    this.agentRenderer.syncAgents(this.sim.agents, this.sim.selectedAgentId, this.sim.simTime, hiddenId, isFP);
+    this.syncWeaponView(rawDt);
+    this.cityRenderer.syncSkyToCamera(this.camera.position, this.sim.simTime, isFP);
+    this.agentRenderer.syncAgents(this.sim.agents, this.sim.selectedAgentId, this.sim.simTime, hiddenId, isFP, this.camera);
     this.agentRenderer.syncVehicles(this.sim.vehicles, this.sim.simTime);
     this.cityRenderer.syncDefenseAndTrain(
       this.sim.defenseWalls,
@@ -803,14 +1107,19 @@ class ProjectOutbreakApp {
       this.sim.firstPerson.insideTrainCar,
       this.sim.ammoCaches,
       this.camera.position.y,
-      this.sim.layeredKtx ? this.sim.ktxGates : undefined
+      this.sim.layeredKtx ? this.sim.ktxGates : undefined,
+      this.sim.explosiveHazards
     );
 
     this.syncMissionMarkers();
     const spawnPoint = this.ui.selectedSpawnPoint;
     this.spawnMarker.visible = !!spawnPoint;
     if (spawnPoint) this.spawnMarker.position.set(spawnPoint.x, spawnPoint.y + 0.14, spawnPoint.z);
-    this.composer.render();
+    if (this.quality === 'low') {
+      this.renderer.render(this.scene, this.camera);
+    } else {
+      this.composer.render();
+    }
 
     this.uiUpdateAccumulator += rawDt;
     if (this.uiUpdateAccumulator >= 0.2) {
@@ -831,22 +1140,77 @@ class ProjectOutbreakApp {
     });
   }
 
-  private syncWeaponView(): void {
+  private syncWeaponView(dt: number): void {
     const fp = this.sim.firstPerson;
     const weapon = !this.ui.isPickingSpawn && fp.active && fp.outcome === 'PLAYING' ? fp.weapon : null;
-    this.ui.updateAimFeedback((weapon?.hitTimer ?? 0) > 0);
-    this.flashlightSpot.intensity = 22;
+    const dmgFlash = !this.ui.isPickingSpawn && fp.active && fp.outcome === 'PLAYING' ? (fp.damageFlashTimer ?? 0) : 0;
+    let relAngleDeg = 0;
+    if (dmgFlash > 0 && fp.damageFromAngle !== undefined) {
+      const dx = Math.sin(fp.damageFromAngle);
+      const dz = Math.cos(fp.damageFromAngle);
+      const right = dx * Math.cos(fp.yaw) - dz * Math.sin(fp.yaw);
+      const forward = -dx * Math.sin(fp.yaw) - dz * Math.cos(fp.yaw);
+      relAngleDeg = (Math.atan2(right, forward) * 180) / Math.PI;
+    }
+    const reloadDur = weapon ? (weapon.reloadDuration || PLAYER_WEAPONS[weapon.id].reload) : 0;
+    const reloadProgress = weapon && weapon.reloadTimer > 0 && reloadDur > 0
+      ? Math.max(0.03, Math.min(1, 1 - weapon.reloadTimer / reloadDur))
+      : 0;
+    this.ui.updateAimFeedback({
+      hit: (weapon?.hitTimer ?? 0) > 0,
+      headshot: Boolean(weapon?.lastHeadshot && (weapon?.hitTimer ?? 0) > 0),
+      reloadProgress,
+      spread: weapon?.spread ?? 0,
+      damageFlash: dmgFlash,
+      damageRelAngle: relAngleDeg,
+      ads: Boolean(weapon && fp.aiming),
+      activeReloadState: (weapon?.activeReloadFeedbackTimer ?? 0) > 0 ? (weapon?.activeReloadFeedback ?? 'none') : 'none',
+      activeReloadAttempted: Boolean(weapon?.activeReloadAttempted)
+    });
+    this.ui.updateFirstPersonTacticalOverlays();
+
+    const adsTarget = weapon && fp.aiming ? 1 : 0;
+    this.adsLerp += (adsTarget - this.adsLerp) * (1 - Math.exp(-14 * Math.max(0.001, dt)));
+
+    const flashOn = fp.flashlightOn !== false;
+    let baseLightIntensity = flashOn ? 22 : 0;
+    let beamVisible = flashOn;
+    if (flashOn && (fp.flashlightFlickerTimer ?? 0) > 0) {
+      const flickerWave = Math.sin(this.sim.simTime * 54) * Math.cos(this.sim.simTime * 31);
+      if (flickerWave < -0.15) {
+        baseLightIntensity = 3.2;
+        beamVisible = false;
+      }
+    }
+    this.flashlightSpot.intensity = baseLightIntensity;
+    if (this.flashlightBeam) this.flashlightBeam.visible = beamVisible;
+
     for (const [id, model] of this.weaponModels) {
       model.root.visible = weapon?.id === id;
       if (!weapon || !model.root.visible) continue;
       const tuning = PLAYER_WEAPONS[id];
       const age = weapon.shots > 0 ? tuning.interval - weapon.cooldown : Infinity;
-      const recoil = Math.max(0, 1 - age / (id === 'shotgun' ? 0.22 : 0.105)) ** 2;
-      const reload = weapon.reloadTimer > 0 ? 1 - weapon.reloadTimer / tuning.reload : 0;
+      const recoil = (Math.max(0, 1 - age / (id === 'shotgun' ? 0.22 : 0.105)) ** 2) * (1 - this.adsLerp * 0.45);
+      const reload = weapon.reloadTimer > 0 && reloadDur > 0 ? 1 - weapon.reloadTimer / reloadDur : 0;
       const dip = Math.sin(Math.PI * reload);
       const { x, y, z } = this.flashlightRig.position;
-      model.root.position.set(x - 0.095, y - 0.025 - dip * 0.20, z - 0.09 + recoil * tuning.kick * 0.65);
-      model.root.rotation.set(recoil * tuning.kick - dip * 0.5, 0.15 - dip * 0.3, -dip * 0.28);
+      const hipX = x - 0.095;
+      const hipY = y - 0.025;
+      const hipZ = z - 0.09;
+      const adsX = 0;
+      const adsY = -0.105;
+      const adsZ = -0.42;
+      const k = this.adsLerp;
+      model.root.position.set(
+        hipX + (adsX - hipX) * k,
+        hipY + (adsY - hipY) * k - dip * 0.20,
+        hipZ + (adsZ - hipZ) * k + recoil * tuning.kick * 0.65
+      );
+      model.root.rotation.set(
+        recoil * tuning.kick - dip * 0.5,
+        0.15 * (1 - k) - dip * 0.3,
+        -dip * 0.28
+      );
       model.action.position.z = id === 'shotgun'
         ? Math.max(0, 1 - Math.abs(age - 0.23) / 0.13) * 0.13
         : recoil * (id === 'pistol' ? 0.065 : 0.028);

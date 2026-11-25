@@ -8,7 +8,8 @@ import { PLAYER_KILL_REWARD, PLAYER_LOADOUTS, PLAYER_WEAPONS } from './playerLoa
 import { KTX_EMERGENCY_INFECTED } from './trainLayout';
 import { describeRadio } from './policeRadio';
 import type { RadioTransmission } from './policeRadio';
-import { AgentData, MapId, PlayerRole, PlayerSpawnPoint, PlayerWeapon, ScenarioConfig, ScenarioId, TacticalTool } from './types';
+import { DEFAULT_SETTINGS, GameSettings } from './settings';
+import { AgentData, GraphicsQuality, MapId, PlayerRole, PlayerSpawnPoint, PlayerWeapon, ScenarioConfig, ScenarioId, TacticalTool } from './types';
 
 interface GateStatus {
   integrity: number;
@@ -29,10 +30,19 @@ export class UIController {
   private sound: SoundEngine;
   private onCycleAtmosphere: () => AtmosphereStage;
   private onResetScenario: (cfg: ScenarioConfig) => void;
+  private onCycleQuality: () => GraphicsQuality;
+  private getSettings: () => GameSettings;
+  private onUpdateSettings: (partial: Partial<GameSettings>, isManualQuality?: boolean) => void;
+  private quality: GraphicsQuality = 'high';
 
   // Top Bar Elements
   private clockEl = document.getElementById('sim-clock')!;
   private statusBadgeEl = document.getElementById('outbreak-status-badge')!;
+  private alertToastEl = document.getElementById('alert-toast')!;
+  private lastShownAlertTime = 0;
+  private crisisBannerEl = document.getElementById('crisis-banner');
+  private crisisBannerTitleEl = document.getElementById('crisis-banner-title');
+  private crisisBannerSubEl = document.getElementById('crisis-banner-sub');
   private statHealthyEl = document.getElementById('stat-healthy')!;
   private statInfectedEl = document.getElementById('stat-infected')!;
   private statPoliceEl = document.getElementById('stat-police')!;
@@ -43,12 +53,14 @@ export class UIController {
   private cpDisplayEl = document.getElementById('cp-display')!;
   private btnAutoCam = document.getElementById('btn-auto-cam')!;
   private btnLighting = document.getElementById('btn-lighting')!;
+  private btnQuality = document.getElementById('btn-quality')!;
   private btnFpsMode = document.getElementById('btn-fps-mode')!;
 
   // First-Person Survivor HUD
   private hudLayerEl = document.getElementById('hud-layer')!;
   private fpsHudEl = document.getElementById('fps-hud')!;
   private fpsDangerVignetteEl = document.getElementById('fps-danger-vignette')!;
+  private fpsHitIndicatorEl = document.getElementById('fps-hit-indicator')!;
   private fpsObjectiveEl = document.getElementById('fps-objective')!;
   private fpsTrainStatusEl = document.getElementById('fps-train-status')!;
   private fpsCommanderStatusEl = document.getElementById('fps-commander-status')!;
@@ -56,6 +68,15 @@ export class UIController {
   private fpsKillRewardEl = document.getElementById('fps-kill-reward')!;
   private fpsWeaponStatusEl = document.getElementById('fps-weapon-status')!;
   private fpsCrosshairEl = document.getElementById('fps-crosshair')!;
+  private fpsReloadRingEl = document.getElementById('fps-reload-ring');
+  private fpsReloadSweetEl = document.getElementById('fps-reload-sweet');
+  private fpsReloadBadgeEl = document.getElementById('fps-reload-badge');
+  private fpsCompassTicksEl = document.getElementById('fps-compass-ticks');
+  private fpsCompassPipsEl = document.getElementById('fps-compass-pips');
+  private fpsKillCalloutEl = document.getElementById('fps-kill-callout');
+  private fpsOutcomeStatsEl = document.getElementById('fps-outcome-stats');
+  private lastCompassTickKey = '';
+  private lastCompassPipKey = '';
   private fpsInteractPromptEl = document.getElementById('fps-interact-prompt')!;
   private fpsControlsHintEl = document.getElementById('fps-controls-hint')!;
   private fpsHpTextEl = document.getElementById('fps-hp-text')!;
@@ -69,9 +90,13 @@ export class UIController {
   private defenseGateBarsEl = document.getElementById('defense-gate-bars')!;
   private fpsGateBarEl = document.getElementById('fps-gate-bar')!;
 
-  // Alert Toast
-  private alertToastEl = document.getElementById('alert-toast')!;
-  private lastShownAlertTime = 0;
+  // After-Action Report Modal Elements
+  private aarModalEl = document.getElementById('aar-modal');
+  private aarSubtitleEl = document.getElementById('aar-subtitle');
+  private aarSeedBadgeEl = document.getElementById('aar-seed-badge');
+  private aarStatsGridEl = document.getElementById('aar-stats-grid');
+  private aarChartCanvas = document.getElementById('aar-chart') as HTMLCanvasElement | null;
+  private aarAutoShownForRun = false;
 
   // Tabbed Drawer Elements
   private drawerBodyEl = document.getElementById('drawer-body')!;
@@ -87,8 +112,11 @@ export class UIController {
   private radioPanel = document.querySelector<HTMLDetailsElement>('#police-radio')!;
   private radioTitle = document.getElementById('police-radio-title')!;
   private radioLog = document.getElementById('police-radio-log')!;
-  private radioRows = new Map<RadioTransmission, HTMLLIElement>();
-  private latestRadio?: RadioTransmission;
+  private radioRows = new Map<
+    RadioTransmission,
+    { row: HTMLLIElement; time: HTMLElement; body: HTMLElement; lastTime: number; lastCount?: number }
+  >();
+  private lastRadioSignature = '';
   private activeReportsCountEl = document.getElementById('active-reports-count')!;
   private lastRenderedEventId = -1;
 
@@ -104,6 +132,23 @@ export class UIController {
 
   // Modal Elements
   private modalEl = document.getElementById('scenario-modal')!;
+  private settingsModalEl = document.getElementById('settings-modal');
+  private setQualityEl = document.getElementById('set-quality') as HTMLSelectElement | null;
+  private setAutoQualityEl = document.getElementById('set-auto-quality') as HTMLInputElement | null;
+  private setSensEl = document.getElementById('set-sens') as HTMLInputElement | null;
+  private setSensValEl = document.getElementById('set-sens-val');
+  private setFovEl = document.getElementById('set-fov') as HTMLInputElement | null;
+  private setFovValEl = document.getElementById('set-fov-val');
+  private setShakeEl = document.getElementById('set-shake') as HTMLInputElement | null;
+  private setAutoPauseEl = document.getElementById('set-autopause') as HTMLInputElement | null;
+  private setVolMasterEl = document.getElementById('set-vol-master') as HTMLInputElement | null;
+  private setVolMasterValEl = document.getElementById('set-vol-master-val');
+  private setVolSfxEl = document.getElementById('set-vol-sfx') as HTMLInputElement | null;
+  private setVolSfxValEl = document.getElementById('set-vol-sfx-val');
+  private setVolAmbientEl = document.getElementById('set-vol-ambient') as HTMLInputElement | null;
+  private setVolAmbientValEl = document.getElementById('set-vol-ambient-val');
+  private setVolRadioEl = document.getElementById('set-vol-radio') as HTMLInputElement | null;
+  private setVolRadioValEl = document.getElementById('set-vol-radio-val');
   private roleModalEl = document.getElementById('player-modal')!;
   private roleForm = document.getElementById('player-form') as HTMLFormElement;
   private loadoutRow = document.getElementById('player-loadout-row')!;
@@ -134,20 +179,26 @@ export class UIController {
     cam: CameraController,
     sound: SoundEngine,
     onCycleAtmosphere: () => AtmosphereStage,
-    onResetScenario: (cfg: ScenarioConfig) => void
+    onResetScenario: (cfg: ScenarioConfig) => void,
+    onCycleQuality: () => GraphicsQuality = () => 'high',
+    initialQuality: GraphicsQuality = 'high',
+    getSettings: () => GameSettings = () => DEFAULT_SETTINGS,
+    onUpdateSettings: (partial: Partial<GameSettings>, isManualQuality?: boolean) => void = () => {}
   ) {
     this.sim = sim;
     this.cam = cam;
     this.sound = sound;
     this.onCycleAtmosphere = onCycleAtmosphere;
     this.onResetScenario = onResetScenario;
+    this.onCycleQuality = onCycleQuality;
+    this.quality = initialQuality;
+    this.getSettings = getSettings;
+    this.onUpdateSettings = onUpdateSettings;
 
     this.bindEvents();
-    try {
-      this.language = localStorage.getItem('outbreak-language') === 'en' ? 'en' : 'zh';
-    } catch {
-      // The in-game toggle still works when browser storage is unavailable.
-    }
+    this.language = this.getSettings().language;
+    this.syncLabConfigControls();
+    this.syncSettingsControls();
     this.applyLanguage();
   }
 
@@ -223,7 +274,7 @@ export class UIController {
     for (const toggle of document.querySelectorAll<HTMLButtonElement>('[data-language-toggle]')) {
       toggle.addEventListener('click', () => {
         this.language = this.language === 'zh' ? 'en' : 'zh';
-        try { localStorage.setItem('outbreak-language', this.language); } catch { /* optional preference */ }
+        this.onUpdateSettings({ language: this.language });
         this.applyLanguage();
       });
     }
@@ -245,8 +296,26 @@ export class UIController {
       this.btnLighting.textContent = stage === 'dusk' ? '🌆' : stage === 'night' ? '🌙' : '☀';
     });
 
+    this.btnQuality.addEventListener('click', () => {
+      this.quality = this.onCycleQuality();
+      this.syncQualityButton(this.quality);
+    });
+
+    this.bindSettingsModal();
+    this.bindAarModal();
+    this.crisisBannerEl?.addEventListener('click', () => {
+      if (this.sim.firstPerson.active) return;
+      const b = this.sim.crisisBanner;
+      if (b && b.x !== undefined && b.z !== undefined) {
+        this.cam.followAgentMode = false;
+        this.cam.autoDirectorMode = false;
+        this.cam.focusOn(b.x, b.z, 54);
+      }
+    });
+
     document.getElementById('btn-reset')!.addEventListener('click', () => {
       if (this.sim.firstPerson.active) this.exitFirstPersonMode();
+      this.aarAutoShownForRun = false;
       this.onResetScenario(this.sim.config);
       this.lastRenderedEventId = -1;
       this.eventLogListEl.innerHTML = '';
@@ -302,6 +371,20 @@ export class UIController {
         if (e.key === 'Escape') {
           e.preventDefault();
           this.closeRolePicker(true);
+        }
+        return;
+      }
+      if (this.settingsModalEl && !this.settingsModalEl.classList.contains('hidden')) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          this.settingsModalEl.classList.add('hidden');
+        }
+        return;
+      }
+      if (this.aarModalEl && !this.aarModalEl.classList.contains('hidden')) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          this.aarModalEl.classList.add('hidden');
         }
         return;
       }
@@ -397,7 +480,7 @@ export class UIController {
     const mapCards = document.querySelectorAll<HTMLElement>('.map-card');
     mapCards.forEach((card) => {
       card.addEventListener('click', () => {
-        if (this.selectedModalScenario === 'breach_siege' && card.dataset.map !== 'citadel_express') return;
+        if (this.selectedModalScenario === 'breach_siege' && !this.isSiegeMap(card.dataset.map)) return;
         mapCards.forEach((c) => c.classList.remove('selected'));
         card.classList.add('selected');
         this.selectedModalMap = card.dataset.map as MapId;
@@ -412,10 +495,10 @@ export class UIController {
         card.classList.add('selected');
         this.selectedModalScenario = card.dataset.scenario as ScenarioId;
         const siege = this.selectedModalScenario === 'breach_siege';
-        if (siege) this.selectedModalMap = 'citadel_express';
+        if (siege && !this.isSiegeMap(this.selectedModalMap)) this.selectedModalMap = 'citadel_express';
         mapCards.forEach((map) => {
           map.classList.toggle('selected', map.dataset.map === this.selectedModalMap);
-          map.setAttribute('aria-disabled', String(siege && map.dataset.map !== 'citadel_express'));
+          map.setAttribute('aria-disabled', String(siege && !this.isSiegeMap(map.dataset.map)));
         });
       });
     });
@@ -478,6 +561,7 @@ export class UIController {
       };
 
       this.modalEl.classList.add('hidden');
+      this.aarAutoShownForRun = false;
       this.lastRenderedEventId = -1;
       this.eventLogListEl.innerHTML = '';
       this.selectTool('inspect');
@@ -494,7 +578,249 @@ export class UIController {
     }
   }
 
-  private t(english: string, chinese: string): string {
+  private bindSettingsModal(): void {
+    document.getElementById('btn-settings')?.addEventListener('click', () => {
+      this.syncSettingsControls();
+      this.settingsModalEl?.classList.remove('hidden');
+    });
+    document.getElementById('btn-settings-close')?.addEventListener('click', () => {
+      this.settingsModalEl?.classList.add('hidden');
+    });
+    this.settingsModalEl?.addEventListener('click', (e) => {
+      if (e.target === this.settingsModalEl) {
+        this.settingsModalEl?.classList.add('hidden');
+      }
+    });
+    document.getElementById('btn-settings-reset')?.addEventListener('click', () => {
+      const preservedLang = this.language;
+      this.onUpdateSettings({ ...DEFAULT_SETTINGS, language: preservedLang }, true);
+      this.syncQualityButton(DEFAULT_SETTINGS.quality);
+      this.syncSettingsControls();
+    });
+    this.setQualityEl?.addEventListener('change', () => {
+      const q = this.setQualityEl!.value as GraphicsQuality;
+      this.onUpdateSettings({ quality: q }, true);
+      this.syncQualityButton(q);
+    });
+    this.setAutoQualityEl?.addEventListener('change', () => {
+      this.onUpdateSettings({ autoQuality: this.setAutoQualityEl!.checked });
+    });
+    this.setSensEl?.addEventListener('input', () => {
+      const v = Number(this.setSensEl!.value);
+      if (this.setSensValEl) this.setSensValEl.textContent = `${v.toFixed(2)}x`;
+      this.onUpdateSettings({ mouseSensitivity: v });
+    });
+    this.setFovEl?.addEventListener('input', () => {
+      const v = Number(this.setFovEl!.value);
+      if (this.setFovValEl) this.setFovValEl.textContent = `${Math.round(v)}°`;
+      this.onUpdateSettings({ fpFov: v });
+    });
+    this.setShakeEl?.addEventListener('change', () => {
+      this.onUpdateSettings({ cameraShake: this.setShakeEl!.checked });
+    });
+    this.setAutoPauseEl?.addEventListener('change', () => {
+      this.onUpdateSettings({ autoPauseOnBlur: this.setAutoPauseEl!.checked });
+    });
+
+    const bindVol = (
+      input: HTMLInputElement | null,
+      valEl: HTMLElement | null,
+      key: 'masterVolume' | 'sfxVolume' | 'ambientVolume' | 'radioVolume'
+    ) => {
+      input?.addEventListener('input', () => {
+        const pct = Number(input.value);
+        if (valEl) valEl.textContent = `${pct}%`;
+        this.onUpdateSettings({ [key]: pct / 100 });
+      });
+    };
+    bindVol(this.setVolMasterEl, this.setVolMasterValEl, 'masterVolume');
+    bindVol(this.setVolSfxEl, this.setVolSfxValEl, 'sfxVolume');
+    bindVol(this.setVolAmbientEl, this.setVolAmbientValEl, 'ambientVolume');
+    bindVol(this.setVolRadioEl, this.setVolRadioValEl, 'radioVolume');
+  }
+
+  private syncSettingsControls(): void {
+    const s = this.getSettings();
+    if (this.setQualityEl) this.setQualityEl.value = s.quality;
+    if (this.setAutoQualityEl) this.setAutoQualityEl.checked = s.autoQuality;
+    if (this.setSensEl) this.setSensEl.value = String(s.mouseSensitivity);
+    if (this.setSensValEl) this.setSensValEl.textContent = `${s.mouseSensitivity.toFixed(2)}x`;
+    if (this.setFovEl) this.setFovEl.value = String(s.fpFov);
+    if (this.setFovValEl) this.setFovValEl.textContent = `${Math.round(s.fpFov)}°`;
+    if (this.setShakeEl) this.setShakeEl.checked = s.cameraShake;
+    if (this.setAutoPauseEl) this.setAutoPauseEl.checked = s.autoPauseOnBlur;
+    const syncVol = (input: HTMLInputElement | null, valEl: HTMLElement | null, ratio: number) => {
+      const pct = Math.round(ratio * 100);
+      if (input) input.value = String(pct);
+      if (valEl) valEl.textContent = `${pct}%`;
+    };
+    syncVol(this.setVolMasterEl, this.setVolMasterValEl, s.masterVolume);
+    syncVol(this.setVolSfxEl, this.setVolSfxValEl, s.sfxVolume);
+    syncVol(this.setVolAmbientEl, this.setVolAmbientValEl, s.ambientVolume);
+    syncVol(this.setVolRadioEl, this.setVolRadioValEl, s.radioVolume);
+  }
+
+  public syncQualityButton(quality: GraphicsQuality): void {
+    this.quality = quality;
+    this.refreshQualityLabel();
+    if (this.setQualityEl) this.setQualityEl.value = quality;
+  }
+
+  private syncLabConfigControls(): void {
+    const cfg = this.sim.config;
+    this.selectedModalMap = cfg.mapId;
+    this.selectedModalScenario = cfg.id;
+    this.inputSeedEl.value = cfg.seed;
+
+    const popVal = String(cfg.population);
+    const hasPop = Array.from(this.selectPopEl.options).some((o) => o.value === popVal);
+    if (!hasPop) {
+      this.selectPopEl.add(new Option(popVal, popVal));
+    }
+    this.selectPopEl.value = popVal;
+
+    const siege = cfg.id === 'breach_siege';
+    document.querySelectorAll<HTMLElement>('.map-card').forEach((card) => {
+      card.classList.toggle('selected', card.dataset.map === cfg.mapId);
+      card.setAttribute('aria-disabled', String(siege && !this.isSiegeMap(card.dataset.map)));
+    });
+    document.querySelectorAll<HTMLElement>('.scenario-card').forEach((card) => {
+      card.classList.toggle('selected', card.dataset.scenario === cfg.id);
+    });
+  }
+
+  private bindAarModal(): void {
+    document.getElementById('btn-aar')?.addEventListener('click', () => {
+      this.openAarModal();
+    });
+    document.getElementById('btn-aar-close')?.addEventListener('click', () => {
+      this.closeAarModal();
+    });
+    this.aarModalEl?.addEventListener('click', (e) => {
+      if (e.target === this.aarModalEl) this.closeAarModal();
+    });
+    document.getElementById('btn-aar-replay')?.addEventListener('click', () => {
+      this.replaySameSeed();
+    });
+    document.getElementById('btn-aar-copy')?.addEventListener('click', () => {
+      this.copyChallengeLink();
+    });
+    document.getElementById('btn-fps-replay-seed')?.addEventListener('click', () => {
+      this.replaySameSeed();
+    });
+    document.getElementById('btn-fps-open-aar')?.addEventListener('click', () => {
+      this.openAarModal();
+    });
+  }
+
+  public openAarModal(): void {
+    if (!this.aarModalEl) return;
+    const stats = this.sim.getStats();
+    const fp = this.sim.firstPerson;
+    const totalSurvivors = stats.healthy + stats.panicking + stats.sheltered + stats.evacuated;
+    const pop = Math.max(1, this.sim.config.population);
+    const survivalRate = Math.min(100, Math.round((totalSurvivors / pop) * 100));
+
+    if (this.aarSubtitleEl) {
+      this.aarSubtitleEl.textContent = `${this.worldLabel(stats.outbreakStatus)} · ${this.t('Time', '耗时')} ${this.sim.formatClock(stats.simTime)}`;
+    }
+    if (this.aarSeedBadgeEl) {
+      this.aarSeedBadgeEl.textContent = `${this.sim.config.mapId} · ${this.sim.config.id} · ${this.sim.config.seed}`;
+    }
+
+    if (this.aarStatsGridEl) {
+      const cells: Array<[string, string]> = [
+        [this.t('Evacuated', '安全撤离'), `${stats.evacuated}`],
+        [this.t('Survival Rate', '生还率'), `${survivalRate}%`],
+        [this.t('Casualties', '死亡 / 击毙'), `${stats.deceased}`],
+        [this.t('Line 1 / 2 / 3', '一 / 二 / 三防线'),
+          `${this.worldLabel(stats.line1Status)} / ${this.worldLabel(stats.line2Status)} / ${stats.line3Status === 'NONE' ? '-' : this.worldLabel(stats.line3Status)}`]
+      ];
+      const shotsFired = fp.shotsFired ?? 0;
+      const shotsHit = fp.shotsHit ?? 0;
+      const acc = shotsFired > 0 ? Math.round((shotsHit / shotsFired) * 100) : 0;
+      if ((fp.kills ?? 0) > 0 || shotsFired > 0 || fp.active) {
+        cells.push(
+          [this.t('FP Kills / HS', '个人击杀 / 爆头'), `${fp.kills ?? 0} / ${fp.headshots ?? 0}`],
+          [this.t('Accuracy / Streak / Brute', '命中 / 连杀 / Brute'), `${acc}% / ${fp.maxKillStreak ?? 0}x / ${fp.bruteKills ?? 0}`]
+        );
+      } else {
+        cells.push(
+          [this.t('Cured / Train', '治愈 / 乘车撤离'), `${stats.cured} / ${stats.trainBoarded}`],
+          [this.t('Police / Infected', '警员 / 感染者'), `${stats.police} / ${stats.infected}`]
+        );
+      }
+      this.aarStatsGridEl.replaceChildren(
+        ...cells.map(([lbl, val]) => {
+          const box = document.createElement('div');
+          box.className = 'aar-stat-box';
+          const l = document.createElement('div');
+          l.className = 'aar-stat-lbl';
+          l.textContent = lbl;
+          const v = document.createElement('div');
+          v.className = 'aar-stat-val';
+          v.textContent = val;
+          box.append(l, v);
+          return box;
+        })
+      );
+    }
+
+    if (this.aarChartCanvas) {
+      const ctx = this.aarChartCanvas.getContext('2d');
+      if (ctx) {
+        this.plotHistorySeries(ctx, this.aarChartCanvas.width, this.aarChartCanvas.height);
+      }
+    }
+    this.aarModalEl.classList.remove('hidden');
+  }
+
+  public closeAarModal(): void {
+    this.aarModalEl?.classList.add('hidden');
+  }
+
+  private replaySameSeed(): void {
+    this.closeAarModal();
+    if (this.sim.firstPerson.active) this.exitFirstPersonMode();
+    this.aarAutoShownForRun = false;
+    this.onResetScenario({ ...this.sim.config });
+    this.lastRenderedEventId = -1;
+    this.eventLogListEl.innerHTML = '';
+    this.refreshUI();
+  }
+
+  private copyChallengeLink(): void {
+    const btn = document.getElementById('btn-aar-copy');
+    const cfg = this.sim.config;
+    const url = new URL(window.location.href);
+    url.search = '';
+    url.searchParams.set('map', cfg.mapId);
+    url.searchParams.set('scenario', cfg.id);
+    url.searchParams.set('seed', cfg.seed);
+    url.searchParams.set('pop', String(cfg.population));
+    const link = url.toString();
+    const showCopied = () => {
+      if (!btn) return;
+      const orig = btn.textContent;
+      btn.textContent = this.t('✅ Copied Link!', '✅ 已复制链接');
+      window.setTimeout(() => {
+        if (btn.textContent === this.t('✅ Copied Link!', '✅ 已复制链接')) {
+          btn.textContent = orig;
+        }
+      }, 1800);
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(link).then(showCopied).catch(showCopied);
+    } else {
+      showCopied();
+    }
+  }
+
+  private isSiegeMap(mapId?: string): boolean {
+    return mapId === 'citadel_express' || mapId === 'twin_bridges';
+  }
+
+  public t(english: string, chinese: string): string {
     return this.language === 'zh' ? chinese : english;
   }
 
@@ -522,11 +848,26 @@ export class UIController {
     }
     this.refreshLoadoutOptions();
     this.refreshSpawnSelection();
+    this.refreshQualityLabel();
     this.radioTitle.textContent = this.t('Police Radio', '警务频道');
-    this.latestRadio = undefined;
+    this.lastRadioSignature = '';
     this.radioRows.clear();
     this.radioLog.replaceChildren();
     this.refreshUI();
+  }
+
+  private refreshQualityLabel(): void {
+    const label =
+      this.quality === 'high'
+        ? this.t('✨ High', '✨ 高')
+        : this.quality === 'medium'
+        ? this.t('✨ Med', '✨ 中')
+        : this.t('✨ Low', '✨ 低');
+    this.btnQuality.textContent = label;
+    this.btnQuality.title = this.t(
+      `Graphics Quality: ${this.quality.toUpperCase()}`,
+      `画质档位：${this.quality === 'high' ? '高' : this.quality === 'medium' ? '中' : '低'}`
+    );
   }
 
   private selectedPlayerRole(): PlayerRole {
@@ -659,11 +1000,15 @@ export class UIController {
     this.refreshUI();
   }
 
-  public togglePause(): void {
-    this.isPaused = !this.isPaused;
+  public setPaused(paused: boolean): void {
+    this.isPaused = paused;
     const btn = document.getElementById('btn-play-pause')!;
     btn.textContent = this.isPaused ? '▶' : '⏸';
     btn.classList.toggle('active', !this.isPaused);
+  }
+
+  public togglePause(): void {
+    this.setPaused(!this.isPaused);
   }
 
   public selectTool(tool: TacticalTool): void {
@@ -768,14 +1113,214 @@ export class UIController {
       this.alertToastEl.classList.remove('visible');
     }
 
+    const banner = this.sim.crisisBanner;
+    if (this.crisisBannerEl && banner && this.sim.simTime - banner.timestamp < banner.duration) {
+      if (this.crisisBannerTitleEl) {
+        this.crisisBannerTitleEl.textContent = this.t(banner.titleEn, banner.titleZh);
+      }
+      if (this.crisisBannerSubEl) {
+        const sub = this.t(banner.subtitleEn, banner.subtitleZh);
+        this.crisisBannerSubEl.textContent = this.language === 'zh' ? translateWorldLabel(sub) : sub;
+      }
+      this.crisisBannerEl.className = banner.severity === 'warn'
+        ? 'sev-warn'
+        : banner.severity === 'info'
+        ? 'sev-info'
+        : '';
+    } else if (this.crisisBannerEl) {
+      this.crisisBannerEl.className = 'hidden';
+    }
+
+    if (
+      !this.sim.firstPerson.active &&
+      !this.aarAutoShownForRun &&
+      (stats.outbreakStatus === 'CONTAINED' || stats.outbreakStatus === 'CRITICAL COLLAPSE') &&
+      stats.simTime >= 15
+    ) {
+      this.aarAutoShownForRun = true;
+      this.openAarModal();
+    }
+
     this.drawOutbreakChart();
     this.drawMinimap();
     this.refreshEventLog();
     this.refreshInspector();
   }
 
-  public updateAimFeedback(hit: boolean): void {
-    this.fpsCrosshairEl.classList.toggle('hit', hit);
+  public updateAimFeedback(
+    feedback: boolean | {
+      hit: boolean;
+      headshot: boolean;
+      reloadProgress: number;
+      spread: number;
+      damageFlash: number;
+      damageRelAngle: number;
+      ads?: boolean;
+      activeReloadState?: 'none' | 'perfect' | 'jammed';
+      activeReloadAttempted?: boolean;
+    }
+  ): void {
+    const state = typeof feedback === 'boolean'
+      ? {
+          hit: feedback,
+          headshot: false,
+          reloadProgress: 0,
+          spread: 0,
+          damageFlash: 0,
+          damageRelAngle: 0,
+          ads: false,
+          activeReloadState: 'none' as const,
+          activeReloadAttempted: false
+        }
+      : feedback;
+    const reloading = state.reloadProgress > 0;
+    const activeFeedback = state.activeReloadState ?? 'none';
+    const showRing = reloading || activeFeedback !== 'none';
+    this.fpsCrosshairEl.classList.toggle('hit', state.hit);
+    this.fpsCrosshairEl.classList.toggle('headshot', state.headshot);
+    this.fpsCrosshairEl.classList.toggle('reloading', reloading);
+    this.fpsCrosshairEl.classList.toggle('ads', Boolean(state.ads));
+    this.fpsCrosshairEl.style.setProperty('--spread', state.spread.toFixed(4));
+    if (this.fpsReloadRingEl) {
+      this.fpsReloadRingEl.classList.toggle('active', showRing);
+      this.fpsReloadRingEl.classList.toggle('perfect', activeFeedback === 'perfect');
+      this.fpsReloadRingEl.classList.toggle('jammed', activeFeedback === 'jammed');
+      const deg = activeFeedback === 'perfect' ? 360 : Math.max(0, Math.min(1, state.reloadProgress)) * 360;
+      this.fpsReloadRingEl.style.setProperty('--reload-deg', `${deg.toFixed(1)}deg`);
+    }
+    if (this.fpsReloadSweetEl) {
+      this.fpsReloadSweetEl.classList.toggle('active', reloading && !state.activeReloadAttempted);
+    }
+    if (this.fpsReloadBadgeEl) {
+      const inSweetSpot = reloading && !state.activeReloadAttempted &&
+        state.reloadProgress >= 0.55 && state.reloadProgress <= 0.74;
+      const showBadge = activeFeedback !== 'none' || inSweetSpot;
+      this.fpsReloadBadgeEl.classList.toggle('active', showBadge);
+      this.fpsReloadBadgeEl.classList.toggle('perfect', activeFeedback === 'perfect');
+      this.fpsReloadBadgeEl.classList.toggle('jammed', activeFeedback === 'jammed');
+      this.fpsReloadBadgeEl.textContent =
+        activeFeedback === 'perfect'
+          ? this.t('⚡ PERFECT', '⚡ 完美换弹')
+          : activeFeedback === 'jammed'
+          ? this.t('⚠ JAMMED', '⚠ 卡壳')
+          : inSweetSpot
+          ? this.t('[R] FAST!', '[R] 完美时机')
+          : '';
+    }
+    if (state.damageFlash > 0) {
+      this.fpsHitIndicatorEl.style.setProperty('--hit-angle', `${state.damageRelAngle.toFixed(1)}deg`);
+      this.fpsHitIndicatorEl.style.opacity = `${Math.min(0.95, state.damageFlash * 1.75).toFixed(2)}`;
+    } else {
+      this.fpsHitIndicatorEl.style.opacity = '0';
+    }
+  }
+
+  public updateFirstPersonTacticalOverlays(): void {
+    const fp = this.sim.firstPerson;
+    const player = this.sim.getAgentById(fp.playerId);
+    if (!fp.active || fp.outcome !== 'PLAYING' || !player) {
+      this.fpsKillCalloutEl?.classList.remove('active');
+      return;
+    }
+
+    if (this.fpsKillCalloutEl) {
+      const callout = fp.lastCallout;
+      const active = Boolean(callout && this.sim.simTime - callout.timestamp < 1.65);
+      this.fpsKillCalloutEl.className = active && callout ? `active ${callout.kind}` : '';
+      if (active && callout) {
+        this.fpsKillCalloutEl.textContent = this.t(callout.textEn, callout.textZh);
+      }
+    }
+
+    if (!this.fpsCompassTicksEl || !this.fpsCompassPipsEl) return;
+    const yaw = this.cam.isFirstPerson ? this.cam.fpYaw : fp.yaw;
+    const cosY = Math.cos(yaw);
+    const sinY = Math.sin(yaw);
+    const relDegForDir = (dx: number, dz: number): number => {
+      const right = dx * cosY - dz * sinY;
+      const forward = -dx * sinY - dz * cosY;
+      return (Math.atan2(right, forward) * 180) / Math.PI;
+    };
+    const toPercent = (deg: number) => 50 + (deg / 85) * 46;
+
+    const cardinals: Array<[string, string, number, number, boolean]> = [
+      ['N', '北', 0, -1, true],
+      ['NE', '东北', 0.707, -0.707, false],
+      ['E', '东', 1, 0, true],
+      ['SE', '东南', 0.707, 0.707, false],
+      ['S', '南', 0, 1, true],
+      ['SW', '西南', -0.707, 0.707, false],
+      ['W', '西', -1, 0, true],
+      ['NW', '西北', -0.707, -0.707, false]
+    ];
+    const tickEntries: Array<{ text: string; pct: number; cardinal: boolean }> = [];
+    for (const [en, zh, dx, dz, major] of cardinals) {
+      const deg = relDegForDir(dx, dz);
+      if (Math.abs(deg) > 85) continue;
+      tickEntries.push({ text: this.t(en, zh), pct: toPercent(deg), cardinal: major });
+    }
+    const tickKey = tickEntries.map((t) => `${t.text}:${t.pct.toFixed(1)}`).join('|');
+    if (tickKey !== this.lastCompassTickKey) {
+      this.lastCompassTickKey = tickKey;
+      this.fpsCompassTicksEl.replaceChildren(
+        ...tickEntries.map((entry) => {
+          const el = document.createElement('span');
+          el.className = entry.cardinal ? 'compass-tick cardinal' : 'compass-tick';
+          el.style.left = `${entry.pct.toFixed(1)}%`;
+          el.textContent = entry.text;
+          return el;
+        })
+      );
+    }
+
+    const pips: Array<{ icon: string; cls: string; pct: number; edge: boolean }> = [];
+    const addPip = (icon: string, cls: string, tx: number, tz: number, clampEdge = false) => {
+      const deg = relDegForDir(tx - player.x, tz - player.z);
+      if (!clampEdge && Math.abs(deg) > 85) return;
+      const clampedDeg = Math.max(-85, Math.min(85, deg));
+      pips.push({ icon, cls, pct: toPercent(clampedDeg), edge: Math.abs(deg) > 85 });
+    };
+
+    if (this.sim.city.hasExpressRail) {
+      addPip('🚄', 'ktx', this.sim.city.stationPos.x, this.sim.city.stationPos.z, true);
+    } else if (this.sim.evacZones[0]) {
+      addPip('★', 'ktx', this.sim.evacZones[0].x, this.sim.evacZones[0].z, true);
+    }
+
+    if (fp.mission && !fp.mission.complete) {
+      addPip('◆', 'mission', fp.mission.x, fp.mission.z, true);
+    }
+
+    for (const gate of this.sim.blastGates) {
+      if (gate.breached) continue;
+      const critical = gate.integrity / gate.maxIntegrity < 0.35;
+      const underAttack = this.sim.simTime - gate.lastDamagedAt < 4.0;
+      if (critical || underAttack) {
+        addPip('⚠', 'gate', gate.x, gate.z, critical);
+      }
+    }
+
+    if (fp.weapon && fp.weapon.reserve < PLAYER_WEAPONS[fp.weapon.id].capacity * 2) {
+      const stash = this.sim.findNearestAmmoCache(player, true);
+      if (stash) {
+        addPip('▣', 'ammo', stash.x, stash.z, false);
+      }
+    }
+
+    const pipKey = pips.map((p) => `${p.icon}:${p.cls}:${p.pct.toFixed(1)}:${p.edge ? 1 : 0}`).join('|');
+    if (pipKey !== this.lastCompassPipKey) {
+      this.lastCompassPipKey = pipKey;
+      this.fpsCompassPipsEl.replaceChildren(
+        ...pips.map((p) => {
+          const el = document.createElement('span');
+          el.className = `compass-pip ${p.cls}`;
+          el.style.left = `${p.pct.toFixed(1)}%`;
+          if (p.edge) el.style.opacity = '0.72';
+          el.textContent = p.icon;
+          return el;
+        })
+      );
+    }
   }
 
   private refreshFirstPersonHud(
@@ -911,10 +1456,12 @@ export class UIController {
     this.fpsStamFillEl.style.width = `${stamPct}%`;
     this.fpsStamFillEl.style.background = fp.adrenalineTimer > 0 ? '#22d3ee' : '#38bdf8';
 
-    const danger =
+    const distDanger =
       fp.nearestZombieDist < 8.5
-        ? Math.min(0.50, ((8.5 - fp.nearestZombieDist) / 7.5) * 0.50)
+        ? ((8.5 - fp.nearestZombieDist) / 7.5) * 0.50
         : 0;
+    const hpDanger = hpPct < 35 ? ((35 - hpPct) / 35) * 0.45 : 0;
+    const danger = Math.min(0.68, Math.max(distDanger, hpDanger));
     this.fpsDangerVignetteEl.style.opacity = `${danger.toFixed(2)}`;
 
     const trainDoor =
@@ -944,6 +1491,16 @@ export class UIController {
       this.fpsInteractPromptEl.textContent = message;
       this.fpsInteractPromptEl.style.borderColor = '#f59e0b';
       this.fpsInteractPromptEl.style.color = '#fde68a';
+      this.fpsInteractPromptEl.style.display = 'block';
+    } else if (fp.skybridgeLadder) {
+      const message = fp.skybridgeLadder === 'up'
+        ? this.t('Press [E] to climb onto skybridge', '按 E 登上人行天桥')
+        : fp.skybridgeLadder === 'down'
+        ? this.t('Press [E] to climb down from skybridge', '按 E 离开人行天桥')
+        : this.t('Climbing skybridge…', '正在攀爬天桥…');
+      this.fpsInteractPromptEl.textContent = message;
+      this.fpsInteractPromptEl.style.borderColor = '#38bdf8';
+      this.fpsInteractPromptEl.style.color = '#bae6fd';
       this.fpsInteractPromptEl.style.display = 'block';
     } else if (ammoCache && weapon) {
       const cooldown = Math.max(0, Math.ceil(ammoCache.readyAt - this.sim.simTime));
@@ -1025,20 +1582,40 @@ export class UIController {
       fp.decoyCooldown > 0
         ? this.t(`Decoy ${Math.ceil(fp.decoyCooldown)}s`, `诱饵冷却 ${Math.ceil(fp.decoyCooldown)} 秒`)
         : this.t('Q Decoy', 'Q 诱饵');
-    const fireTag = weapon ? this.t(' • LMB/J Fire • R Reload • M Orders', ' · 左键/J 开火 · R 换弹 · M 接任务') : '';
+    const lightTag = this.t(' • T Light', ' · T 手电');
+    const fireTag = weapon
+      ? this.t(' • LMB/J Fire • RMB/V Aim • R Active Reload • M Orders', ' · 左键/J 开火 · 右键/V 瞄准 · R 完美换弹 · M 接任务')
+      : '';
     const lookTag = document.pointerLockElement
       ? ''
       : this.t(' • L Lock Mouse / Right-drag Look', ' · L 锁定鼠标／右键拖动看向');
     this.fpsControlsHintEl.textContent = player?.onWallDeck || fp.wallLadder === 'climbing' ? this.t(
-      `WASD Move along wall • Look down from the marked edge • E Ladder${fireTag}${lookTag}`,
-      `WASD 沿墙移动 · 到黄线处俯瞰墙脚 · E 梯子${fireTag}${lookTag}`
+      `WASD Move along wall • Look down from the marked edge • E Ladder${lightTag}${fireTag}${lookTag}`,
+      `WASD 沿墙移动 · 到黄线处俯瞰墙脚 · E 梯子${lightTag}${fireTag}${lookTag}`
+    ) : fp.skybridgeLadder === 'down' || fp.skybridgeLadder === 'climbing' ? this.t(
+      `WASD Move along skybridge • Aim over railing at street below • E Ladder${lightTag}${fireTag}${lookTag}`,
+      `WASD 在天桥上移动 · 越过护栏向下射击 · E 离开天桥${lightTag}${fireTag}${lookTag}`
     ) : this.t(
-      `WASD Move • Shift Sprint • ${spaceTag} • ${decoyTag} • E Interact${fireTag}${lookTag}`,
-      `WASD 移动 · Shift 冲刺 · ${spaceTag} · ${decoyTag} · E 互动${fireTag}${lookTag}`
+      `WASD Move • Shift Sprint • ${spaceTag} • ${decoyTag} • E Interact${lightTag}${fireTag}${lookTag}`,
+      `WASD 移动 · Shift 冲刺 · ${spaceTag} · ${decoyTag} · E 互动${lightTag}${fireTag}${lookTag}`
     );
 
     if (fp.outcome && fp.outcome !== 'PLAYING') {
       this.fpsOutcomeCardEl.classList.add('active');
+      if (this.fpsOutcomeStatsEl) {
+        const shotsFired = fp.shotsFired ?? 0;
+        const acc = shotsFired > 0 ? Math.round(((fp.shotsHit ?? 0) / shotsFired) * 100) : 0;
+        const combatLine = weapon || shotsFired > 0 || (fp.kills ?? 0) > 0
+          ? this.t(
+              ` · Kills ${fp.kills ?? 0} (HS ${fp.headshots ?? 0}) · Acc ${acc}% · Max Streak ${fp.maxKillStreak ?? 0}`,
+              ` · 击杀 ${fp.kills ?? 0}（爆头 ${fp.headshots ?? 0}）· 命中率 ${acc}% · 最高连杀 ${fp.maxKillStreak ?? 0}`
+            )
+          : '';
+        this.fpsOutcomeStatsEl.textContent = this.t(
+          `Survived ${Math.round(fp.survivalTime)}s${combatLine}`,
+          `存活 ${Math.round(fp.survivalTime)} 秒${combatLine}`
+        );
+      }
       if (fp.outcome === 'ESCAPED') {
         this.fpsOutcomeTitleEl.textContent = this.t('SURVIVED — ESCAPED!', '成功撤离');
         this.fpsOutcomeTitleEl.style.color = '#22c55e';
@@ -1079,9 +1656,11 @@ export class UIController {
   }
 
   private drawOutbreakChart(): void {
-    const ctx = this.chartCtx;
-    const w = this.chartCanvas.width;
-    const h = this.chartCanvas.height;
+    this.chartTimeLabel.textContent = `${Math.floor(this.sim.simTime)}s`;
+    this.plotHistorySeries(this.chartCtx, this.chartCanvas.width, this.chartCanvas.height);
+  }
+
+  private plotHistorySeries(ctx: CanvasRenderingContext2D, w: number, h: number): void {
     ctx.clearRect(0, 0, w, h);
 
     ctx.strokeStyle = 'rgba(148, 163, 184, 0.1)';
@@ -1096,7 +1675,6 @@ export class UIController {
     const hist = this.sim.history;
     if (hist.length < 2) return;
 
-    this.chartTimeLabel.textContent = `${Math.floor(this.sim.simTime)}s`;
     const maxPop = Math.max(100, this.sim.config.population);
 
     const plotLine = (selector: (pt: (typeof hist)[0]) => number, color: string, lineWidth = 2) => {
@@ -1243,9 +1821,32 @@ export class UIController {
       );
     }
 
+    const pulsePhase = 0.5 + 0.5 * Math.sin(performance.now() * 0.01);
     for (const gate of this.sim.blastGates) {
+      const gx = toMapX(gate.x);
+      const gy = toMapY(gate.z);
       ctx.fillStyle = gate.breached ? '#ef4444' : gate.openFraction === 1 ? '#22c55e' : gate.openFraction === 0 ? '#38bdf8' : '#f59e0b';
-      ctx.fillRect(toMapX(gate.x) - 3, toMapY(gate.z) - 2, 6, 4);
+      ctx.fillRect(gx - 3, gy - 2, 6, 4);
+      if (!gate.breached && this.sim.simTime - gate.lastDamagedAt < 1.5) {
+        ctx.strokeStyle = `rgba(239, 68, 68, ${(0.55 + pulsePhase * 0.45).toFixed(2)})`;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.arc(gx, gy, 5 + pulsePhase * 4.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    if (this.sim.layeredKtx) {
+      for (const id of KTX_GATE_IDS) {
+        const kGate = this.sim.ktxGates[id];
+        if (kGate.integrity > 0 && this.sim.simTime - kGate.lastDamagedAt < 1.5) {
+          const pt = KTX_GATES[id];
+          ctx.strokeStyle = `rgba(239, 68, 68, ${(0.55 + pulsePhase * 0.45).toFixed(2)})`;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(toMapX(pt.x), toMapY(pt.z), 4.5 + pulsePhase * 4, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
     }
 
     // 2. Central Park & Civic Plazas
@@ -1387,18 +1988,33 @@ export class UIController {
     this.radioPanel.classList.toggle('in-first-person', this.sim.firstPerson.active);
     const messages = this.sim.policeRadio;
     const latest = messages[messages.length - 1];
-    if (latest === this.latestRadio) return;
-    this.latestRadio = latest;
+    const latestCount = latest && 'count' in latest.call ? latest.call.count : 0;
+    const sig = latest
+      ? `${messages.length}:${latest.call.kind}:${latestCount}:${latest.time.toFixed(2)}`
+      : 'empty';
+    if (sig === this.lastRadioSignature) return;
+    this.lastRadioSignature = sig;
 
     const follow = this.radioLog.scrollHeight - this.radioLog.clientHeight - this.radioLog.scrollTop <= 8;
-    for (const [message, row] of this.radioRows) {
+    for (const [message, entry] of this.radioRows) {
       if (!messages.includes(message)) {
-        row.remove();
+        entry.row.remove();
         this.radioRows.delete(message);
       }
     }
     for (const message of messages) {
-      if (this.radioRows.has(message)) continue;
+      const msgCount = 'count' in message.call ? message.call.count : undefined;
+      const existing = this.radioRows.get(message);
+      if (existing) {
+        if (existing.lastTime !== message.time || existing.lastCount !== msgCount) {
+          const { text } = describeRadio(message, this.language);
+          existing.time.textContent = this.sim.formatClock(message.time);
+          existing.body.textContent = text;
+          existing.lastTime = message.time;
+          existing.lastCount = msgCount;
+        }
+        continue;
+      }
       const { speaker, text } = describeRadio(message, this.language);
       const row = document.createElement('li');
       const { kind } = message.call;
@@ -1411,7 +2027,7 @@ export class UIController {
       body.textContent = text;
       row.append(name, time, body);
       this.radioLog.append(row);
-      this.radioRows.set(message, row);
+      this.radioRows.set(message, { row, time, body, lastTime: message.time, lastCount: msgCount });
     }
     if (follow) this.radioLog.scrollTop = this.radioLog.scrollHeight;
   }

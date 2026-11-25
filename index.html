@@ -217,7 +217,7 @@
     /* NON-BLOCKING CRISIS ALERT TOAST */
     .alert-toast {
       position: fixed;
-      top: 74px;
+      top: 54px;
       left: 50%;
       transform: translateX(-50%);
       z-index: 45;
@@ -675,6 +675,13 @@
     #fps-weapon-status { font-size: 13px; color: #fde68a; font-variant-numeric: tabular-nums; margin-top: 3px; }
     #fps-mission-detail, #fps-kill-reward { color: #e2e8f0; font-size: 11px; margin-top: 3px; }
     #fps-crosshair.hit { border-color: #f6c4b2; box-shadow: 0 0 8px #f87171; }
+    #fps-crosshair.headshot { border-color: #fbbf24; box-shadow: 0 0 12px #f59e0b; }
+    #fps-crosshair.ads {
+      width: 6px;
+      height: 6px;
+      border-color: rgba(186, 230, 253, 0.95);
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.75);
+    }
     #fps-crosshair.hit::before, #fps-crosshair.hit::after {
       content: '';
       position: absolute;
@@ -685,7 +692,99 @@
       background: linear-gradient(90deg, #ffe0d0 0 30%, transparent 30% 70%, #ffe0d0 70% 100%);
       transform: translate(-50%, -50%) rotate(45deg);
     }
+    #fps-crosshair.headshot::before, #fps-crosshair.headshot::after {
+      width: 27px;
+      height: 2.5px;
+      background: linear-gradient(90deg, #fef08a 0 32%, transparent 32% 68%, #fef08a 68% 100%);
+    }
     #fps-crosshair.hit::after { transform: translate(-50%, -50%) rotate(-45deg); }
+    #fps-reload-ring {
+      display: none;
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      background: conic-gradient(
+        from 0deg,
+        #fbbf24 var(--reload-deg, 0deg),
+        rgba(255, 255, 255, 0.26) 0deg
+      );
+      -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 calc(100% - 2.5px));
+      mask: radial-gradient(farthest-side, transparent calc(100% - 3.5px), #000 calc(100% - 2.5px));
+      filter: drop-shadow(0 0 6px rgba(251, 191, 36, 0.55));
+      pointer-events: none;
+    }
+    #fps-reload-ring.active { display: block; }
+    #fps-reload-ring.perfect {
+      background: #fde047;
+      filter: drop-shadow(0 0 10px rgba(250, 204, 21, 0.95));
+    }
+    #fps-reload-ring.jammed {
+      background: conic-gradient(from 0deg, #ef4444 var(--reload-deg, 0deg), rgba(239, 68, 68, 0.25) 0deg);
+      filter: drop-shadow(0 0 10px rgba(239, 68, 68, 0.95));
+    }
+    #fps-reload-sweet {
+      display: none;
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      background: conic-gradient(
+        from 0deg,
+        transparent 0deg 198deg,
+        rgba(56, 189, 248, 0.95) 198deg 266deg,
+        transparent 266deg
+      );
+      -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 4.5px), #000 calc(100% - 3.5px));
+      mask: radial-gradient(farthest-side, transparent calc(100% - 4.5px), #000 calc(100% - 3.5px));
+      filter: drop-shadow(0 0 6px rgba(56, 189, 248, 0.85));
+      pointer-events: none;
+    }
+    #fps-reload-sweet.active { display: block; }
+    #fps-reload-badge {
+      display: none;
+      position: absolute;
+      left: 50%;
+      top: calc(50% + 24px);
+      transform: translateX(-50%);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      color: #38bdf8;
+      text-shadow: 0 1px 4px rgba(0, 0, 0, 0.95);
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    #fps-reload-badge.active { display: block; }
+    #fps-reload-badge.perfect { color: #fde047; }
+    #fps-reload-badge.jammed { color: #f87171; }
+    .settings-dialog { max-width: 520px; width: min(520px, calc(100vw - 24px)); max-height: 88vh; overflow-y: auto; }
+    .settings-grid { display: flex; flex-direction: column; gap: 10px; margin: 12px 0; }
+    .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--text-main); }
+    .settings-row-right { display: flex; align-items: center; gap: 8px; min-width: 190px; justify-content: flex-end; }
+    .settings-row input[type="range"] { width: 136px; accent-color: var(--accent-cyan); cursor: pointer; }
+    .settings-val { width: 42px; text-align: right; font-family: var(--font-mono); font-size: 11px; color: var(--accent-cyan); }
+    .settings-sep { border-top: 1px solid var(--border-subtle); margin: 4px 0; }
+    #fps-hit-indicator {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 260px;
+      height: 260px;
+      border-radius: 50%;
+      transform: translate(-50%, -50%) rotate(var(--hit-angle, 0deg));
+      background: conic-gradient(from -28deg, rgba(239, 68, 68, 0.9) 0deg, rgba(239, 68, 68, 0.9) 56deg, transparent 56deg);
+      -webkit-mask-image: radial-gradient(circle, transparent 62%, black 66%, black 98%, transparent 100%);
+      mask-image: radial-gradient(circle, transparent 62%, black 66%, black 98%, transparent 100%);
+      opacity: 0;
+      pointer-events: none;
+    }
     @media (max-width: 600px) {
       .role-options { grid-template-columns: 1fr; }
       #fps-bottom-panel { width: calc(100% - 20px); flex-wrap: wrap; justify-content: center; }
@@ -732,14 +831,15 @@
       top: 50%;
       width: 10px;
       height: 10px;
-      transform: translate(-50%, -50%);
-      border: 1.5px solid rgba(255, 255, 255, 0.75);
+      transform: translate(-50%, -50%) scale(calc(1 + var(--spread, 0) * 18));
+      border: 1.5px solid rgba(255, 255, 255, 0.78);
       border-radius: 50%;
       box-shadow: 0 0 6px rgba(0, 0, 0, 0.7);
+      transition: transform 0.04s linear;
     }
     #fps-top-panel {
       position: absolute;
-      top: 14px;
+      top: 44px;
       left: 50%;
       transform: translateX(-50%);
       background: rgba(10, 15, 28, 0.82);
@@ -751,6 +851,125 @@
       min-width: 300px;
       pointer-events: auto;
     }
+    #fps-compass {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 340px;
+      height: 26px;
+      overflow: hidden;
+      border-radius: 8px;
+      background: rgba(10, 15, 28, 0.84);
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      backdrop-filter: blur(8px);
+      pointer-events: none;
+    }
+    #fps-compass-caret {
+      position: absolute;
+      left: 50%;
+      top: 0;
+      transform: translateX(-50%);
+      width: 2px;
+      height: 7px;
+      background: #f8fafc;
+      z-index: 3;
+    }
+    #fps-compass-ticks, #fps-compass-pips {
+      position: absolute;
+      inset: 0;
+    }
+    .compass-tick {
+      position: absolute;
+      top: 7px;
+      transform: translateX(-50%);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      color: rgba(148, 163, 184, 0.85);
+      white-space: nowrap;
+    }
+    .compass-tick.cardinal { color: #e2e8f0; }
+    .compass-pip {
+      position: absolute;
+      top: 4px;
+      transform: translateX(-50%);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 18px;
+      text-shadow: 0 1px 4px #000;
+      z-index: 2;
+      white-space: nowrap;
+    }
+    .compass-pip.ktx { color: #38bdf8; }
+    .compass-pip.gate { color: #f87171; }
+    .compass-pip.mission { color: #fbbf24; }
+    .compass-pip.ammo { color: #fde047; }
+    #fps-kill-callout {
+      position: absolute;
+      left: calc(50% + 42px);
+      top: calc(50% - 28px);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.4px;
+      background: rgba(15, 23, 42, 0.88);
+      border: 1px solid rgba(251, 191, 36, 0.7);
+      color: #fde68a;
+      text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 0.14s ease, transform 0.14s ease;
+      white-space: nowrap;
+    }
+    #fps-kill-callout.active { opacity: 1; transform: translateY(0); }
+    #fps-kill-callout.brute { border-color: #e879f9; color: #f5d0fe; background: rgba(88, 28, 135, 0.82); }
+    #fps-kill-callout.streak { border-color: #f97316; color: #fed7aa; }
+    #fps-kill-callout.headshot { border-color: #fbbf24; color: #fef08a; }
+    #fps-kill-callout.reward { border-color: #38bdf8; color: #bae6fd; }
+    #fps-kill-callout.hazard { border-color: #ef4444; color: #fecaca; background: rgba(127, 29, 29, 0.85); }
+    #crisis-banner {
+      position: fixed;
+      left: 50%;
+      top: 90px;
+      transform: translateX(-50%);
+      z-index: 55;
+      min-width: min(460px, calc(100vw - 24px));
+      max-width: min(560px, calc(100vw - 24px));
+      padding: 9px 18px;
+      border-radius: 10px;
+      text-align: center;
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid rgba(239, 68, 68, 0.8);
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(8px);
+      cursor: pointer;
+    }
+    body:has(#fps-hud.active) #alert-toast {
+      top: 184px;
+    }
+    body:has(#fps-hud.active) #crisis-banner {
+      top: 222px;
+      pointer-events: none;
+      cursor: default;
+    }
+    #crisis-banner.sev-warn { border-color: rgba(245, 158, 11, 0.85); }
+    #crisis-banner.sev-info { border-color: rgba(56, 189, 248, 0.85); }
+    #crisis-banner-title { font-size: 13px; font-weight: 800; letter-spacing: 0.6px; color: #fecaca; }
+    #crisis-banner.sev-warn #crisis-banner-title { color: #fde68a; }
+    #crisis-banner.sev-info #crisis-banner-title { color: #bae6fd; }
+    #crisis-banner-sub { font-size: 11px; color: #e2e8f0; margin-top: 2px; }
+    .aar-dialog { max-width: 560px; width: min(560px, calc(100vw - 24px)); max-height: 90vh; overflow-y: auto; }
+    .aar-header-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 4px 0 10px; font-size: 12px; color: var(--text-muted); }
+    #aar-seed-badge { font-family: var(--font-mono); font-size: 11px; padding: 2px 7px; border-radius: 5px; background: rgba(56, 189, 248, 0.14); border: 1px solid rgba(56, 189, 248, 0.35); color: var(--accent-cyan); }
+    #aar-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 8px; margin-bottom: 12px; }
+    .aar-stat-box { background: rgba(15, 23, 42, 0.72); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+    .aar-stat-lbl { font-size: 10px; color: var(--text-muted); }
+    .aar-stat-val { font-size: 13px; font-weight: 700; color: var(--text-main); margin-top: 2px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; line-height: 1.35; }
+    #aar-chart { width: 100%; height: 120px; background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-subtle); border-radius: 8px; display: block; margin-bottom: 10px; }
+    #fps-outcome-stats { font-size: 12px; color: #cbd5e1; margin-bottom: 12px; line-height: 1.5; }
     #fps-objective { font-size: 13px; font-weight: 700; color: #f8fafc; letter-spacing: 0.3px; }
     #fps-train-status, #fps-commander-status { font-size: 11px; color: #38bdf8; margin-top: 2px; }
     #defense-gate-bars { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; margin: 5px 0; }
@@ -881,10 +1100,13 @@
         <button id="btn-speed-5" class="btn">5x</button>
         <button id="btn-find-infected" class="btn" title="Locate Active Infected">🔍 Infected</button>
         <button id="btn-fps-mode" class="btn" title="Choose a first-person role (F)" data-zh="🏃 角色 (F)">🏃 Roles (F)</button>
-        <button id="btn-fps-ktx" class="btn" title="First-Person KTX Base">🚄 KTX</button>
+        <button id="btn-fps-ktx" class="btn" title="First-Person KTX Base" data-zh="🚄 车站">🚄 KTX</button>
         <button id="btn-auto-cam" class="btn" title="Cinematic Auto-Director Camera">🎬 Auto</button>
         <button id="btn-audio" class="btn active" title="Toggle Sound Effects">🔊</button>
         <button id="btn-lighting" class="btn" title="Cycle Atmosphere: Dusk / Night / Day">🌆</button>
+        <button id="btn-quality" class="btn" title="Graphics Quality: High / Medium / Low">✨ 高</button>
+        <button id="btn-settings" class="btn" title="Settings" data-zh="⚙ 设置">⚙ Settings</button>
+        <button id="btn-aar" class="btn" title="After-Action Report" data-zh="📊 战报">📊 Report</button>
         <button id="btn-reset" class="btn btn-danger" title="Reset Current Scenario">↺</button>
         <button id="btn-open-scenarios" class="btn btn-primary" title="Maps, Modes & Population Lab">⚙ Lab</button>
         <button class="btn" type="button" data-language-toggle>中文</button>
@@ -914,10 +1136,10 @@
         <div id="tab-trend" class="tab-pane">
           <canvas id="chart-canvas" width="238" height="140"></canvas>
           <div class="chart-legend">
-            <span class="legend-item"><span class="legend-swatch" style="background:#38bdf8"></span>Healthy</span>
-            <span class="legend-item"><span class="legend-swatch" style="background:#f59e0b"></span>Panic</span>
-            <span class="legend-item"><span class="legend-swatch" style="background:#ef4444"></span>Infected</span>
-            <span class="legend-item"><span class="legend-swatch" style="background:#22c55e"></span>Evac</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#38bdf8"></span><span data-zh="健康">Healthy</span></span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#f59e0b"></span><span data-zh="恐慌">Panic</span></span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#ef4444"></span><span data-zh="感染">Infected</span></span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#22c55e"></span><span data-zh="撤离">Evac</span></span>
             <span id="chart-time-label">0s</span>
           </div>
         </div>
@@ -992,6 +1214,10 @@
 
   <!-- NON-BLOCKING CRISIS ALERT TOAST (VISIBLE IN BOTH COMMANDER & FP MODES) -->
   <div id="alert-toast" class="alert-toast"></div>
+  <div id="crisis-banner" class="hidden" role="status" aria-live="polite">
+    <div id="crisis-banner-title"></div>
+    <div id="crisis-banner-sub"></div>
+  </div>
 
   <details id="police-radio" open>
     <summary id="police-radio-title">Police Radio</summary>
@@ -1001,7 +1227,17 @@
   <!-- FIRST-PERSON UNARMED ESCAPE HUD -->
   <div id="fps-hud">
     <div id="fps-danger-vignette"></div>
+    <div id="fps-hit-indicator"></div>
     <div id="fps-crosshair"></div>
+    <div id="fps-reload-ring" aria-hidden="true"></div>
+    <div id="fps-reload-sweet" aria-hidden="true"></div>
+    <div id="fps-reload-badge" aria-hidden="true"></div>
+    <div id="fps-kill-callout" aria-hidden="true"></div>
+    <div id="fps-compass" aria-hidden="true">
+      <div id="fps-compass-caret"></div>
+      <div id="fps-compass-ticks"></div>
+      <div id="fps-compass-pips"></div>
+    </div>
     <div id="fps-top-panel">
       <div id="fps-objective">OBJECTIVE: Reach South Express Station</div>
       <div id="fps-train-status">Express Train: Approaching</div>
@@ -1027,8 +1263,11 @@
     <div id="fps-outcome-card">
       <div id="fps-outcome-title">SURVIVED</div>
       <div id="fps-outcome-desc">You escaped aboard the Express Train!</div>
-      <div class="fps-outcome-actions">
-        <button id="btn-fps-respawn" class="btn btn-primary" data-zh="选择角色">Choose Role</button>
+      <div id="fps-outcome-stats"></div>
+      <div class="fps-outcome-actions" style="flex-wrap:wrap;">
+        <button id="btn-fps-replay-seed" class="btn btn-primary" data-zh="🔁 同种子重开">🔁 Replay Seed</button>
+        <button id="btn-fps-open-aar" class="btn" data-zh="📊 完整战报">📊 Full Report</button>
+        <button id="btn-fps-respawn" class="btn" data-zh="选择角色">Choose Role</button>
         <button id="btn-fps-commander" class="btn">Commander View</button>
       </div>
     </div>
@@ -1099,9 +1338,9 @@
           <p>Massive city with towering skyscraper core, Civic Stadium Plaza, Industrial Zone & dual evac terminals.</p>
         </div>
         <div class="map-card" data-map="twin_bridges">
-          <span class="tag">7×7 River Divide • Bottleneck</span>
+          <span class="tag">2 Bridgehead Walls • River Funnel</span>
           <h3>🌉 Twin River Bridges</h3>
-          <p>Central river splits North Downtown from South Safe Zone. Crowds & zombies funnel across two suspension bridges!</p>
+          <p>Central river splits North Downtown from South Safe Zone with fortified North/South bridgehead walls, blast gates & explosive fuel tankers.</p>
         </div>
         <div class="map-card" data-map="quarantine_citadel">
           <span class="tag">5×5 High-Density Canyon</span>
@@ -1148,7 +1387,7 @@
           <p>Tactical command tools locked. Watch whether city defenses survive completely unassisted.</p>
         </div>
         <div class="scenario-card" data-scenario="breach_siege">
-          <span class="tag" data-zh="高难度 · 城墙与特快列车专属">Hard · Citadel Wall &amp; Express only</span>
+          <span class="tag" data-zh="高难度 · 堡垒城墙 / 双桥围城">Hard · Citadel &amp; Twin Bridges</span>
           <h3 data-zh="🧟 尸潮破城">🧟 Breach Siege</h3>
           <p data-zh="六波尸潮逐步加压。巨型丧尸和跑者分头砸门、堆叠翻墙，突破后继续向下一道防线推进。">Six escalating waves split between battering closed gates and piling up the walls, then press into the next sector.</p>
         </div>
@@ -1182,6 +1421,123 @@
       <div class="modal-actions">
         <button id="btn-close-modal" class="btn">Close</button>
         <button id="btn-launch-scenario" class="btn btn-primary" style="padding: 6px 16px;">▶ Launch Simulation</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SETTINGS MODAL -->
+  <div id="settings-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+    <div class="modal-card interactive settings-dialog">
+      <div class="modal-title">
+        <span class="brand-dot"></span>
+        <span id="settings-modal-title" data-zh="游戏设置">Game Settings</span>
+      </div>
+      <div class="settings-grid">
+        <div class="settings-row">
+          <label for="set-quality" data-zh="画质档位">Graphics Quality</label>
+          <div class="settings-row-right">
+            <select id="set-quality" class="select-compact">
+              <option value="high" data-zh="高 (Bloom + 阴影)">High (Bloom + Shadows)</option>
+              <option value="medium" data-zh="中 (均衡)">Medium (Balanced)</option>
+              <option value="low" data-zh="低 (流畅优先)">Low (Performance)</option>
+            </select>
+          </div>
+        </div>
+        <div class="settings-row">
+          <label for="set-auto-quality" data-zh="低帧率自动降档保护">Auto-lower quality on low FPS</label>
+          <input id="set-auto-quality" type="checkbox" checked />
+        </div>
+        <div class="settings-row">
+          <label for="set-sens" data-zh="第一人称鼠标灵敏度">FP Mouse Sensitivity</label>
+          <div class="settings-row-right">
+            <input id="set-sens" type="range" min="0.4" max="2.2" step="0.05" value="1" />
+            <span id="set-sens-val" class="settings-val">1.00x</span>
+          </div>
+        </div>
+        <div class="settings-row">
+          <label for="set-fov" data-zh="第一人称视野 (FOV)">First-Person FOV</label>
+          <div class="settings-row-right">
+            <input id="set-fov" type="range" min="60" max="85" step="1" value="68" />
+            <span id="set-fov-val" class="settings-val">68°</span>
+          </div>
+        </div>
+        <div class="settings-row">
+          <label for="set-shake" data-zh="镜头震动与步态晃动">Camera Shake &amp; Bob</label>
+          <input id="set-shake" type="checkbox" checked />
+        </div>
+        <div class="settings-row">
+          <label for="set-autopause" data-zh="切换标签页自动暂停">Auto-pause when tab hidden</label>
+          <input id="set-autopause" type="checkbox" checked />
+        </div>
+        <div class="settings-sep"></div>
+        <div class="settings-row">
+          <label for="set-vol-master" data-zh="主音量">Master Volume</label>
+          <div class="settings-row-right">
+            <input id="set-vol-master" type="range" min="0" max="100" step="5" value="85" />
+            <span id="set-vol-master-val" class="settings-val">85%</span>
+          </div>
+        </div>
+        <div class="settings-row">
+          <label for="set-vol-sfx" data-zh="武器与战斗音效">Combat SFX Volume</label>
+          <div class="settings-row-right">
+            <input id="set-vol-sfx" type="range" min="0" max="100" step="5" value="100" />
+            <span id="set-vol-sfx-val" class="settings-val">100%</span>
+          </div>
+        </div>
+        <div class="settings-row">
+          <label for="set-vol-ambient" data-zh="环境、警报与心跳">Ambient &amp; Horror Volume</label>
+          <div class="settings-row-right">
+            <input id="set-vol-ambient" type="range" min="0" max="100" step="5" value="85" />
+            <span id="set-vol-ambient-val" class="settings-val">85%</span>
+          </div>
+        </div>
+        <div class="settings-row">
+          <label for="set-vol-radio" data-zh="警用无线电音量">Police Radio Volume</label>
+          <div class="settings-row-right">
+            <input id="set-vol-radio" type="range" min="0" max="100" step="5" value="85" />
+            <span id="set-vol-radio-val" class="settings-val">85%</span>
+          </div>
+        </div>
+        <div class="settings-row">
+          <label data-zh="界面语言">Language</label>
+          <button class="btn" type="button" data-language-toggle>中文</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-settings-reset" class="btn" type="button" data-zh="恢复默认">Reset Defaults</button>
+        <button id="btn-settings-close" class="btn btn-primary" type="button" data-zh="完成">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AFTER-ACTION REPORT MODAL -->
+  <div id="aar-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="aar-title">
+    <div class="modal-card interactive aar-dialog">
+      <div class="modal-title">
+        <span class="brand-dot"></span>
+        <span id="aar-title" data-zh="战局战报">After-Action Report</span>
+      </div>
+      <div class="aar-header-meta">
+        <span id="aar-subtitle">Summary</span>
+        <span id="aar-seed-badge">CITADEL-2026</span>
+      </div>
+      <div id="aar-stats-grid"></div>
+      <canvas id="aar-chart" width="460" height="120"></canvas>
+      <div class="modal-actions">
+        <button id="btn-aar-copy" class="btn" type="button" data-zh="📋 复制挑战链接">📋 Copy Challenge Link</button>
+        <button id="btn-aar-replay" class="btn btn-primary" type="button" data-zh="🔁 同种子再战">🔁 Replay Same Seed</button>
+        <button id="btn-aar-close" class="btn" type="button" data-zh="关闭">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- WEBGL CONTEXT OVERLAY -->
+  <div id="webgl-overlay" class="modal-backdrop hidden" role="alertdialog" aria-modal="true">
+    <div class="modal-card interactive" style="max-width:440px;">
+      <div class="modal-title" style="color:#f87171;" data-zh="渲染上下文异常">WebGL Render Interrupted</div>
+      <p id="webgl-overlay-msg" style="font-size:13px; color:#cbd5e1; margin:10px 0;">WebGL context lost. Attempting to recover...</p>
+      <div class="modal-actions">
+        <button class="btn btn-primary" type="button" onclick="window.location.reload()" data-zh="刷新页面">Reload Page</button>
       </div>
     </div>
   </div>

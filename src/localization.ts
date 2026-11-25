@@ -55,7 +55,7 @@ const existingLabels: Record<string, string | string[]> = {
   ".map-card .tag": [
     "三道防线 · 456 米城市走廊",
     "7×7 路网 · 49 个街区",
-    "7×7 路网 · 双桥瓶颈",
+    "两道桥头堡防线 · 跨河瓶颈",
     "5×5 高密度街区"
   ],
   ".map-card h3": [
@@ -67,7 +67,7 @@ const existingLabels: Record<string, string | string[]> = {
   ".map-card p": [
     "穿过高速公路事故区、市中心运河、砖墙小巷与三道防线，抵达南部 KTX 车站。",
     "摩天楼、体育场广场和工业区组成的大城市，设有两处撤离终点。",
-    "河流隔开市中心与南部安全区，人群和丧尸只能穿过两座吊桥。",
+    "河流隔开市中心与南部安全区，两岸建有桥头堡城墙与防爆闸门，支持尸潮破城模式与油罐车陷阱。",
     "高楼间的狭窄街区，恐慌会沿十字路口迅速扩散。"
   ],
   ".scenario-card .tag": [
@@ -167,6 +167,11 @@ const terms: Record<string, string> = {
   'KTX Boarding Door': 'KTX 登车口',
   'KTX Car 3 Boarding Door': 'KTX 三号车厢登车口',
   'Car 1 Safe Cabin Console [E]': '一号车厢驾驶台 [E]',
+  'Line 1 • North Bridgehead Wall': '第1道防线 · 北桥头城墙',
+  'Line 2 • South Bridgehead Wall': '第2道防线 · 南桥头城墙',
+  'Midtown Arcade Mart': '市中心街机便利店',
+  'Southside 24H Pharmacy': '南区24小时药房',
+  'Advancing on the South Safe Zone': '向南部安全区推进',
   'Clinic Bed': '诊所病床', Bench: '长椅', 'KTX Car 1 — Engineer Cabin Console': 'KTX 一号车厢驾驶台'
 };
 
@@ -218,7 +223,12 @@ const gameplayAlerts: Record<string, string> = {
   'KTX EMERGENCY: Infected boarded. Departing immediately.': '🚨 感染者已进入车厢 · KTX 立即发车！',
   'KTX EMERGENCY: Infected boarded. You missed the train.': '🚨 感染者已进入车厢 · 列车已紧急发车，你未能登车。',
   '🚄 KTX-101 DEPARTING FOR BUSAN — YOU MADE IT ON BOARD!': '🚄 KTX-101 向釜山发车 · 你已成功登车！',
-  '⚠ MISSED KTX-101! Hold out in Central Station until next train!': '⚠ 错过 KTX-101 · 在中央车站坚持到下一班车！'
+  '⚠ MISSED KTX-101! Hold out in Central Station until next train!': '⚠ 错过 KTX-101 · 在中央车站坚持到下一班车！',
+  '⚡ ADRENALINE SURGE — Critical HP! 2.8s sprint burst!': '⚡ 肾上腺素爆发 · 生命垂危，获得 2.8 秒极限冲刺！',
+  '🚄 EMERGENCY EXPRESS DISPATCHED — Train arriving in 7.5s!': '🚄 紧急特快已调度 · 列车 7.5 秒后进站！',
+  '⚡ ENERGY DRINK: 8s Unlimited Sprint Surge!': '⚡ 能量饮料 · 8 秒无限体力爆发！',
+  '💉 ANTIVIRAL MEDKIT: +65 HP & Infection Cured!': '💉 抗病毒急救包 · 恢复 65 生命并清除感染！',
+  '🎒 EMERGENCY PACK: +40 HP • +60 Stamina • Decoy Refreshed!': '🎒 应急包 · +40 生命 / +60 体力 / 诱饵就绪！'
 };
 
 export function translateGameplayAlert(alert: string): string {
@@ -228,6 +238,17 @@ export function translateGameplayAlert(alert: string): string {
   if (arrival) return `列车已安全抵达 · 本班成功撤离 ${arrival[1]} 人`;
   const killReward = alert.match(/^KILL REWARD: (\d+) rounds earned$/);
   if (killReward) return `击杀奖励 · 获得 ${killReward[1]} 发弹药`;
+  const autoQuality = alert.match(/^⚙ AUTO QUALITY: Stepped down to (.+) for smoother FPS$/);
+  if (autoQuality) return `⚙ 自动画质 · 已调至 ${autoQuality[1]} 以保障流畅帧率`;
+  const crimson = alert.match(/^CRIMSON TIDE WAVE (\d+): 35 Infected & Alpha Brutes Incoming!$/);
+  if (crimson) return `赤潮第 ${crimson[1]} 波 · 35 名感染者与巨型丧尸正从北部涌来！`;
+  const breachedWall = alert.match(/^⚠ (.+) BREACHED! FALL BACK!$/i);
+  if (breachedWall) {
+    const defenseNum = breachedWall[1].match(/DEFENSE LINE (\d+)/i);
+    return defenseNum
+      ? `⚠ 第 ${defenseNum[1]} 道防线已失守 · 立即后撤！`
+      : `⚠ ${translateWorldLabel(breachedWall[1])}已失守 · 立即后撤！`;
+  }
   const total = alert.match(/^(.*) · Evacuated this round: (\d+)$/);
   if (total) return `${translateGameplayAlert(total[1])} · 本局已成功撤离 ${total[2]} 人`;
   const departure = alert.match(/^TRAIN DEPARTED: KTX-101 carried (\d+)\/(\d+) passengers\.$/);
@@ -238,11 +259,14 @@ export function translateGameplayAlert(alert: string): string {
     /^KTX-101 DOCKED \((\d+)s\): BOARD CAR (\d+)$/,
     (_, seconds, car) => `🚄 KTX-101 已进站 · ${seconds} 秒内从 ${car} 号车厢登车`
   ).replace(
-    /^SIEGE WAVE (\d+)\/(\d+): (\d+) infected advancing on (?:Line (\d+)|KTX Terminal)!$/,
-    (_, wave, total, size, line) => `尸潮 ${wave}/${total} · ${size} 名感染者正在逼近${line ? `第 ${line} 道防线` : 'KTX 车站'}！`
+    /^SIEGE WAVE (\d+)\/(\d+): (\d+) infected advancing on (?:Line (\d+)|KTX Terminal|South Safe Zone)!$/,
+    (_, wave, total, size, line) => `尸潮 ${wave}/${total} · ${size} 名感染者正在逼近${line ? `第 ${line} 道防线` : alert.includes('South Safe Zone') ? '南部安全区' : 'KTX 车站'}！`
   ).replace(
     /^LINE (\d+) (WEST|EAST) GATE (OPENING|CLOSING)!$/,
     (_, line, side, action) => `第${line}道防线${side === 'WEST' ? '西' : '东'}闸门正在${action === 'OPENING' ? '开启' : '关闭'}！`
+  ).replace(
+    /^(.+) DETONATED \((\d+) killed\)$/,
+    (_, label, count) => `💥 ${label} 引爆 · 消灭 ${count} 只感染者！`
   );
 }
 

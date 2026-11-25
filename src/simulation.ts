@@ -26,9 +26,11 @@ import {
   BlastGateData,
   BrokenWindowData,
   BuildingData,
+  CrisisBanner,
   DefenseWallData,
   EvacZoneData,
   EventLogItem,
+  ExplosiveHazardData,
   ExpressTrainData,
   FirstPersonState,
   HoldZoneData,
@@ -42,6 +44,7 @@ import {
   RoadblockData,
   ScenarioConfig,
   SimulationStats,
+  SkybridgeData,
   StaticObstacleData,
   SupplyPickupData,
   TimeSeriesPoint,
@@ -102,6 +105,16 @@ export type SoundTrigger = (
     | 'player_shotgun'
     | 'player_carbine'
     | 'player_reload'
+    | 'player_dry_fire'
+    | 'active_reload_ok'
+    | 'active_reload_jam'
+    | 'flashlight_click'
+    | 'adrenaline_surge'
+    | 'brute_down'
+    | 'crisis_warn'
+    | 'crisis_danger'
+    | 'hit_flesh'
+    | 'headshot'
     | 'radio'
     | 'cure'
     | 'bite'
@@ -174,6 +187,12 @@ export class OutbreakSimulation {
   public hordeWave = 0;
   public nextWaveTimer = 0;
   public lastAlert: AlertBanner | null = null;
+  public crisisBanner: CrisisBanner | null = null;
+  private crisisBannerSeq = 0;
+  private killCalloutSeq = 0;
+  private warnedWaveNumber = 0;
+  private warnedLowGateIds = new Set<number>();
+  private trainWarningSentForDock = false;
   public selectedAgentId: number | null = null;
   public patientZeroId: number | null = null;
 
@@ -185,6 +204,8 @@ export class OutbreakSimulation {
   private neighborBuffer: AgentData[] = [];
   private buildingBuffer: BuildingData[] = [];
   private agentById: Map<number, AgentData> = new Map();
+  private shotTrace = new ShotTrace(0, 0, 0, 0, 0, 1);
+  private sortedGatesByWall = new Map<number, BlastGateData[]>();
 
   public interiorDoors: InteriorDoorData[] = [];
   public brokenWindows: BrokenWindowData[] = [];
@@ -193,6 +214,7 @@ export class OutbreakSimulation {
   public blackoutMaxZ = -999;
   public supplyPickups: SupplyPickupData[] = [];
   public ammoCaches: AmmoCacheData[] = [];
+  public explosiveHazards: ExplosiveHazardData[] = [];
   private windowBreachCooldown = 2.8;
   private overpassDropCooldown = 5.5;
   private activeAlarmSet: Set<number> = new Set();
@@ -226,6 +248,10 @@ export class OutbreakSimulation {
   private fpWallDeck: { wall: DefenseWallData; minX: number; maxX: number } | null = null;
   private fpLadderTravel: {
     wall: DefenseWallData; x: number; progress: number; ascending: boolean; startX: number; startZ: number;
+  } | null = null;
+  private fpSkybridge: SkybridgeData | null = null;
+  private fpSkybridgeTravel: {
+    bridge: SkybridgeData; x: number; progress: number; ascending: boolean; startX: number; startZ: number;
   } | null = null;
   private fpVaultTimer = 0;
   private fpVaultDuration = 0.38;
@@ -327,12 +353,15 @@ export class OutbreakSimulation {
     this.defenseWalls = [];
     this.blastGates = [];
     this.interiorDoors = this.city.interiorDoors.map((d) => ({ ...d }));
+    this.explosiveHazards = this.city.explosiveHazards.map((h) => ({ ...h }));
     this.brokenWindows = [];
     this.carAlarms.clear();
     this.supplyPickups = [];
     this.fpVaultActive = false;
     this.fpWallDeck = null;
     this.fpLadderTravel = null;
+    this.fpSkybridge = null;
+    this.fpSkybridgeTravel = null;
     this.fpVaultTimer = 0;
     this.fpGraceTimer = 0;
     this.fpSafeTimer = 0;
@@ -366,6 +395,12 @@ export class OutbreakSimulation {
     this.hordeWave = 0;
     this.nextWaveTimer = 0;
     this.lastAlert = null;
+    this.crisisBanner = null;
+    this.crisisBannerSeq = 0;
+    this.killCalloutSeq = 0;
+    this.warnedWaveNumber = 0;
+    this.warnedLowGateIds.clear();
+    this.trainWarningSentForDock = false;
     this.bruteSeen = false;
     this.selectedAgentId = null;
     this.patientZeroId = null;
@@ -420,6 +455,19 @@ export class OutbreakSimulation {
       }
     }
 
+    this.sortedGatesByWall.clear();
+    for (const gate of this.blastGates) {
+      let arr = this.sortedGatesByWall.get(gate.wallId);
+      if (!arr) {
+        arr = [];
+        this.sortedGatesByWall.set(gate.wallId, arr);
+      }
+      arr.push(gate);
+    }
+    for (const arr of this.sortedGatesByWall.values()) {
+      arr.sort((a, b) => a.x - b.x);
+    }
+
     const trainLayout = getTrainLayout(this.layeredKtx);
     this.expressTrain = {
       active: this.city.hasExpressRail,
@@ -466,6 +514,7 @@ export class OutbreakSimulation {
       nearestZombieDist: 999,
       nearbyGateId: null,
       wallLadder: null,
+      skybridgeLadder: null,
       nearbyDoorId: null,
       insideBuildingId: null,
       pursuers: 0,
@@ -487,7 +536,22 @@ export class OutbreakSimulation {
       waypointLabel: '',
       spawnLabel: '',
       outcome: null,
-      survivalTime: 0
+      survivalTime: 0,
+      damageFlashTimer: 0,
+      damageFromAngle: 0,
+      aiming: false,
+      flashlightOn: true,
+      flashlightFlickerTimer: 0,
+      lastStandCooldown: 0,
+      kills: 0,
+      headshots: 0,
+      bruteKills: 0,
+      shotsFired: 0,
+      shotsHit: 0,
+      killStreak: 0,
+      killStreakTimer: 0,
+      maxKillStreak: 0,
+      lastCallout: null
     };
 
     this.spawnInitialPopulation();
@@ -558,6 +622,11 @@ export class OutbreakSimulation {
     if (this.layeredKtx) {
       addGround(-36, 157);
       this.ammoCaches.push({ id: this.nextEntityId++, x: -21, y: KTX_PLATFORM_Y, z: 190.1, readyAt: 0 });
+    }
+    for (const sb of this.city.skybridges) {
+      if (sb.ladderXs) {
+        this.ammoCaches.push({ id: this.nextEntityId++, x: sb.x, y: sb.deckY + 0.2, z: sb.z, readyAt: 0 });
+      }
     }
     if (this.defenseWalls.length === 0) {
       for (const x of [-0.52, 0.52]) {
@@ -662,6 +731,30 @@ export class OutbreakSimulation {
       text,
       severity,
       timestamp: performance.now()
+    };
+  }
+
+  public triggerCrisisBanner(
+    titleEn: string,
+    titleZh: string,
+    subtitleEn: string,
+    subtitleZh: string,
+    severity: CrisisBanner['severity'],
+    duration = 4.5,
+    x?: number,
+    z?: number
+  ): void {
+    this.crisisBanner = {
+      id: ++this.crisisBannerSeq,
+      titleEn,
+      titleZh,
+      subtitleEn,
+      subtitleZh,
+      severity,
+      timestamp: this.simTime,
+      duration,
+      x,
+      z
     };
   }
 
@@ -996,7 +1089,7 @@ export class OutbreakSimulation {
       }
       this.pushAgent(infected);
     }
-    const order = front ? `Line ${front.layerIndex}` : 'KTX Terminal';
+    const order = front ? `Line ${front.layerIndex}` : this.city.hasExpressRail ? 'KTX Terminal' : 'South Safe Zone';
     const message = `SIEGE WAVE ${this.hordeWave}/${SIEGE_WAVE_SIZES.length}: ${total} infected advancing on ${order}!`;
     this.triggerAlert(message, 'danger');
     this.addEventLog('infection', message, gates[0]?.x ?? 0, spawnZ);
@@ -1524,6 +1617,28 @@ export class OutbreakSimulation {
     const maxWaves = siege ? SIEGE_WAVE_SIZES.length : 3;
     if (this.config.enableWaves && this.hordeWave > 0 && this.hordeWave < maxWaves) {
       this.nextWaveTimer -= dt;
+      const upcomingWave = this.hordeWave + 1;
+      if (this.nextWaveTimer <= 5.0 && this.nextWaveTimer > 0 && this.warnedWaveNumber < upcomingWave) {
+        this.warnedWaveNumber = upcomingWave;
+        const front = siege ? this.defenseWalls.find((wall) => !wall.breachedNotified) : undefined;
+        const nextSize = siege ? this.getSiegeWaveSize(this.hordeWave) : 35;
+        const brutes = siege ? Math.max(1, Math.ceil(nextSize / 10)) : 3;
+        const targetEn = siege ? (front ? `Line ${front.layerIndex}` : 'KTX Terminal') : 'North Perimeter';
+        const targetZh = siege ? (front ? `第 ${front.layerIndex} 道防线` : 'KTX 车站') : '北部防线';
+        const tx = 0;
+        const tz = siege ? (front ? front.z : this.city.stationPos.z) : -this.city.cityHalfZ + 12;
+        this.triggerCrisisBanner(
+          `WAVE ${upcomingWave}/${maxWaves} INCOMING · 5s`,
+          `第 ${upcomingWave}/${maxWaves} 波尸潮逼近 · 5 秒`,
+          `${nextSize} infected (${brutes} Brutes) converging on ${targetEn}`,
+          `预计 ${nextSize} 名感染者（含 ${brutes} 只巨型丧尸）直扑${targetZh}`,
+          'danger',
+          4.8,
+          tx,
+          tz
+        );
+        this.onSound?.('crisis_danger', tx, tz);
+      }
       if (this.nextWaveTimer <= 0) {
         if (siege) {
           this.spawnSiegeWave();
@@ -1561,6 +1676,13 @@ export class OutbreakSimulation {
       }
     }
 
+    for (let i = 0; i < this.explosiveHazards.length; i++) {
+      const h = this.explosiveHazards[i];
+      if (h.detonated && h.burningTimer > 0) {
+        h.burningTimer = Math.max(0, h.burningTimer - dt);
+      }
+    }
+
     this.rebuildAgentSpatialGrid();
 
     this.updateCivilianEvacuationStage();
@@ -1576,7 +1698,18 @@ export class OutbreakSimulation {
 
     for (let i = 0; i < this.agents.length; i++) {
       const a = this.agents[i];
-      if (!a.isAlive || a.isEvacuated || (a.isTrainPassenger && !this.ridingKtx(a))) continue;
+      if (!a.isAlive) {
+        if ((a.deathTimer ?? 0) > 0) {
+          a.deathTimer = Math.max(0, a.deathTimer! - dt);
+          a.deathAge = (a.deathAge ?? 0) + dt;
+        }
+        continue;
+      }
+      if (a.isEvacuated || (a.isTrainPassenger && !this.ridingKtx(a))) continue;
+
+      if ((a.hitFlinchTimer ?? 0) > 0) a.hitFlinchTimer = Math.max(0, a.hitFlinchTimer! - dt);
+      if ((a.hitFlashTimer ?? 0) > 0) a.hitFlashTimer = Math.max(0, a.hitFlashTimer! - dt);
+      if ((a.hitSlowTimer ?? 0) > 0) a.hitSlowTimer = Math.max(0, a.hitSlowTimer! - dt);
 
       if (a.attackCooldown > 0) a.attackCooldown -= dt;
       if (a.stateTimer > 0) a.stateTimer -= dt;
@@ -2180,6 +2313,9 @@ export class OutbreakSimulation {
     const prevX = tr.x;
 
     tr.timer -= dt;
+    if (tr.state !== 'DOCKED') {
+      this.trainWarningSentForDock = false;
+    }
 
     if (tr.state === 'COOLDOWN') {
       tr.x = minX;
@@ -2246,6 +2382,20 @@ export class OutbreakSimulation {
       }
     } else if (tr.state === 'DOCKED') {
       tr.x = tr.stationX;
+      if (tr.timer <= 12 && tr.timer > 0 && !this.trainWarningSentForDock) {
+        this.trainWarningSentForDock = true;
+        this.triggerCrisisBanner(
+          'KTX-101 FINAL BOARDING (12s)',
+          'KTX-101 末班登车倒计时（12 秒）',
+          'Board immediately or hold platform until next express!',
+          '请立即登车，或坚守站台等待下一班列车！',
+          'warn',
+          4.5,
+          tr.stationX,
+          tr.stationZ
+        );
+        this.onSound?.('crisis_warn', tr.stationX, tr.stationZ);
+      }
       const boardingX = tr.stationX + tr.boardingDoorLocalX;
       const platZ = tr.stationZ - 5.5;
       const playerCar = this.getBoardedPlayerCar();
@@ -2606,6 +2756,20 @@ export class OutbreakSimulation {
       if (dps > 0) {
         g.integrity -= Math.min(68, dps) * dt;
         g.lastDamagedAt = this.simTime;
+        if (!g.breached && g.integrity > 0 && g.integrity / g.maxIntegrity <= 0.25 && !this.warnedLowGateIds.has(g.id)) {
+          this.warnedLowGateIds.add(g.id);
+          this.triggerCrisisBanner(
+            'GATE CRITICAL',
+            '闸门耐久告急',
+            `${g.label} below 25% integrity!`,
+            `${g.label} 耐久低于 25%，急需火力支援！`,
+            'warn',
+            4.2,
+            g.x,
+            g.z
+          );
+          this.onSound?.('crisis_warn', g.x, g.z);
+        }
         if (g.integrity <= 0) {
           g.integrity = 0;
           g.breached = true;
@@ -2629,6 +2793,16 @@ export class OutbreakSimulation {
             this.gridFlickerTimer = 2.6;
             this.blackoutMaxZ = Math.max(this.blackoutMaxZ, wall.z);
             this.triggerAlert(`⚠ ${wall.label.toUpperCase()} BREACHED! FALL BACK!`, 'danger');
+            this.triggerCrisisBanner(
+              `LINE ${wall.layerIndex} BREACHED`,
+              `第 ${wall.layerIndex} 道防线失守`,
+              'Forces falling back — reinforce next perimeter!',
+              '守军正在后撤，立即增援下一道防线！',
+              'danger',
+              5.2,
+              g.x,
+              g.z
+            );
             if (this.onSound) this.onSound('siren', g.x, g.z);
           }
         }
@@ -2741,8 +2915,22 @@ export class OutbreakSimulation {
   }
 
   private transmitRadio(call: RadioCall, officer?: AgentData): void {
+    if (call.kind === 'dispatch' || call.kind === 'contact' || call.kind === 'support') {
+      const start = Math.max(0, this.policeRadio.length - 4);
+      for (let i = this.policeRadio.length - 1; i >= start; i--) {
+        const prev = this.policeRadio[i];
+        if (this.simTime - prev.time > 4.0) break;
+        if (prev.call.kind === call.kind && 'place' in prev.call && prev.call.place === call.place) {
+          prev.call.count = call.kind === 'dispatch'
+            ? prev.call.count + call.count
+            : Math.max(prev.call.count, call.count);
+          prev.time = this.simTime;
+          return;
+        }
+      }
+    }
     this.policeRadio.push({
-      call,
+      call: { ...call },
       time: this.simTime,
       unit: officer ? { id: officer.id, isSwat: officer.isSwat } : null
     });
@@ -3791,6 +3979,14 @@ export class OutbreakSimulation {
           if (dx * dx + dz * dz < 64) nearbyZombies++;
           continue;
         }
+        if (
+          candidate.isPlayerControlled &&
+          this.firstPerson.flashlightOn === false &&
+          !this.firstPerson.sprinting &&
+          Math.hypot(dx, dz) > z.awarenessRadius * 0.65
+        ) {
+          continue;
+        }
         const score = Math.hypot(dx, dz) + (candidate.isIncubating ? 10 : 0) + (candidate.pinnedById !== null ? 14 : 0);
         if (score >= bestScore || !this.canPursueInfectionTarget(z, candidate, onPyramid)) continue;
         if (!hasLineOfSight(z.x, z.z, candidate.x, candidate.z, this.city, this.defenseWalls, this.blastGates, this.interiorDoors)) continue;
@@ -4286,6 +4482,9 @@ export class OutbreakSimulation {
       }
       if (victim.isPlayerControlled) {
         this.fpGraceTimer = 1.05;
+        this.firstPerson.damageFlashTimer = 0.65;
+        this.firstPerson.damageFromAngle = Math.atan2(zombie.x - victim.x, zombie.z - victim.z);
+        this.firstPerson.flashlightFlickerTimer = Math.max(this.firstPerson.flashlightFlickerTimer ?? 0, 0.52);
       }
       zombie.attackMode = 'brute_slam';
       zombie.attackCooldown = 1.45;
@@ -4294,8 +4493,15 @@ export class OutbreakSimulation {
       if (this.onSound) this.onSound('body_thud', victim.x, victim.z);
 
       this.releaseGrapple(victim);
+      const prevHp = victim.health;
       victim.health -= victim.isSwat ? 24 : victim.isPlayerControlled ? 26 : 42;
       victim.biteCount++;
+      if (victim.isPlayerControlled && prevHp > 28 && victim.health > 0 && victim.health <= 28 && (this.firstPerson.lastStandCooldown ?? 0) <= 0) {
+        this.firstPerson.lastStandCooldown = 20;
+        this.firstPerson.adrenalineTimer = Math.max(this.firstPerson.adrenalineTimer, 2.8);
+        this.onSound?.('adrenaline_surge', victim.x, victim.z);
+        this.triggerAlert('⚡ ADRENALINE SURGE — Critical HP! 2.8s sprint burst!', 'warn');
+      }
       const dx = victim.x - zombie.x;
       const dz = victim.z - zombie.z;
       const d = Math.hypot(dx, dz) || 1;
@@ -4366,6 +4572,9 @@ export class OutbreakSimulation {
         return;
       }
       this.fpGraceTimer = 1.05;
+      this.firstPerson.damageFlashTimer = 0.55;
+      this.firstPerson.damageFromAngle = Math.atan2(zombie.x - victim.x, zombie.z - victim.z);
+      this.firstPerson.flashlightFlickerTimer = Math.max(this.firstPerson.flashlightFlickerTimer ?? 0, 0.38);
       this.pushEffect({ type: 'bite', x: victim.x, y: victim.climbY, z: victim.z, age: 0, duration: 0.55 });
       if (this.onSound) this.onSound('bite', victim.x, victim.z);
       const r = this.rng.next();
@@ -4385,8 +4594,15 @@ export class OutbreakSimulation {
         this.firstPerson.stamina = Math.max(0, this.firstPerson.stamina - 14);
         dmg = 20;
       }
+      const prevHp = victim.health;
       victim.health -= dmg;
       victim.biteCount++;
+      if (prevHp > 28 && victim.health > 0 && victim.health <= 28 && (this.firstPerson.lastStandCooldown ?? 0) <= 0) {
+        this.firstPerson.lastStandCooldown = 20;
+        this.firstPerson.adrenalineTimer = Math.max(this.firstPerson.adrenalineTimer, 2.8);
+        this.onSound?.('adrenaline_surge', victim.x, victim.z);
+        this.triggerAlert('⚡ ADRENALINE SURGE — Critical HP! 2.8s sprint burst!', 'warn');
+      }
       if (!victim.isIncubating && victim.health > 0 && (victim.health <= 28 || victim.biteCount >= 5)) {
         victim.isIncubating = true;
         const fpIncub = Math.max(18.0, this.config.incubationSeconds);
@@ -4496,6 +4712,16 @@ export class OutbreakSimulation {
       this.fpWallDeck = null;
       this.fpLadderTravel = null;
       this.firstPerson.wallLadder = null;
+    }
+    if (agent.isPlayerControlled && (this.fpSkybridge || this.fpSkybridgeTravel)) {
+      if (agent.climbY > 0) {
+        agent.fallY = agent.climbY;
+        agent.fallVy = 0;
+        agent.climbY = 0;
+      }
+      this.fpSkybridge = null;
+      this.fpSkybridgeTravel = null;
+      this.firstPerson.skybridgeLadder = null;
     }
     this.wallAssignments.delete(agent.id);
     this.groundPosts.delete(agent.id);
@@ -5315,11 +5541,11 @@ export class OutbreakSimulation {
     if (this.defenseWalls.length === 0) return false;
     const wall = this.defenseWalls.find((candidate) => z.z < candidate.z + candidate.thickness / 2 + 0.65);
     if (!wall) {
-      const station = this.city.stationPos;
-      if (Math.hypot(station.x - z.x, station.z - z.z) < 16) return false;
+      const targetPos = this.city.hasExpressRail ? this.city.stationPos : this.city.precinctPos;
+      if (Math.hypot(targetPos.x - z.x, targetPos.z - z.z) < 16) return false;
       z.zombieState = 'PURSUING';
-      z.destinationLabel = 'Advancing on the KTX terminal';
-      this.pursuePositionSmart(z, station.x, station.z - 7, z.baseSpeed, dt);
+      z.destinationLabel = this.city.hasExpressRail ? 'Advancing on the KTX terminal' : 'Advancing on the South Safe Zone';
+      this.pursuePositionSmart(z, targetPos.x, targetPos.z - 7, z.baseSpeed, dt);
       return true;
     }
     let gate: BlastGateData | null = null;
@@ -5516,8 +5742,8 @@ export class OutbreakSimulation {
       const dy = target.climbY + target.fallY + targetHeightOffset - muzzleY;
       const distance = Math.hypot(dx, dy, dz);
       if (distance < 0.05) return true;
-      const trace = new ShotTrace(sx, muzzleY, sz, Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)), distance);
-      trace.traceCity(this.city, this.defenseWalls, this.blastGates, this.interiorDoors, this.vehicles, wallId);
+      const trace = this.shotTrace.reset(sx, muzzleY, sz, Math.atan2(-dx, -dz), Math.atan2(dy, Math.hypot(dx, dz)), distance);
+      trace.traceCity(this.city, this.defenseWalls, this.blastGates, this.interiorDoors, this.vehicles, wallId, this.sortedGatesByWall);
       this.traceRailAndStationCover(trace, ownSurface?.id, dy < -0.1);
       return trace.distance >= distance - 0.03;
     };
@@ -5632,23 +5858,146 @@ export class OutbreakSimulation {
     this.damageInfected(officer, target, damage);
   }
 
-  private damageInfected(officer: AgentData, target: AgentData, damage: number): void {
+  private damageInfected(
+    officer: AgentData | null,
+    target: AgentData,
+    damage: number,
+    opts?: { headshot?: boolean; impulse?: number; hitY?: number; originX?: number; originZ?: number }
+  ): void {
     target.health -= damage;
+
+    const originX = opts?.originX ?? officer?.x ?? target.x;
+    const originZ = opts?.originZ ?? officer?.z ?? target.z;
+    const dx = target.x - originX;
+    const dz = target.z - originZ;
+    const len = Math.hypot(dx, dz);
+    const nx = len > 0.001 ? dx / len : officer ? Math.sin(officer.rotationY) : 0;
+    const nz = len > 0.001 ? dz / len : officer ? Math.cos(officer.rotationY) : 1;
+    const brute = target.zombieVariant === 'brute';
+
+    target.hitFlashTimer = opts?.headshot ? 0.18 : 0.12;
+    target.hitFlinchTimer = brute ? 0.14 : 0.28;
+    target.hitSlowTimer = brute ? 0.12 : 0.34;
+    target.hitDirX = nx;
+    target.hitDirZ = nz;
+
+    const baseImpulse = opts?.impulse ?? (officer?.isSwat ? 3.0 : 1.8);
+    const scaledImpulse = baseImpulse * (brute ? 0.25 : 1.0);
+    if (!brute && baseImpulse >= 5.2) {
+      target.stunnedTimer = Math.max(target.stunnedTimer, 0.26);
+    }
+    target.vx += nx * scaledImpulse;
+    target.vz += nz * scaledImpulse;
+
+    const knockDist = Math.min(0.65, scaledImpulse * 0.085);
+    if (
+      knockDist > 0.01 &&
+      target.fallY <= 0.05 &&
+      !this.pyramidMembers.has(target.id) &&
+      !this.wallCrossings.has(target.id) &&
+      !this.getTrainCarForAgent(target)
+    ) {
+      const oldX = target.x;
+      const oldZ = target.z;
+      if (target.climbY < 0.2) {
+        target.x += nx * knockDist;
+        target.z += nz * knockDist;
+        resolveWorldCollisions(target, 0.55, this.city, this.defenseWalls, this.blastGates, target.climbY, this.interiorDoors);
+        this.constrainKtxMove(target, oldX, oldZ);
+      } else {
+        target.x += nx * knockDist * 0.6;
+        target.z += nz * knockDist * 0.6;
+        this.constrainKtxMove(target, oldX, oldZ);
+      }
+    }
+
+    const burstY = opts?.hitY ?? (target.climbY + target.fallY + (opts?.headshot ? 1.72 : 1.15));
+    this.pushEffect({
+      type: 'blood_burst',
+      x: target.x,
+      y: burstY,
+      z: target.z,
+      dirX: nx,
+      dirZ: nz,
+      headshot: Boolean(opts?.headshot),
+      age: 0,
+      duration: opts?.headshot ? 0.48 : 0.34
+    });
 
     if (target.health <= 0 && target.isAlive) {
       this.releaseGrapple(target);
       target.isAlive = false;
+      target.deathTimer = 7.5;
+      target.deathAge = 0;
+      target.deathDirX = nx;
+      target.deathDirZ = nz;
+      target.deathHeadshot = Boolean(opts?.headshot);
+      this.pushEffect({
+        type: 'blood_burst',
+        x: target.x,
+        y: target.climbY,
+        z: target.z,
+        dirX: nx,
+        dirZ: nz,
+        headshot: Boolean(opts?.headshot),
+        age: 0,
+        duration: 0.42
+      });
       this.totalDeceased++;
-      officer.kills++;
-      this.recordPlayerKillReward(officer);
       const district = this.city.getDistrictAtPos(target.x, target.z);
-      this.logAgentAction(officer, `Neutralized ${target.name} in ${district} (Kills: ${officer.kills}).`);
-      this.addEventLog(
-        'police',
-        `HOSTILE DOWN: ${officer.name} neutralized ${target.name} in ${district}.`,
-        target.x,
-        target.z
-      );
+      if (officer) {
+        officer.kills++;
+        this.recordPlayerKillReward(officer);
+        if (officer.isPlayerControlled && this.firstPerson.active && this.firstPerson.playerId === officer.id) {
+          const fp = this.firstPerson;
+          fp.kills = (fp.kills ?? 0) + 1;
+          fp.killStreak = (fp.killStreak ?? 0) + 1;
+          fp.killStreakTimer = 5.5;
+          fp.maxKillStreak = Math.max(fp.maxKillStreak ?? 0, fp.killStreak);
+          if (opts?.headshot) fp.headshots = (fp.headshots ?? 0) + 1;
+          if (brute) {
+            fp.bruteKills = (fp.bruteKills ?? 0) + 1;
+            fp.lastCallout = {
+              seq: ++this.killCalloutSeq,
+              kind: 'brute',
+              textEn: '☠ ALPHA BRUTE DOWN!',
+              textZh: '☠ 巨型丧尸击倒！',
+              timestamp: this.simTime
+            };
+            this.onSound?.('brute_down', target.x, target.z);
+          } else if (fp.killStreak >= 3) {
+            fp.lastCallout = {
+              seq: ++this.killCalloutSeq,
+              kind: 'streak',
+              textEn: `⚡ ${fp.killStreak}× KILL STREAK`,
+              textZh: `⚡ ${fp.killStreak} 连杀！`,
+              timestamp: this.simTime
+            };
+          } else if (opts?.headshot) {
+            fp.lastCallout = {
+              seq: ++this.killCalloutSeq,
+              kind: 'headshot',
+              textEn: '🎯 HEADSHOT KILL',
+              textZh: '🎯 爆头击杀',
+              timestamp: this.simTime
+            };
+          }
+        }
+        this.logAgentAction(officer, `Neutralized ${target.name} in ${district} (Kills: ${officer.kills}).`);
+        this.addEventLog(
+          'police',
+          `HOSTILE DOWN: ${officer.name} neutralized ${target.name} in ${district}.`,
+          target.x,
+          target.z
+        );
+      } else {
+        this.addEventLog(
+          'police',
+          `HAZARD BLAST: Neutralized ${target.name} in ${district}.`,
+          target.x,
+          target.z
+        );
+      }
       if (this.config.allowPlayerIntervention) {
         this.commandPoints = Math.min(260, this.commandPoints + 8);
       }
@@ -5988,6 +6337,9 @@ export class OutbreakSimulation {
   }
 
   private steerTowards(a: AgentData, targetX: number, targetZ: number, speed: number, dt: number): void {
+    if (a.role === 'infected' && (a.hitSlowTimer ?? 0) > 0) {
+      speed *= (a.hitFlinchTimer ?? 0) > 0.12 ? 0.15 : 0.42;
+    }
     const dx = targetX - a.x;
     const dz = targetZ - a.z;
     const dist = Math.hypot(dx, dz);
@@ -6081,7 +6433,7 @@ export class OutbreakSimulation {
       if (a.isPlayerControlled && this.expressTrain.playerDeparting) continue;
       if (this.trainSeats.get(a.id)?.seating) continue;
       const oldX = a.x, oldZ = a.z;
-      if ((a.isPlayerControlled && (this.fpLadderTravel || this.fpWallDeck)) ||
+      if ((a.isPlayerControlled && (this.fpLadderTravel || this.fpWallDeck || this.fpSkybridge || this.fpSkybridgeTravel)) ||
           (this.fallbacks.get(a.id)?.ladder && a.climbY > 0) ||
           (a.role === 'police' && a.climbY > 0 && this.wallAssignments.has(a.id)) || this.wallCrossings.has(a.id)) continue;
 
@@ -6771,7 +7123,10 @@ export class OutbreakSimulation {
       role,
       weapon: weaponId ? {
         id: weaponId, ammo: PLAYER_WEAPONS[weaponId].capacity, reserve: PLAYER_WEAPONS[weaponId].reserve,
-        cooldown: 0, reloadTimer: 0, shots: 0, lastHit: false, hitTimer: 0
+        cooldown: 0, reloadTimer: 0, reloadDuration: 0,
+        activeReloadAttempted: false, activeReloadFeedback: 'none', activeReloadFeedbackTimer: 0,
+        steadyTimer: 0, dryFireCooldown: 0,
+        shots: 0, lastHit: false, hitTimer: 0, lastHeadshot: false, spread: 0
       } : null,
       mission: null,
       killRewardProgress: resumeKillReward ? this.firstPerson.killRewardProgress : 0,
@@ -6784,6 +7139,7 @@ export class OutbreakSimulation {
       nearestZombieDist: 999,
       nearbyGateId: null,
       wallLadder: null,
+      skybridgeLadder: null,
       nearbyDoorId: null,
       insideBuildingId: null,
       pursuers: 0,
@@ -6805,7 +7161,22 @@ export class OutbreakSimulation {
       waypointLabel: wp.label,
       spawnLabel,
       outcome: 'PLAYING',
-      survivalTime: 0
+      survivalTime: 0,
+      damageFlashTimer: 0,
+      damageFromAngle: 0,
+      aiming: false,
+      flashlightOn: true,
+      flashlightFlickerTimer: 0,
+      lastStandCooldown: 0,
+      kills: 0,
+      headshots: 0,
+      bruteKills: 0,
+      shotsFired: 0,
+      shotsHit: 0,
+      killStreak: 0,
+      killStreakTimer: 0,
+      maxKillStreak: 0,
+      lastCallout: null
     };
 
     return player;
@@ -6816,6 +7187,7 @@ export class OutbreakSimulation {
       const player = this.getAgentById(this.firstPerson.playerId);
       if (player) {
         this.leavePlayerWall(player);
+        this.leavePlayerSkybridge(player);
         player.isPlayerControlled = false;
         if (player.role === 'police') {
           player.targetAgentId = null;
@@ -6839,7 +7211,7 @@ export class OutbreakSimulation {
     decoyPressed: boolean,
     yaw: number,
     pitch: number,
-    actions?: { fire: boolean; reload: boolean; requestMission: boolean }
+    actions?: { fire: boolean; reload: boolean; requestMission: boolean; aim?: boolean; toggleFlashlight?: boolean }
   ): AgentData | null {
     if (!this.firstPerson.active || this.firstPerson.playerId === null) return null;
     const player = this.getAgentById(this.firstPerson.playerId);
@@ -6849,10 +7221,39 @@ export class OutbreakSimulation {
     this.firstPerson.pitch = pitch;
 
     if (this.firstPerson.outcome !== 'PLAYING') return player;
+    if ((this.firstPerson.damageFlashTimer ?? 0) > 0) {
+      this.firstPerson.damageFlashTimer = Math.max(0, this.firstPerson.damageFlashTimer! - dt);
+    }
+    if ((this.firstPerson.flashlightFlickerTimer ?? 0) > 0) {
+      this.firstPerson.flashlightFlickerTimer = Math.max(0, this.firstPerson.flashlightFlickerTimer! - dt);
+    }
+    if ((this.firstPerson.lastStandCooldown ?? 0) > 0) {
+      this.firstPerson.lastStandCooldown = Math.max(0, this.firstPerson.lastStandCooldown! - dt);
+    }
+    if ((this.firstPerson.killStreakTimer ?? 0) > 0) {
+      this.firstPerson.killStreakTimer = Math.max(0, this.firstPerson.killStreakTimer! - dt);
+      if (this.firstPerson.killStreakTimer === 0) {
+        this.firstPerson.killStreak = 0;
+      }
+    }
     if (!player.isAlive || player.role === 'infected' || player.civState === 'CONVULSING') {
       this.firstPerson.outcome = 'INFECTED';
+      this.firstPerson.aiming = false;
       return player;
     }
+
+    if (actions?.toggleFlashlight) {
+      this.firstPerson.flashlightOn = !(this.firstPerson.flashlightOn ?? true);
+      this.onSound?.('flashlight_click', player.x, player.z);
+    }
+    this.firstPerson.aiming = Boolean(
+      actions?.aim &&
+      this.firstPerson.weapon &&
+      !this.fpVaultActive &&
+      this.firstPerson.wallLadder !== 'climbing' &&
+      this.firstPerson.skybridgeLadder !== 'climbing' &&
+      !(wantSprint && (moveForward !== 0 || moveRight !== 0))
+    );
 
     if (this.ridingKtx(player)) {
       this.updatePlayerDuringTrainRide(player, dt, moveForward, moveRight, interactPressed, actions);
@@ -6888,6 +7289,9 @@ export class OutbreakSimulation {
     if (!this.fpVaultActive && this.updatePlayerWall(player, dt, moveForward, moveRight, interactPressed, actions)) {
       return player;
     }
+    if (!this.fpVaultActive && this.updatePlayerSkybridge(player, dt, moveForward, moveRight, interactPressed, actions)) {
+      return player;
+    }
 
     if (this.fpVaultActive) {
       this.fpVaultTimer += dt;
@@ -6908,7 +7312,7 @@ export class OutbreakSimulation {
     } else {
       const isMoving = moveForward !== 0 || moveRight !== 0;
       const unlimitedStamina = this.firstPerson.adrenalineTimer > 0;
-      if (wantSprint && isMoving && (unlimitedStamina || this.firstPerson.stamina > 2)) {
+      if (wantSprint && isMoving && !this.firstPerson.aiming && (unlimitedStamina || this.firstPerson.stamina > 2)) {
         this.firstPerson.sprinting = true;
         if (!unlimitedStamina) {
           this.firstPerson.stamina = Math.max(0, this.firstPerson.stamina - dt * 13);
@@ -6920,7 +7324,8 @@ export class OutbreakSimulation {
       }
 
       const speedScale = this.firstPerson.role === 'swat' ? 0.82 : this.firstPerson.role === 'police' ? 0.92 : 1;
-      const baseSpeed = (this.firstPerson.sprinting ? 8.5 : 5.2) * speedScale;
+      const aimSpeedMult = this.firstPerson.aiming ? 0.72 : 1.0;
+      const baseSpeed = (this.firstPerson.sprinting ? 8.5 : 5.2) * speedScale * aimSpeedMult;
       const rushMult = unlimitedStamina ? 1.18 : 1.0;
       const speed = baseSpeed * rushMult * (player.stunnedTimer > 0 ? 0.65 : 1.0);
       if (isMoving) {
@@ -7286,7 +7691,7 @@ export class OutbreakSimulation {
     }
 
     if (this.firstPerson.weapon) {
-      this.updatePlayerWeapon(player, dt, actions?.fire ?? false, actions?.reload ?? false);
+      this.updatePlayerWeapon(player, dt, actions?.fire ?? false, actions?.reload ?? false, Boolean(this.firstPerson.aiming));
       this.updatePlayerMission(player, dt, actions?.requestMission ?? false);
     } else {
       const wp = this.computeEscapeWaypoint(player.x, player.z, player.climbY);
@@ -7354,9 +7759,123 @@ export class OutbreakSimulation {
     this.firstPerson.wallLadder = null;
   }
 
+  private nearestSkybridgeLadder(player: AgentData, range: number): { bridge: SkybridgeData; x: number } | null {
+    let nearest = range;
+    let result: { bridge: SkybridgeData; x: number } | null = null;
+    const active = this.fpSkybridge;
+    for (const sb of this.city.skybridges) {
+      if (!sb.ladderXs || (active && active !== sb)) continue;
+      const mountZ = sb.z + sb.width * 0.5 + (active ? -0.55 : 0.55);
+      for (const lx of sb.ladderXs) {
+        const distance = Math.hypot(player.x - lx, player.z - mountZ);
+        if (distance < nearest) {
+          nearest = distance;
+          result = { bridge: sb, x: lx };
+        }
+      }
+    }
+    return result;
+  }
+
+  private leavePlayerSkybridge(player: AgentData): void {
+    const travel = this.fpSkybridgeTravel ?? (this.fpSkybridge ? this.nearestSkybridgeLadder(player, Infinity) : null);
+    if (travel) {
+      player.x = travel.x;
+      player.z = travel.bridge.z + travel.bridge.width * 0.5 + 0.9;
+      player.climbY = 0;
+      resolveWorldCollisions(player, 0.68, this.city, this.defenseWalls, this.blastGates, 0, this.interiorDoors);
+    }
+    this.fpSkybridge = null;
+    this.fpSkybridgeTravel = null;
+    this.firstPerson.skybridgeLadder = null;
+  }
+
+  private updateElevatedPlayerCombat(
+    player: AgentData, dt: number, interact: boolean, climbing: boolean,
+    actions?: { fire: boolean; reload: boolean; requestMission: boolean; aim?: boolean; toggleFlashlight?: boolean }
+  ): void {
+    const fp = this.firstPerson;
+    fp.nearestZombieDist = 999;
+    fp.pursuers = 0;
+    for (const infected of this.spatial.queryRadius(player.x, player.z, 32, this.neighborBuffer)) {
+      if (!infected.isAlive || infected.role !== 'infected') continue;
+      const distance = Math.hypot(player.x - infected.x, player.z - infected.z, player.climbY - infected.climbY - infected.fallY);
+      fp.nearestZombieDist = Math.min(fp.nearestZombieDist, distance);
+      if (infected.targetAgentId === player.id) fp.pursuers++;
+    }
+    if (fp.weapon) {
+      if (!climbing) this.updateAmmoInteraction(player, interact);
+      this.updatePlayerWeapon(player, dt, !climbing && (actions?.fire ?? false), actions?.reload ?? false, Boolean(fp.aiming));
+      if (!climbing) this.updatePlayerMission(player, dt, actions?.requestMission ?? false);
+    }
+  }
+
+  private updatePlayerSkybridge(
+    player: AgentData, dt: number, forward: number, right: number, interact: boolean,
+    actions?: { fire: boolean; reload: boolean; requestMission: boolean; aim?: boolean; toggleFlashlight?: boolean }
+  ): boolean {
+    const fp = this.firstPerson;
+    const deck = this.fpSkybridge;
+    if (!this.fpSkybridgeTravel) {
+      const ladder = this.nearestSkybridgeLadder(player, deck ? 1.55 : 2.15);
+      fp.skybridgeLadder = ladder ? (deck ? 'down' : 'up') : null;
+      if (ladder && interact) {
+        this.releaseGrapple(player);
+        this.fpSkybridgeTravel = { ...ladder, progress: 0, ascending: !deck, startX: player.x, startZ: player.z };
+      }
+    }
+    const travel = this.fpSkybridgeTravel;
+    if (!travel && !deck) return false;
+    this.clearGroundInteractionsForWall();
+    fp.wallLadder = null;
+    fp.sprinting = false;
+    player.vx = 0;
+    player.vz = 0;
+
+    if (travel) {
+      const { bridge, x, ascending, startX, startZ } = travel;
+      const groundZ = bridge.z + bridge.width * 0.5 + 0.55;
+      const topZ = bridge.z + bridge.width * 0.5 - 0.55;
+      const deckY = bridge.deckY + 0.2;
+      travel.progress = Math.min(1, travel.progress + dt / (deckY / 3.4 + 0.35));
+      const mount = Math.min(1, travel.progress / 0.14);
+      const climb = Math.max(0, Math.min(1, (travel.progress - 0.14) / 0.72));
+      const exit = Math.max(0, (travel.progress - 0.86) / 0.14);
+      player.x = startX + (x - startX) * mount;
+      player.z = startZ + (groundZ - startZ) * mount + ((ascending ? topZ : groundZ + 0.45) - groundZ) * exit;
+      player.climbY = deckY * (ascending ? climb : 1 - climb);
+      fp.skybridgeLadder = 'climbing';
+      if (travel.progress === 1) {
+        this.fpSkybridge = ascending ? bridge : null;
+        this.fpSkybridgeTravel = null;
+        fp.skybridgeLadder = ascending ? 'down' : 'up';
+        if (!ascending) {
+          resolveWorldCollisions(player, 0.68, this.city, this.defenseWalls, this.blastGates, 0, this.interiorDoors);
+        }
+      }
+    } else if (deck) {
+      const speed = player.stunnedTimer > 0 ? 2.2 : 4.6;
+      const length = Math.hypot(forward, right) || 1;
+      const dx = (-Math.sin(fp.yaw) * forward + Math.cos(fp.yaw) * right) / length;
+      const dz = (-Math.cos(fp.yaw) * forward - Math.sin(fp.yaw) * right) / length;
+      player.x = Math.max(deck.x - deck.length * 0.5 + 0.7, Math.min(deck.x + deck.length * 0.5 - 0.7, player.x + dx * speed * dt));
+      player.z = Math.max(deck.z - deck.width * 0.5 + 0.5, Math.min(deck.z + deck.width * 0.5 - 0.5, player.z + dz * speed * dt));
+      player.climbY = deck.deckY + 0.2;
+      if (forward || right) {
+        player.vx = dx * speed;
+        player.vz = dz * speed;
+        player.rotationY = Math.atan2(dx, dz);
+        player.animPhase += speed * dt * 3;
+      }
+    }
+
+    this.updateElevatedPlayerCombat(player, dt, interact, !!travel, actions);
+    return true;
+  }
+
   private updatePlayerWall(
     player: AgentData, dt: number, forward: number, right: number, interact: boolean,
-    actions?: { fire: boolean; reload: boolean; requestMission: boolean }
+    actions?: { fire: boolean; reload: boolean; requestMission: boolean; aim?: boolean; toggleFlashlight?: boolean }
   ): boolean {
     const fp = this.firstPerson;
     const deck = this.fpWallDeck;
@@ -7372,6 +7891,7 @@ export class OutbreakSimulation {
     const travel = this.fpLadderTravel;
     if (!travel && !deck) return false;
     this.clearGroundInteractionsForWall();
+    fp.skybridgeLadder = null;
     fp.sprinting = false;
     player.vx = 0;
     player.vz = 0;
@@ -7412,19 +7932,7 @@ export class OutbreakSimulation {
       }
     }
 
-    fp.nearestZombieDist = 999;
-    fp.pursuers = 0;
-    for (const infected of this.spatial.queryRadius(player.x, player.z, 32, this.neighborBuffer)) {
-      if (!infected.isAlive || infected.role !== 'infected') continue;
-      const distance = Math.hypot(player.x - infected.x, player.z - infected.z, player.climbY - infected.climbY - infected.fallY);
-      fp.nearestZombieDist = Math.min(fp.nearestZombieDist, distance);
-      if (infected.targetAgentId === player.id) fp.pursuers++;
-    }
-    if (fp.weapon) {
-      if (!travel) this.updateAmmoInteraction(player, interact);
-      this.updatePlayerWeapon(player, dt, !travel && (actions?.fire ?? false), actions?.reload ?? false);
-      if (!travel) this.updatePlayerMission(player, dt, actions?.requestMission ?? false);
-    }
+    this.updateElevatedPlayerCombat(player, dt, interact, !!travel, actions);
     return true;
   }
 
@@ -7451,6 +7959,9 @@ export class OutbreakSimulation {
       if (this.fpWallDeck) {
         if (cache.x < this.fpWallDeck.minX || cache.x > this.fpWallDeck.maxX ||
             Math.abs(cache.z - this.fpWallDeck.wall.z) > 1) continue;
+      } else if (this.fpSkybridge) {
+        if (Math.abs(cache.x - this.fpSkybridge.x) > this.fpSkybridge.length * 0.5 ||
+            Math.abs(cache.z - this.fpSkybridge.z) > this.fpSkybridge.width * 0.5) continue;
       } else if (!this.isSameMissionSector(player.z, cache.z)) continue;
       const distance = Math.hypot(player.x - cache.x, player.z - cache.z);
       if (distance < nearest) {
@@ -7472,6 +7983,10 @@ export class OutbreakSimulation {
     weapon.ammo = loadout.capacity;
     weapon.reserve = loadout.reserve;
     weapon.reloadTimer = 0;
+    weapon.reloadDuration = 0;
+    weapon.activeReloadAttempted = false;
+    weapon.activeReloadFeedback = 'none';
+    weapon.activeReloadFeedbackTimer = 0;
     cache.readyAt = this.simTime + AMMO_CACHE_COOLDOWN;
     this.onSound?.('player_reload', player.x, player.z);
     this.triggerAlert('AMMUNITION RESTOCKED', 'info');
@@ -7480,7 +7995,7 @@ export class OutbreakSimulation {
 
   private updatePlayerDuringTrainRide(
     player: AgentData, dt: number, forward: number, right: number, interact: boolean,
-    actions?: { fire: boolean; reload: boolean }
+    actions?: { fire: boolean; reload: boolean; aim?: boolean }
   ): void {
     const fp = this.firstPerson;
     const tr = this.expressTrain;
@@ -7496,6 +8011,7 @@ export class OutbreakSimulation {
     fp.nearbyCarId = null;
     fp.nearbyVaultLabel = null;
     fp.wallLadder = null;
+    fp.skybridgeLadder = null;
     fp.insideBuildingId = null;
     player.vx = player.vz = 0;
     const inputLength = Math.hypot(forward, right);
@@ -7522,27 +8038,72 @@ export class OutbreakSimulation {
       this.setTrainBulkhead(door, !door.isLocked);
       if (door.isLocked) this.resolveTrainCollisions(player, 0.62);
     }
-    if (fp.weapon) this.updatePlayerWeapon(player, dt, actions?.fire ?? false, actions?.reload ?? false);
+    if (fp.weapon) this.updatePlayerWeapon(player, dt, actions?.fire ?? false, actions?.reload ?? false, Boolean(fp.aiming));
   }
 
-  private updatePlayerWeapon(player: AgentData, dt: number, fire: boolean, reload: boolean): void {
+  private updatePlayerWeapon(player: AgentData, dt: number, fire: boolean, reload: boolean, aiming = false): void {
     const state = this.firstPerson.weapon!;
     const weapon = PLAYER_WEAPONS[state.id];
     state.cooldown = Math.max(0, state.cooldown - dt);
     state.hitTimer = Math.max(0, state.hitTimer - dt);
+    state.spread = Math.max(0, (state.spread ?? 0) - dt * (state.id === 'carbine' ? 0.065 : 0.045));
+    state.steadyTimer = Math.max(0, (state.steadyTimer ?? 0) - dt);
+    state.dryFireCooldown = Math.max(0, (state.dryFireCooldown ?? 0) - dt);
+    if ((state.activeReloadFeedbackTimer ?? 0) > 0) {
+      state.activeReloadFeedbackTimer = Math.max(0, state.activeReloadFeedbackTimer! - dt);
+      if (state.activeReloadFeedbackTimer === 0) {
+        state.activeReloadFeedback = 'none';
+      }
+    }
+
     if (state.reloadTimer > 0) {
+      const totalDur = state.reloadDuration || weapon.reload;
+      const elapsed = totalDur - state.reloadTimer;
+      const progress = elapsed / totalDur;
+      if (reload && !state.activeReloadAttempted && elapsed >= 0.18) {
+        state.activeReloadAttempted = true;
+        if (progress >= 0.55 && progress <= 0.74) {
+          const rounds = Math.min(state.reserve, weapon.capacity - state.ammo);
+          state.ammo += rounds;
+          state.reserve -= rounds;
+          state.reloadTimer = 0;
+          state.reloadDuration = 0;
+          state.steadyTimer = 1.6;
+          state.activeReloadFeedback = 'perfect';
+          state.activeReloadFeedbackTimer = 0.75;
+          this.claimKillRewardAmmo();
+          this.onSound?.('active_reload_ok', player.x, player.z);
+          return;
+        }
+        state.reloadTimer += 0.35;
+        state.reloadDuration = totalDur + 0.35;
+        state.activeReloadFeedback = 'jammed';
+        state.activeReloadFeedbackTimer = 0.75;
+        this.onSound?.('active_reload_jam', player.x, player.z);
+      }
+
       state.reloadTimer = Math.max(0, state.reloadTimer - dt);
       if (state.reloadTimer === 0) {
         const rounds = Math.min(state.reserve, weapon.capacity - state.ammo);
         state.ammo += rounds;
         state.reserve -= rounds;
+        state.reloadDuration = 0;
+        state.activeReloadAttempted = false;
         this.claimKillRewardAmmo();
       }
       return;
     }
     if ((reload || (fire && state.ammo === 0)) && state.ammo < weapon.capacity && state.reserve > 0) {
       state.reloadTimer = weapon.reload;
+      state.reloadDuration = weapon.reload;
+      state.activeReloadAttempted = false;
+      state.activeReloadFeedback = 'none';
       this.onSound?.('player_reload', player.x, player.z);
+      return;
+    }
+    if (fire && state.ammo === 0 && state.reserve === 0 && !this.fpVaultActive && player.stunnedTimer <= 0 && (state.dryFireCooldown ?? 0) <= 0) {
+      state.dryFireCooldown = 0.32;
+      this.onSound?.('player_dry_fire', player.x, player.z);
       return;
     }
     if (!fire || state.cooldown > 0 || state.ammo === 0 || this.fpVaultActive || player.stunnedTimer > 0) return;
@@ -7551,29 +8112,78 @@ export class OutbreakSimulation {
     const eyeY = 1.68 + player.climbY + fp.vaultY;
     const nearby = this.spatial.queryRadius(player.x, player.z, weapon.range, this.neighborBuffer);
     const spread = state.id === 'shotgun' ? SHOTGUN_PATTERN : CENTER_SHOT;
+    const aimMult = aiming ? 0.40 : 1.0;
+    const steadyMult = (state.steadyTimer ?? 0) > 0 ? 0.55 : 1.0;
+    const dynSpread = state.id === 'shotgun' ? 0 : (state.spread ?? 0) * aimMult * steadyMult;
+    const pelletScale = state.id === 'shotgun' && aiming ? 0.72 : 1.0;
     const damageByTarget = new Map<AgentData, number>();
+    const headshotByTarget = new Map<AgentData, boolean>();
+    const hitYByTarget = new Map<AgentData, number>();
+    const impulseByTarget = new Map<AgentData, number>();
+    const damageByHazard = new Map<ExplosiveHazardData, number>();
+
     for (const [yawOffset, pitchOffset] of spread) {
-      const trace = new ShotTrace(player.x, eyeY, player.z, fp.yaw + yawOffset, fp.pitch + pitchOffset, weapon.range);
-      trace.traceCity(this.city, this.defenseWalls, this.blastGates, this.interiorDoors, this.vehicles);
+      const jitterYaw = dynSpread > 0 ? this.rng.range(-dynSpread, dynSpread) * 0.45 : 0;
+      const jitterPitch = dynSpread > 0 ? this.rng.range(-dynSpread, dynSpread) * 0.35 : 0;
+      const trace = this.shotTrace.reset(
+        player.x, eyeY, player.z,
+        fp.yaw + yawOffset * pelletScale + jitterYaw,
+        fp.pitch + pitchOffset * pelletScale + jitterPitch,
+        weapon.range
+      );
+      trace.traceCity(
+        this.city, this.defenseWalls, this.blastGates, this.interiorDoors, this.vehicles,
+        undefined, this.sortedGatesByWall
+      );
       this.traceRailAndStationCover(trace);
+      let hitHazard: ExplosiveHazardData | null = null;
+      for (let hi = 0; hi < this.explosiveHazards.length; hi++) {
+        const h = this.explosiveHazards[hi];
+        if (Math.hypot(h.x - player.x, h.z - player.z) > trace.distance + (h.boundR ?? 4)) continue;
+        if (trace.testRotatedBox(h.x, h.z, h.width, h.depth, h.height, h.rotationY) && !h.detonated) {
+          hitHazard = h;
+        }
+      }
       for (const infected of nearby) {
         if (!infected.isAlive || infected.role !== 'infected') continue;
         const distance = Math.hypot(infected.x - player.x, infected.z - player.z);
         if (distance > trace.distance + 1.15) continue;
         const brute = infected.zombieVariant === 'brute';
         const radius = brute ? 0.64 : 0.42;
+        const headRadius = brute ? 0.36 : 0.28;
         const baseY = infected.climbY + infected.fallY;
         const downed = infected.stunnedTimer > 0 && infected.fallY < 0.25;
+        const headMinY = baseY + (brute ? 2.15 : downed ? 1.15 : 1.56);
+        const headMaxY = baseY + (brute ? 2.95 : downed ? 1.72 : 2.18);
         trace.testBox(
-          infected.x - radius, infected.x + radius, baseY + 0.15,
-          baseY + (brute ? 2.9 : downed ? 1.7 : 2.15), infected.z - radius, infected.z + radius,
-          'infected', infected
+          infected.x - radius, infected.x + radius, baseY + 0.14,
+          headMinY, infected.z - radius, infected.z + radius,
+          'infected', infected, trace.ray, false
+        );
+        trace.testBox(
+          infected.x - headRadius, infected.x + headRadius, headMinY,
+          headMaxY, infected.z - headRadius, infected.z + headRadius,
+          'infected', infected, trace.ray, true
         );
       }
       if (trace.target) {
         const falloff = state.id === 'shotgun' ? Math.max(0.35, 1 - trace.distance / 25) : 1;
-        const damage = weapon.damage / spread.length * falloff;
+        const mult = trace.hitHead ? (trace.target.zombieVariant === 'brute' ? 1.55 : 1.9) : 1;
+        const damage = (weapon.damage / spread.length) * falloff * mult;
         damageByTarget.set(trace.target, (damageByTarget.get(trace.target) ?? 0) + damage);
+        if (trace.hitHead) headshotByTarget.set(trace.target, true);
+        if (!hitYByTarget.has(trace.target)) {
+          hitYByTarget.set(trace.target, eyeY + trace.ray.direction.y * trace.distance);
+        }
+        const baseImp = state.id === 'shotgun' ? 6.2 * falloff : state.id === 'pistol' ? 2.6 : 2.2;
+        impulseByTarget.set(
+          trace.target,
+          Math.max(impulseByTarget.get(trace.target) ?? 0, baseImp + (trace.hitHead ? 1.2 : 0))
+        );
+      } else if (hitHazard) {
+        const falloff = state.id === 'shotgun' ? Math.max(0.45, 1 - trace.distance / 28) : 1;
+        const dmg = (weapon.damage / spread.length) * falloff;
+        damageByHazard.set(hitHazard, (damageByHazard.get(hitHazard) ?? 0) + dmg);
       }
       const direction = trace.ray.direction;
       this.effects.push({
@@ -7588,11 +8198,49 @@ export class OutbreakSimulation {
     state.ammo--;
     state.cooldown = weapon.interval;
     state.shots++;
-    state.lastHit = damageByTarget.size > 0;
-    if (state.lastHit) state.hitTimer = 0.18;
+    fp.shotsFired = (fp.shotsFired ?? 0) + 1;
+    const anyHit = damageByTarget.size > 0 || damageByHazard.size > 0;
+    if (anyHit) {
+      fp.shotsHit = (fp.shotsHit ?? 0) + 1;
+    }
+    if (state.id === 'pistol') {
+      state.spread = Math.min(0.022, (state.spread ?? 0) + 0.009 * aimMult * steadyMult);
+    } else if (state.id === 'carbine') {
+      state.spread = Math.min(0.032, (state.spread ?? 0) + 0.007 * aimMult * steadyMult);
+    }
+    state.lastHit = anyHit;
+    state.lastHeadshot = headshotByTarget.size > 0;
+    if (state.lastHit) state.hitTimer = state.lastHeadshot ? 0.24 : 0.18;
     this.onSound?.(`player_${state.id}`, player.x, player.z);
+    if (state.lastHeadshot) {
+      this.onSound?.('headshot', player.x, player.z);
+    } else if (damageByTarget.size > 0) {
+      this.onSound?.('hit_flesh', player.x, player.z);
+    } else if (damageByHazard.size > 0) {
+      this.onSound?.('door_pound', player.x, player.z);
+    }
     for (const [target, damage] of damageByTarget) {
-      this.damageInfected(player, target, damage);
+      this.damageInfected(player, target, damage, {
+        headshot: headshotByTarget.get(target) ?? false,
+        impulse: impulseByTarget.get(target),
+        hitY: hitYByTarget.get(target)
+      });
+    }
+    for (const [hazard, dmg] of damageByHazard) {
+      this.damageExplosiveHazard(hazard, dmg, player);
+    }
+
+    const aggroRadius = state.id === 'shotgun' ? 32 : 24;
+    const nearbyNoise = this.spatial.queryRadius(player.x, player.z, aggroRadius, this.neighborBuffer);
+    for (let i = 0; i < nearbyNoise.length; i++) {
+      const z = nearbyNoise[i];
+      if (!z.isAlive || z.role !== 'infected' || Math.abs(z.climbY - player.climbY) >= 4.5) continue;
+      const cur = this.getAgentById(z.targetAgentId);
+      const curDist = cur ? Math.hypot(cur.x - z.x, cur.z - z.z) : Infinity;
+      if (z.zombieState === 'WANDERING' || curDist > 10) {
+        z.targetAgentId = player.id;
+        z.zombieState = 'PURSUING';
+      }
     }
   }
 
@@ -7604,6 +8252,13 @@ export class OutbreakSimulation {
     const rounds = PLAYER_WEAPONS[fp.weapon.id].capacity * PLAYER_KILL_REWARD.magazines;
     fp.killRewardAmmo += rounds;
     this.claimKillRewardAmmo();
+    fp.lastCallout = {
+      seq: ++this.killCalloutSeq,
+      kind: 'reward',
+      textEn: `+${rounds} ROUNDS EARNED`,
+      textZh: `弹药奖励 +${rounds} 发`,
+      timestamp: this.simTime
+    };
     this.triggerAlert(`KILL REWARD: ${rounds} rounds earned`, 'info');
     this.onSound?.('radio', player.x, player.z);
   }
@@ -7777,6 +8432,111 @@ export class OutbreakSimulation {
     return true;
   }
 
+  private collapsePyramidsAt(x: number, z: number, radius: number): void {
+    for (let wi = 0; wi < this.defenseWalls.length; wi++) {
+      const w = this.defenseWalls[wi];
+      if (Math.abs(z - w.z) <= radius) {
+        for (let b = 0; b < w.pyramidHeights.length; b++) {
+          const bx = w.minX + (b + 0.5) * w.bucketSize;
+          if (Math.hypot(bx - x, w.z - z) <= radius) {
+            w.pyramidHeights[b] = 0;
+          }
+        }
+      }
+    }
+  }
+
+  public damageExplosiveHazard(hazard: ExplosiveHazardData, damage: number, attacker?: AgentData): boolean {
+    if (hazard.detonated || damage <= 0) return false;
+    hazard.hp = Math.max(0, hazard.hp - damage);
+    if (hazard.hp <= 0) {
+      this.detonateExplosiveHazard(hazard, attacker);
+      return true;
+    }
+    return false;
+  }
+
+  private detonateExplosiveHazard(hazard: ExplosiveHazardData, attacker?: AgentData): void {
+    if (hazard.detonated) return;
+    hazard.detonated = true;
+    hazard.hp = 0;
+    hazard.burningTimer = hazard.kind === 'fuel_truck' ? 28 : 16;
+
+    this.pushEffect({
+      type: 'explosion',
+      x: hazard.x,
+      z: hazard.z,
+      age: 0,
+      duration: hazard.kind === 'fuel_truck' ? 0.95 : 0.72
+    });
+    this.onSound?.('explosion', hazard.x, hazard.z);
+
+    // Copy spatial candidates before damage/recursion since recursive chain detonations reuse neighborBuffer
+    const candidates = [...this.spatial.queryRadius(hazard.x, hazard.z, hazard.blastRadius, this.neighborBuffer)];
+    let killed = 0;
+    for (let i = 0; i < candidates.length; i++) {
+      const target = candidates[i];
+      if (!target.isAlive) continue;
+      const dist = Math.hypot(target.x - hazard.x, target.z - hazard.z);
+      const falloff = Math.max(0.35, 1 - 0.55 * (dist / hazard.blastRadius));
+
+      if (target.role === 'infected') {
+        const wasAlive = target.isAlive;
+        this.damageInfected(attacker ?? null, target, hazard.damage * falloff, {
+          headshot: false,
+          impulse: 10.5 * falloff,
+          originX: hazard.x,
+          originZ: hazard.z
+        });
+        if (wasAlive && !target.isAlive) killed++;
+      } else if (target.isPlayerControlled && this.firstPerson.active) {
+        const fp = this.firstPerson;
+        fp.flashlightFlickerTimer = Math.max(fp.flashlightFlickerTimer ?? 0, 0.85);
+        fp.damageFlashTimer = Math.max(fp.damageFlashTimer ?? 0, 0.35);
+        fp.damageFromAngle = Math.atan2(hazard.x - target.x, hazard.z - target.z);
+        if (dist < 4.5 && target.climbY < 2.2) {
+          target.health = Math.max(12, target.health - 18 * falloff);
+        }
+      } else if (dist < 4.5 && target.role === 'civilian' && target.climbY < 2.2) {
+        target.health = Math.max(15, target.health - 28 * falloff);
+      }
+    }
+
+    this.collapsePyramidsAt(hazard.x, hazard.z, hazard.blastRadius + 2.0);
+
+    // Chain-react any nearby intact fuel tankers or barrel clusters
+    const chainRadius = hazard.blastRadius + 2.5;
+    for (let i = 0; i < this.explosiveHazards.length; i++) {
+      const other = this.explosiveHazards[i];
+      if (other.id === hazard.id || other.detonated) continue;
+      if (Math.hypot(other.x - hazard.x, other.z - hazard.z) <= chainRadius) {
+        this.damageExplosiveHazard(other, other.maxHp + 80, attacker);
+      }
+    }
+
+    const district = this.city.getDistrictAtPos(hazard.x, hazard.z);
+    if (attacker?.isPlayerControlled && this.firstPerson.active && this.firstPerson.playerId === attacker.id) {
+      this.firstPerson.lastCallout = {
+        seq: ++this.killCalloutSeq,
+        kind: 'hazard',
+        textEn: hazard.kind === 'fuel_truck'
+          ? `FUEL TANKER BLAST · ${killed} KILLED`
+          : `FUEL DRUMS BLAST · ${killed} KILLED`,
+        textZh: hazard.kind === 'fuel_truck'
+          ? `油罐车引爆 · 消灭 ${killed} 只`
+          : `油桶引爆 · 消灭 ${killed} 只`,
+        timestamp: this.simTime
+      };
+    }
+    this.triggerAlert(`${hazard.label.toUpperCase()} DETONATED (${killed} killed)`, 'warn');
+    this.addEventLog(
+      'police',
+      `HAZARD DETONATION: ${hazard.label} exploded in ${district}, eliminating ${killed} infected!`,
+      hazard.x,
+      hazard.z
+    );
+  }
+
   public deployFragBomb(x: number, z: number): boolean {
     if (!this.config.allowPlayerIntervention || this.commandPoints < 20) return false;
     this.commandPoints -= 20;
@@ -7804,16 +8564,12 @@ export class OutbreakSimulation {
       }
     }
 
-    // Collapse any 3D Zombie Pyramid buckets within 14 units
-    for (let wi = 0; wi < this.defenseWalls.length; wi++) {
-      const w = this.defenseWalls[wi];
-      if (Math.abs(z - w.z) <= 14.0) {
-        for (let b = 0; b < w.pyramidHeights.length; b++) {
-          const bx = w.minX + (b + 0.5) * w.bucketSize;
-          if (Math.hypot(bx - x, w.z - z) <= 14.0) {
-            w.pyramidHeights[b] = 0;
-          }
-        }
+    // Collapse any 3D Zombie Pyramid buckets within 14 units & detonate nearby fuel hazards
+    this.collapsePyramidsAt(x, z, 14.0);
+    for (let i = 0; i < this.explosiveHazards.length; i++) {
+      const h = this.explosiveHazards[i];
+      if (!h.detonated && Math.hypot(h.x - x, h.z - z) <= 12.5) {
+        this.damageExplosiveHazard(h, 250);
       }
     }
 

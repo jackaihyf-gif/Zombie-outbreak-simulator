@@ -1,5 +1,6 @@
 node_modules/
 dist/
+.test-tmp/
 _legacy_kingdom_siege/
 .DS_Store
 *.log

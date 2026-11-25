@@ -1,5 +1,7 @@
 import type { KtxGateId } from './ktxTerminal';
 import type { TrainLayout } from './trainLayout';
+export type GraphicsQuality = 'high' | 'medium' | 'low';
+
 export type MapId =
   | 'citadel_express'
   | 'grand_metropolis'
@@ -141,6 +143,41 @@ export interface SkybridgeData {
   width: number;
   deckY: number;
   label: string;
+  ladderXs?: [number, number];
+}
+
+export interface ExplosiveHazardData {
+  id: number;
+  kind: 'fuel_truck' | 'fuel_barrel';
+  x: number;
+  z: number;
+  width: number;
+  depth: number;
+  height: number;
+  rotationY: number;
+  hp: number;
+  maxHp: number;
+  blastRadius: number;
+  damage: number;
+  detonated: boolean;
+  burningTimer: number;
+  label: string;
+  cosR?: number;
+  sinR?: number;
+  boundR?: number;
+}
+
+export interface WayfindingSignData {
+  x: number;
+  z: number;
+  y: number;
+  width: number;
+  height: number;
+  rotationY: number;
+  title: string;
+  subtitle: string;
+  accentColor: string;
+  gantrySpan?: number;
 }
 
 export interface TrainBulkheadDoorData {
@@ -244,9 +281,17 @@ export interface PlayerWeaponState {
   reserve: number;
   cooldown: number;
   reloadTimer: number;
+  reloadDuration?: number;
+  activeReloadAttempted?: boolean;
+  activeReloadFeedback?: 'none' | 'perfect' | 'jammed';
+  activeReloadFeedbackTimer?: number;
+  steadyTimer?: number;
+  dryFireCooldown?: number;
   shots: number;
   lastHit: boolean;
   hitTimer: number;
+  lastHeadshot?: boolean;
+  spread?: number;
 }
 
 export interface PlayerMission {
@@ -260,6 +305,27 @@ export interface PlayerMission {
   totalTargets: number;
   targetIds: number[];
   complete: boolean;
+}
+
+export interface CrisisBanner {
+  id: number;
+  titleEn: string;
+  titleZh: string;
+  subtitleEn: string;
+  subtitleZh: string;
+  severity: 'warn' | 'danger' | 'info';
+  timestamp: number;
+  duration: number;
+  x?: number;
+  z?: number;
+}
+
+export interface KillFeedCallout {
+  seq: number;
+  kind: 'headshot' | 'streak' | 'brute' | 'reward' | 'hazard';
+  textEn: string;
+  textZh: string;
+  timestamp: number;
 }
 
 export interface FirstPersonState {
@@ -278,6 +344,7 @@ export interface FirstPersonState {
   nearestZombieDist: number;
   nearbyGateId: number | null;
   wallLadder: 'up' | 'down' | 'climbing' | null;
+  skybridgeLadder?: 'up' | 'down' | 'climbing' | null;
   nearbyDoorId: number | null;
   insideBuildingId: string | null;
   pursuers: number;
@@ -300,6 +367,21 @@ export interface FirstPersonState {
   spawnLabel: string;
   outcome: 'PLAYING' | 'ESCAPED' | 'INFECTED' | 'QUARANTINED' | null;
   survivalTime: number;
+  damageFlashTimer?: number;
+  damageFromAngle?: number;
+  aiming?: boolean;
+  flashlightOn?: boolean;
+  flashlightFlickerTimer?: number;
+  lastStandCooldown?: number;
+  kills?: number;
+  headshots?: number;
+  bruteKills?: number;
+  shotsFired?: number;
+  shotsHit?: number;
+  killStreak?: number;
+  killStreakTimer?: number;
+  maxKillStreak?: number;
+  lastCallout?: KillFeedCallout | null;
 }
 
 export interface LureFlareData {
@@ -496,6 +578,16 @@ export interface AgentData {
   stuckTimer: number;
   avoidSide: number;
   avoidTimer: number;
+  hitFlinchTimer?: number;
+  hitFlashTimer?: number;
+  hitSlowTimer?: number;
+  hitDirX?: number;
+  hitDirZ?: number;
+  deathTimer?: number;
+  deathAge?: number;
+  deathDirX?: number;
+  deathDirZ?: number;
+  deathHeadshot?: boolean;
 }
 
 export interface VehicleData {
@@ -569,6 +661,7 @@ export interface VisualEffectEvent {
     | 'gunshot'
     | 'player_shot'
     | 'bite'
+    | 'blood_burst'
     | 'report_ring'
     | 'convert'
     | 'evac_flash'
@@ -588,6 +681,7 @@ export interface VisualEffectEvent {
   targetY?: number;
   targetZ?: number;
   impact?: 'dust' | 'metal' | 'infected';
+  headshot?: boolean;
   age: number;
   duration: number;
 }

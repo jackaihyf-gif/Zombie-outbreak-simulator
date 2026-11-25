@@ -6,6 +6,23 @@ export default defineConfig({
     host: true
   },
   build: {
-    target: 'esnext'
+    target: 'es2020',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalized = id.replace(/\\/g, '/');
+          if (normalized.includes('node_modules/three')) {
+            return 'three-vendor';
+          }
+          if (normalized.endsWith('/src/voxelTextures.ts')) {
+            return 'voxel-studio';
+          }
+          if (normalized.endsWith('/src/audio.ts') || normalized.endsWith('/src/localization.ts')) {
+            return 'audio-i18n';
+          }
+          return undefined;
+        }
+      }
+    }
   }
 });
