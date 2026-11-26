@@ -1,3 +1,4 @@
+import { LAB_TUNNEL_GATE_Z } from './bsl4Lab';
 import { KTX_GATES, KTX_GATE_IDS } from './ktxTerminal';
 import { SoundEngine } from './audio';
 import { CameraController } from './camera';
@@ -817,7 +818,7 @@ export class UIController {
   }
 
   private isSiegeMap(mapId?: string): boolean {
-    return mapId === 'citadel_express' || mapId === 'twin_bridges';
+    return mapId === 'citadel_express' || mapId === 'twin_bridges' || mapId === 'bsl4_lab';
   }
 
   public t(english: string, chinese: string): string {
@@ -1080,9 +1081,24 @@ export class UIController {
         ? ` • ${this.t('Quarantine', '隔离中')} ${Math.ceil(train.timer)}s · ${this.t('Infected', '感染者')} ${this.sim.countTrainInfected()}` : '';
       const boardingThreat = this.sim.layeredKtx && train.state === 'DOCKED' ? this.trainInfectedStatus() : '';
       const trainTag = this.sim.city.hasExpressRail ? ` • 🚄 ${this.t('Train load', '本班载客')} ${load} · ${this.t('Total boarded', '累计登车')} ${stats.trainBoarded}${boardingThreat}${quarantineTag}` : '';
+      const apc = this.sim.extractionApc;
+      const apcPhase = !apc.active
+        ? ''
+        : apc.state === 'STANDBY'
+        ? this.t('Standby', '待命')
+        : apc.state === 'WARMING_UP'
+        ? this.t(`Warming ${Math.max(0, Math.ceil(apc.timer))}s`, `预热 ${Math.max(0, Math.ceil(apc.timer))} 秒`)
+        : apc.state === 'BOARDING'
+        ? this.t('Boarding', '登车中')
+        : apc.state === 'DEPARTING'
+        ? this.t('Departing', '突围中')
+        : this.t('Escaped', '已撤离');
+      const apcTag = apc.active
+        ? ` • 🚐 ${this.t('APC-01', 'APC-01 装甲车')} ${apcPhase} · ${this.t('Aboard', '载客')} ${apc.boardedCount}`
+        : '';
       this.defenseLinesStatusEl.innerHTML =
         `<span style="color:${l1Color};font-weight:700;">${this.t('L1', '防线 1')} · ${this.worldLabel(stats.line1Status)}</span> • ` +
-        `<span style="color:${l2Color};font-weight:700;">${this.t('L2', '防线 2')} · ${this.worldLabel(stats.line2Status)}</span>${l3Tag}${trainTag}`;
+        `<span style="color:${l2Color};font-weight:700;">${this.t('L2', '防线 2')} · ${this.worldLabel(stats.line2Status)}</span>${l3Tag}${trainTag}${apcTag}`;
     } else {
       this.defenseLinesStatusEl.textContent = '';
     }
@@ -1283,6 +1299,8 @@ export class UIController {
 
     if (this.sim.city.hasExpressRail) {
       addPip('🚄', 'ktx', this.sim.city.stationPos.x, this.sim.city.stationPos.z, true);
+    } else if (this.sim.extractionApc.active) {
+      addPip('🚐', 'ktx', this.sim.extractionApc.x, this.sim.extractionApc.z, true);
     } else if (this.sim.evacZones[0]) {
       addPip('★', 'ktx', this.sim.evacZones[0].x, this.sim.evacZones[0].z, true);
     }
@@ -1349,7 +1367,9 @@ export class UIController {
       ? this.sim.city.buildingById.get(fp.insideBuildingId)
       : undefined;
     const locTag =
-      fp.insideTrainCar > 0
+      fp.insideExtractionApc
+        ? this.t(' • Inside APC-01', ' · APC-01 装甲车内')
+        : fp.insideTrainCar > 0
         ? this.t(` • Inside KTX Car ${fp.insideTrainCar}`, ` · KTX ${fp.insideTrainCar} 号车厢`)
         : insideBld
         ? ` • ${this.t('Inside', '室内')} · ${this.worldLabel(insideBld.name)}`
@@ -1357,7 +1377,14 @@ export class UIController {
     const chaseTag = fp.pursuers > 0
       ? this.t(` • ⚠ ${fp.pursuers} CHASING`, ` · ⚠ ${fp.pursuers} 名感染者追击中`)
       : this.t(' • ✓ CLEAR', ' · ✓ 暂时安全');
-    const wpLabel = this.worldLabel(fp.waypointLabel || (this.sim.city.hasExpressRail ? 'South Express Station' : 'Evac Zone'));
+    const wpLabel = this.worldLabel(
+      fp.waypointLabel ||
+        (this.sim.city.hasExpressRail
+          ? 'South Express Station'
+          : this.sim.extractionApc.active
+          ? 'APC-01 Extraction Garage'
+          : 'Evac Zone')
+    );
     const distance = this.t(`${distToGoal}m`, `${distToGoal} 米`);
     const roleName = this.t(...PLAYER_ROLE_NAMES[fp.role]);
     this.fpsObjectiveEl.textContent = weapon
@@ -1434,6 +1461,24 @@ export class UIController {
       const load = `${train.currentLoad}/${train.layout.capacity}`;
       const threat = this.trainInfectedStatus();
       this.fpsTrainStatusEl.textContent = `${this.t('KTX Express', 'KTX 特快')} · ${phaseLabel} • ${this.t("Passengers", "载客")} ${load}${threat} • ${linesSummary}`;
+    } else if (this.sim.extractionApc.active) {
+      const apc = this.sim.extractionApc;
+      const apcSecs = Math.max(0, Math.ceil(apc.timer));
+      const apcPhase =
+        apc.state === 'STANDBY'
+          ? this.t('STANDBY — Reach Garage & Press [E]', '待命 · 抵达车库按 E 启动引擎')
+          : apc.state === 'WARMING_UP'
+          ? this.t(`WARMING UP (${apcSecs}s) — Hold Garage`, `引擎预热中（${apcSecs} 秒）· 守住车库`)
+          : apc.state === 'BOARDING'
+          ? this.t('BOARDING — Rear Ramp Open [E]', '尾门已开启 · 按 E 登车撤离')
+          : apc.state === 'DEPARTING'
+          ? this.t('ESCAPING TUNNEL', '正在冲破撤离隧道')
+          : this.t('ESCAPED', '已成功撤离');
+      const linesSummary =
+        line3Status !== 'NONE'
+          ? `1 ${this.worldLabel(line1Status)} / 2 ${this.worldLabel(line2Status)} / 3 ${this.worldLabel(line3Status)}`
+          : `1 ${this.worldLabel(line1Status)} / 2 ${this.worldLabel(line2Status)}`;
+      this.fpsTrainStatusEl.textContent = `${this.t('APC-01', 'APC-01 装甲撤离车')} · ${apcPhase} • ${this.t('Aboard', '车载')} ${apc.boardedCount} • ${linesSummary}`;
     } else {
       this.fpsTrainStatusEl.textContent = weapon ? '' : this.t('Reach evacuation safely', '安全抵达撤离区');
     }
@@ -1525,6 +1570,28 @@ export class UIController {
       this.fpsInteractPromptEl.textContent = this.t('Press [E] for emergency KTX departure', '按 E 启动 KTX 紧急发车');
       this.fpsInteractPromptEl.style.borderColor = '#22c55e';
       this.fpsInteractPromptEl.style.color = '#bbf7d0';
+      this.fpsInteractPromptEl.style.display = 'block';
+    } else if (fp.nearExtractionApc) {
+      if (fp.nearExtractionApc === 'ignite') {
+        this.fpsInteractPromptEl.textContent = this.t(
+          'Press [E] to ignite APC-01 & unseal escape tunnel',
+          '按 E 启动 APC-01 并开启撤离通道'
+        );
+        this.fpsInteractPromptEl.style.borderColor = '#22c55e';
+        this.fpsInteractPromptEl.style.color = '#bbf7d0';
+      } else if (fp.nearExtractionApc === 'warming') {
+        const secs = Math.max(0, Math.ceil(this.sim.extractionApc.timer));
+        this.fpsInteractPromptEl.textContent = this.t(
+          `APC-01 warming up (${secs}s) — defend the garage!`,
+          `APC-01 预热中（${secs} 秒）— 守住撤离车库！`
+        );
+        this.fpsInteractPromptEl.style.borderColor = '#f59e0b';
+        this.fpsInteractPromptEl.style.color = '#fde68a';
+      } else {
+        this.fpsInteractPromptEl.textContent = this.t('Press [E] to board APC-01', '按 E 登上 APC-01 装甲撤离车');
+        this.fpsInteractPromptEl.style.borderColor = '#22c55e';
+        this.fpsInteractPromptEl.style.color = '#bbf7d0';
+      }
       this.fpsInteractPromptEl.style.display = 'block';
     } else if (trainDoor) {
       const pct = Math.max(1, Math.ceil((trainDoor.integrity / trainDoor.maxIntegrity) * 100));
@@ -1809,6 +1876,25 @@ export class UIController {
         ctx.fillStyle = '#38bdf8';
         ctx.fillRect(nose - 5, ry - 1.5, 4, 3);
       }
+    }
+
+    if (this.sim.extractionApc.active) {
+      const apc = this.sim.extractionApc;
+      const gateY = toMapY(LAB_TUNNEL_GATE_Z);
+      ctx.strokeStyle = apc.shutterOpenFraction > 0.7 ? '#22c55e' : '#f59e0b';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(toMapX(-12), gateY);
+      ctx.lineTo(toMapX(12), gateY);
+      ctx.stroke();
+
+      const ax = toMapX(apc.x);
+      const ay = toMapY(apc.z);
+      ctx.fillStyle = apc.state === 'BOARDING' || apc.state === 'DEPARTING' || apc.state === 'ESCAPED' ? '#22c55e' : '#38bdf8';
+      ctx.fillRect(ax - 3.5, ay - 5.5, 7, 11);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(ax - 3.5, ay - 5.5, 7, 11);
     }
 
     for (const wall of this.sim.defenseWalls) {

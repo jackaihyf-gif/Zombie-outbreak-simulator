@@ -565,6 +565,8 @@
       border-radius: 14px;
       max-width: 780px;
       width: 100%;
+      max-height: 92vh;
+      overflow-y: auto;
       padding: 20px 24px;
       box-shadow: 0 24px 64px rgba(0, 0, 0, 0.78);
       display: flex;
@@ -804,7 +806,7 @@
       display: none;
       white-space: nowrap;
     }
-    .map-cards { grid-template-columns: repeat(2, 1fr) !important; }
+    .map-cards { grid-template-columns: repeat(3, 1fr) !important; }
     .hidden { display: none !important; }
     @media (max-width: 1120px) {
       .top-bar { height: auto !important; flex-wrap: wrap; row-gap: 6px; padding: 6px 10px !important; }
@@ -1347,6 +1349,11 @@
           <h3>🏟️ Neon Downtown</h3>
           <p>Compact vertical skyscraper canyon where panic spreads explosively through dense intersections.</p>
         </div>
+        <div class="map-card" data-map="bsl4_lab">
+          <span class="tag">8 Underground Zones • APC Tunnel Escape</span>
+          <h3>☣️ BSL-4 Containment Lab</h3>
+          <p>Break out from shattering Sector 0 pods across 3 bio-locks, lockable cryo/genetics labs, reactor catwalks &amp; a blackout hazmat bay to hold the 40s APC-01 extraction garage.</p>
+        </div>
       </div>
 
       <div class="section-lbl">2. Select Outbreak Mode</div>
@@ -1387,7 +1394,7 @@
           <p>Tactical command tools locked. Watch whether city defenses survive completely unassisted.</p>
         </div>
         <div class="scenario-card" data-scenario="breach_siege">
-          <span class="tag" data-zh="高难度 · 堡垒城墙 / 双桥围城">Hard · Citadel &amp; Twin Bridges</span>
+          <span class="tag" data-zh="高难度 · 堡垒城墙 / 双桥 / 地下实验室">Hard · Citadel / Bridges / BSL-4 Lab</span>
           <h3 data-zh="🧟 尸潮破城">🧟 Breach Siege</h3>
           <p data-zh="六波尸潮逐步加压。巨型丧尸和跑者分头砸门、堆叠翻墙，突破后继续向下一道防线推进。">Six escalating waves split between battering closed gates and piling up the walls, then press into the next sector.</p>
         </div>

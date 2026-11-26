@@ -31,7 +31,7 @@ const DEFAULT_CONFIG: ScenarioConfig = {
   fastStrain: true
 };
 
-const VALID_MAPS = new Set<MapId>(['citadel_express', 'grand_metropolis', 'twin_bridges', 'quarantine_citadel']);
+const VALID_MAPS = new Set<MapId>(['citadel_express', 'grand_metropolis', 'twin_bridges', 'quarantine_citadel', 'bsl4_lab']);
 const VALID_SCENARIOS = new Set<ScenarioId>([
   'wwz_busan',
   'patient_zero',
@@ -58,8 +58,8 @@ function buildInitialConfig(): ScenarioConfig {
     const id: ScenarioId = scenarioParam && VALID_SCENARIOS.has(scenarioParam) ? scenarioParam : DEFAULT_CONFIG.id;
     const siege = id === 'breach_siege';
     const mapId: MapId = siege
-      ? mapParam === 'twin_bridges'
-        ? 'twin_bridges'
+      ? mapParam === 'twin_bridges' || mapParam === 'bsl4_lab'
+        ? mapParam
         : 'citadel_express'
       : mapParam && VALID_MAPS.has(mapParam)
       ? mapParam
@@ -320,6 +320,10 @@ class ProjectOutbreakApp {
       this.camController.setAerialAngle(-0.74, 1.06);
       this.camController.focusOn(16, 48, 285);
       this.camController.snapToDesired();
+    } else if (this.sim.config.mapId === 'bsl4_lab') {
+      this.camController.setAerialAngle(-0.62, 1.02);
+      this.camController.focusOn(0, -12, 225);
+      this.camController.snapToDesired();
     } else if (pz) {
       this.camController.focusOn(pz.x * 0.45, pz.z * 0.45, overviewDist);
     } else {
@@ -455,6 +459,10 @@ class ProjectOutbreakApp {
     if (cfg.mapId === 'citadel_express') {
       this.camController.setAerialAngle(-0.74, 1.06);
       this.camController.focusOn(16, 48, 285);
+      this.camController.snapToDesired();
+    } else if (cfg.mapId === 'bsl4_lab') {
+      this.camController.setAerialAngle(-0.62, 1.02);
+      this.camController.focusOn(0, -12, 225);
       this.camController.snapToDesired();
     } else if (pz && cfg.mapId !== 'twin_bridges') {
       this.camController.focusOn(pz.x * 0.45, pz.z * 0.45, overviewDist);
@@ -789,6 +797,25 @@ class ProjectOutbreakApp {
       }
     }
 
+    const apc = this.sim.extractionApc;
+    if (apc.active && Math.hypot(hit.x - apc.x, hit.z - apc.z) <= 5.5) {
+      const stateText =
+        apc.state === 'STANDBY'
+          ? this.ui.t('Standby — Interact in FP [E] to start 40s warmup', '待命 · 第一人称按 E 启动 40 秒预热')
+          : apc.state === 'WARMING_UP'
+          ? this.ui.t(`Warming up (${Math.ceil(apc.timer)}s) • Tunnel unsealing`, `预热中（${Math.ceil(apc.timer)} 秒）· 通道开启中`)
+          : apc.state === 'BOARDING'
+          ? this.ui.t(`Boarding open (${apc.boardedCount} aboard)`, `开放登车（已登车 ${apc.boardedCount} 人）`)
+          : apc.state === 'DEPARTING'
+          ? this.ui.t(`Punching through tunnel (${apc.boardedCount} aboard)`, `突围撤离中（已载 ${apc.boardedCount} 人）`)
+          : this.ui.t(`Escaped (${apc.boardedCount} survivors)`, `已成功撤离（${apc.boardedCount} 名幸存者）`);
+      this.hoverTooltipEl.textContent = `🚐 ${this.ui.t('APC-01 Armored Extraction', 'APC-01 装甲撤离车')} • ${stateText}`;
+      this.hoverTooltipEl.style.left = `${clientX + 14}px`;
+      this.hoverTooltipEl.style.top = `${clientY + 14}px`;
+      this.hoverTooltipEl.style.display = 'block';
+      return;
+    }
+
     for (const h of this.sim.explosiveHazards) {
       const r = Math.max(h.width, h.depth) * 0.6 + 1.4;
       if (Math.hypot(hit.x - h.x, hit.z - h.z) <= r) {
@@ -1108,7 +1135,9 @@ class ProjectOutbreakApp {
       this.sim.ammoCaches,
       this.camera.position.y,
       this.sim.layeredKtx ? this.sim.ktxGates : undefined,
-      this.sim.explosiveHazards
+      this.sim.explosiveHazards,
+      this.sim.labPods,
+      this.sim.extractionApc
     );
 
     this.syncMissionMarkers();

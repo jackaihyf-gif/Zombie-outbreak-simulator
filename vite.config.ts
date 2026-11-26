@@ -20,6 +20,9 @@ export default defineConfig({
           if (normalized.endsWith('/src/audio.ts') || normalized.endsWith('/src/localization.ts')) {
             return 'audio-i18n';
           }
+          if (normalized.endsWith('/src/bsl4Lab.ts') || normalized.endsWith('/src/cityData.ts')) {
+            return 'world-layout';
+          }
           return undefined;
         }
       }

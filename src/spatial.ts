@@ -359,6 +359,14 @@ export function resolveWorldCollisions(
     for (let i = 0; i < city.explosiveHazards.length; i++) {
       pushOutOBB(pos, radius, city.explosiveHazards[i]);
     }
+    for (let i = 0; i < city.labPods.length; i++) {
+      const pod = city.labPods[i];
+      pushOutBox(pos, radius, pod.x - 1.35, pod.x + 1.35, pod.z - 1.35, pod.z + 1.35);
+    }
+  }
+  if (city.labReactorCore) {
+    const rc = city.labReactorCore;
+    pushOutBox(pos, radius, rc.x - rc.radius, rc.x + rc.radius, rc.z - rc.radius, rc.z + rc.radius);
   }
 
   for (let i = 0; i < city.rivers.length; i++) {

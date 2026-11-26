@@ -160,5 +160,15 @@ export class ShotTrace {
       const height = truck ? 2.28 : van ? 1.76 : 1.42;
       this.testRotatedBox(vehicle.x, vehicle.z, truck ? 2.18 : 1.84, truck ? 6.2 : 3.8, height, yaw);
     }
+    for (const pod of city.labPods) {
+      if (pod.x < minX - 2 || pod.x > maxX + 2 || pod.z < minZ - 2 || pod.z > maxZ + 2) continue;
+      this.testBox(pod.x - 1.25, pod.x + 1.25, 0, 4.2, pod.z - 1.25, pod.z + 1.25, 'metal');
+    }
+    if (city.labReactorCore) {
+      const rc = city.labReactorCore;
+      if (rc.x + rc.radius >= minX && rc.x - rc.radius <= maxX && rc.z + rc.radius >= minZ && rc.z - rc.radius <= maxZ) {
+        this.testBox(rc.x - rc.radius, rc.x + rc.radius, 0, 8.4, rc.z - rc.radius, rc.z + rc.radius, 'metal');
+      }
+    }
   }
 }

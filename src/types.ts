@@ -6,7 +6,8 @@ export type MapId =
   | 'citadel_express'
   | 'grand_metropolis'
   | 'twin_bridges'
-  | 'quarantine_citadel';
+  | 'quarantine_citadel'
+  | 'bsl4_lab';
 
 export type ScenarioId =
   | 'wwz_busan'
@@ -178,6 +179,31 @@ export interface WayfindingSignData {
   subtitle: string;
   accentColor: string;
   gantrySpan?: number;
+}
+
+export interface LabContainmentPodData {
+  id: number;
+  x: number;
+  z: number;
+  breached: boolean;
+  breachAt: number;
+  label: string;
+}
+
+export interface ExtractionApcData {
+  active: boolean;
+  x: number;
+  z: number;
+  startZ: number;
+  tunnelGateZ: number;
+  exitZ: number;
+  state: 'STANDBY' | 'WARMING_UP' | 'BOARDING' | 'DEPARTING' | 'ESCAPED';
+  timer: number;
+  warmupDuration: number;
+  shutterOpenFraction: number;
+  boardedCount: number;
+  playerAboard: boolean;
+  waveTriggeredHalfway: boolean;
 }
 
 export interface TrainBulkheadDoorData {
@@ -361,6 +387,8 @@ export interface FirstPersonState {
   nearbyKtxGate: KtxGateId | null;
   nearTrainCabinConsole: boolean;
   insideTrainCar: number;
+  nearExtractionApc?: 'ignite' | 'warming' | 'board' | null;
+  insideExtractionApc?: boolean;
   waypointX: number;
   waypointZ: number;
   waypointLabel: string;

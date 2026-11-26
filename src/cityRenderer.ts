@@ -14,9 +14,11 @@ import {
   EvacZoneData,
   ExplosiveHazardData,
   ExpressTrainData,
+  ExtractionApcData,
   GraphicsQuality,
   HoldZoneData,
   InteriorDoorData,
+  LabContainmentPodData,
   LureFlareData,
   PrioritySectorData,
   RoadblockData,
@@ -26,6 +28,13 @@ import {
   VehicleData,
   VisualEffectEvent
 } from './types';
+import {
+  LAB_APC_START_Z,
+  LAB_CEILING_Y,
+  LAB_HALF_X,
+  LAB_HALF_Z,
+  LAB_TUNNEL_GATE_Z
+} from './bsl4Lab';
 import { NeonSignLabel, VoxelTextureStudio } from './voxelTextures';
 
 export type AtmosphereStage = 'dusk' | 'night' | 'day';
@@ -127,6 +136,14 @@ export class CityRenderer {
   private interiorFixtures: InteriorLightVisual[] = [];
   private hazardVisuals: Map<number, HazardVisual> = new Map();
   private dynamicTextures: THREE.Texture[] = [];
+  private labCeilingGroup: THREE.Group | null = null;
+  private labPodVisuals = new Map<number, { glass: THREE.Mesh; core: THREE.Mesh; beaconMat: THREE.MeshBasicMaterial }>();
+  private labEmergencyLights: THREE.MeshBasicMaterial[] = [];
+  private labReactorRings: THREE.Mesh[] = [];
+  private extractionApcGroup: THREE.Group | null = null;
+  private apcBeaconMat: THREE.MeshBasicMaterial | null = null;
+  private apcRampMesh: THREE.Mesh | null = null;
+  private tunnelShutterMesh: THREE.Mesh | null = null;
   private alarmBeaconMeshes: Map<number, THREE.Object3D> = new Map();
   private brokenWindowCount = 0;
   private priorityMesh: THREE.Group | null = null;
@@ -881,6 +898,14 @@ export class CityRenderer {
     this.hazardVisuals.clear();
     for (const tex of this.dynamicTextures) tex.dispose();
     this.dynamicTextures = [];
+    this.labCeilingGroup = null;
+    this.labPodVisuals.clear();
+    this.labEmergencyLights = [];
+    this.labReactorRings = [];
+    this.extractionApcGroup = null;
+    this.apcBeaconMat = null;
+    this.apcRampMesh = null;
+    this.tunnelShutterMesh = null;
     this.alarmBeaconMeshes.clear();
     this.brokenWindowCount = 0;
     this.streetLampCones = [];
@@ -901,6 +926,7 @@ export class CityRenderer {
     this.bloodStainInst.count = 0;
     this.stampedBloodEvents.clear();
 
+    this.horizonGroup.visible = layout.mapId !== 'bsl4_lab';
     const dx = layout.cityHalfX + 40;
     const dz = layout.cityHalfZ + 40;
     this.sunLight.shadow.camera.left = -dx;
@@ -922,6 +948,9 @@ export class CityRenderer {
     this.buildStaticObstacles(layout);
     this.buildExplosiveHazards(layout);
     this.buildWayfindingSigns(layout);
+    if (layout.mapId === 'bsl4_lab') {
+      this.buildBsl4FacilityVisuals(layout);
+    }
   }
 
   private initPlacementPreview(): void {
@@ -1045,9 +1074,9 @@ export class CityRenderer {
     const groundGeo = new THREE.BoxGeometry(baseW, 2.0, baseD);
     const groundMat = new THREE.MeshStandardMaterial({
       map: this.textureStudio.getAsphaltTexture(28),
-      color: 0x8c97ad,
-      roughness: 0.44,
-      metalness: 0.24,
+      color: layout.mapId === 'bsl4_lab' ? 0x263142 : 0x8c97ad,
+      roughness: layout.mapId === 'bsl4_lab' ? 0.34 : 0.44,
+      metalness: layout.mapId === 'bsl4_lab' ? 0.32 : 0.24,
       envMapIntensity: 1.35
     });
     this.groundMesh = new THREE.Mesh(groundGeo, groundMat);
@@ -1072,6 +1101,31 @@ export class CityRenderer {
     const EastBorder = WestBorder.clone();
     EastBorder.position.x = baseW / 2 + 1;
     this.cityGroup.add(NorthBorder, SouthBorder, WestBorder, EastBorder);
+
+    if (layout.mapId === 'bsl4_lab') {
+      const cyanStripMat = new THREE.MeshBasicMaterial({ color: 0x0ea5e9, transparent: true, opacity: 0.6 });
+      const amberStripMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.65 });
+      const greenStripMat = new THREE.MeshBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.72 });
+      const laneGeo = new THREE.PlaneGeometry(0.18, layout.cityHalfZ * 2 - 8);
+      for (const lx of [-24, 0, 24]) {
+        const lane = new THREE.Mesh(laneGeo, cyanStripMat);
+        lane.rotation.x = -Math.PI / 2;
+        lane.position.set(lx, 0.02, 0);
+        this.cityGroup.add(lane);
+      }
+      const zoneLineGeo = new THREE.PlaneGeometry(layout.cityHalfX * 2 - 12, 0.24);
+      for (const zz of [-136, -100, -58, -16, 32, 74, 122]) {
+        const zStrip = new THREE.Mesh(zoneLineGeo, zz >= 74 ? amberStripMat : cyanStripMat);
+        zStrip.rotation.x = -Math.PI / 2;
+        zStrip.position.set(0, 0.022, zz);
+        this.cityGroup.add(zStrip);
+      }
+      const bayRing = new THREE.Mesh(new THREE.RingGeometry(5.6, 6.1, 32), greenStripMat);
+      bayRing.rotation.x = -Math.PI / 2;
+      bayRing.position.set(0, 0.025, LAB_APC_START_Z);
+      this.cityGroup.add(bayRing);
+      return;
+    }
 
     const yellowLineMat = new THREE.MeshBasicMaterial({ color: 0xd97706 });
     const whiteDashMat = new THREE.MeshBasicMaterial({ color: 0x94a3b8 });
@@ -4559,6 +4613,208 @@ export class CityRenderer {
     }
   }
 
+  private buildBsl4FacilityVisuals(layout: CityLayout): void {
+    const bunkerMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.86, metalness: 0.22 });
+    const trimMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.55, metalness: 0.55 });
+    const concreteCeilingMat = new THREE.MeshStandardMaterial({ color: 0x141b29, roughness: 0.92, side: THREE.DoubleSide });
+
+    // 1. Subterranean Bunker Perimeter Enclosure (leaving South Escape Tunnel exit portal open at x in [-11, 11])
+    const northWall = new THREE.Mesh(new THREE.BoxGeometry(LAB_HALF_X * 2 + 4, LAB_CEILING_Y, 2.0), bunkerMat);
+    northWall.position.set(0, LAB_CEILING_Y * 0.5, -LAB_HALF_Z - 0.8);
+    const westWall = new THREE.Mesh(new THREE.BoxGeometry(2.0, LAB_CEILING_Y, LAB_HALF_Z * 2 + 4), bunkerMat);
+    westWall.position.set(-LAB_HALF_X - 0.8, LAB_CEILING_Y * 0.5, 0);
+    const eastWall = westWall.clone();
+    eastWall.position.x = LAB_HALF_X + 0.8;
+    const tunnelLintel = new THREE.Mesh(new THREE.BoxGeometry(26, 2.0, 2.2), trimMat);
+    tunnelLintel.position.set(0, LAB_CEILING_Y - 1.0, LAB_TUNNEL_GATE_Z);
+    const exitGlow = new THREE.Mesh(
+      new THREE.PlaneGeometry(21.6, 6.4),
+      new THREE.MeshBasicMaterial({ color: 0xdbeafe, side: THREE.DoubleSide, toneMapped: false })
+    );
+    exitGlow.position.set(0, 3.2, LAB_HALF_Z + 0.4);
+    this.cityGroup.add(northWall, westWall, eastWall, tunnelLintel, exitGlow);
+
+    // 2. Escape Tunnel Motorized Blast Shutter at z = 158
+    const shutterMat = new THREE.MeshStandardMaterial({
+      map: this.textureStudio.getBlastGateTexture(),
+      color: 0xffffff,
+      roughness: 0.45,
+      metalness: 0.55
+    });
+    this.tunnelShutterMesh = new THREE.Mesh(new THREE.BoxGeometry(22.0, 6.4, 0.95), shutterMat);
+    this.tunnelShutterMesh.position.set(0, 3.2, LAB_TUNNEL_GATE_Z);
+    this.tunnelShutterMesh.castShadow = true;
+    this.cityGroup.add(this.tunnelShutterMesh);
+
+    // 3. Eight Glowing Bio-Containment Pods (Zone 1 Containment Core)
+    const podSteelMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.42, metalness: 0.65 });
+    const bioFluidMat = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.28 });
+    const coreSpecimenMat = new THREE.MeshStandardMaterial({ color: 0x064e3b, emissive: 0x059669, emissiveIntensity: 0.65 });
+    const podGlassMat = new THREE.MeshBasicMaterial({
+      color: 0x6ee7b7,
+      transparent: true,
+      opacity: 0.36,
+      side: THREE.DoubleSide
+    });
+    for (const pod of layout.labPods) {
+      const pGrp = new THREE.Group();
+      pGrp.position.set(pod.x, 0, pod.z);
+      const base = new THREE.Mesh(new THREE.CylinderGeometry(1.18, 1.32, 0.72, 14), podSteelMat);
+      base.position.y = 0.36;
+      const cap = new THREE.Mesh(new THREE.CylinderGeometry(1.26, 1.18, 0.55, 14), podSteelMat);
+      cap.position.y = 4.05;
+      const glass = new THREE.Mesh(new THREE.CylinderGeometry(1.06, 1.06, 3.05, 14, 1, true), podGlassMat);
+      glass.position.y = 2.25;
+      const fluid = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 0.95, 2.95, 12), bioFluidMat);
+      fluid.position.y = 2.22;
+      const core = new THREE.Mesh(new THREE.BoxGeometry(0.68, 1.85, 0.45), coreSpecimenMat);
+      core.position.y = 2.2;
+      const beaconMat = new THREE.MeshBasicMaterial({ color: 0x34d399, toneMapped: false });
+      const beacon = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.45, 0.22, 12), beaconMat);
+      beacon.position.y = 4.42;
+      pGrp.add(base, cap, glass, fluid, core, beacon);
+      this.cityGroup.add(pGrp);
+      this.labPodVisuals.set(pod.id, { glass, core, beaconMat });
+    }
+
+    // 4. Central Reactor Core (Zone 5 Atrium)
+    if (layout.labReactorCore) {
+      const rc = layout.labReactorCore;
+      const rGrp = new THREE.Group();
+      rGrp.position.set(rc.x, 0, rc.z);
+      const ped = new THREE.Mesh(new THREE.CylinderGeometry(3.0, 3.25, 1.1, 16), trimMat);
+      ped.position.y = 0.55;
+      const topCrown = new THREE.Mesh(new THREE.CylinderGeometry(3.2, 2.9, 1.2, 16), trimMat);
+      topCrown.position.y = LAB_CEILING_Y - 0.6;
+      const plasma = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.65, 1.65, LAB_CEILING_Y - 2.0, 16),
+        new THREE.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.72, toneMapped: false })
+      );
+      plasma.position.y = LAB_CEILING_Y * 0.5;
+      rGrp.add(ped, topCrown, plasma);
+      for (const ry of [2.6, 5.4]) {
+        const ring = new THREE.Mesh(
+          new THREE.TorusGeometry(2.35, 0.14, 8, 24),
+          new THREE.MeshBasicMaterial({ color: 0x38bdf8, toneMapped: false })
+        );
+        ring.rotation.x = Math.PI * 0.42;
+        ring.position.y = ry;
+        rGrp.add(ring);
+        this.labReactorRings.push(ring);
+      }
+      this.cityGroup.add(rGrp);
+    }
+
+    // 5. APC-01 Heavy Armored Extraction Vehicle (Zone 8 Garage)
+    const apcGrp = new THREE.Group();
+    apcGrp.position.set(0, 0, LAB_APC_START_Z);
+    const apcArmorMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.52, metalness: 0.48 });
+    const apcDarkMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.65, metalness: 0.38 });
+    const tireMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.92 });
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(3.4, 1.65, 6.8), apcArmorMat);
+    hull.position.set(0, 1.25, 0);
+    hull.castShadow = true;
+    const nose = new THREE.Mesh(new THREE.BoxGeometry(3.15, 1.15, 1.35), apcArmorMat);
+    nose.position.set(0, 1.05, 3.65);
+    nose.rotation.x = 0.22;
+    const turret = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.58, 2.2), apcDarkMat);
+    turret.position.set(0, 2.35, 0.4);
+    const stripeMat = new THREE.MeshBasicMaterial({ color: 0x22c55e, toneMapped: false });
+    const rescueStripeL = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.24, 5.8), stripeMat);
+    rescueStripeL.position.set(-1.72, 1.35, 0);
+    const rescueStripeR = rescueStripeL.clone();
+    rescueStripeR.position.x = 1.72;
+    this.apcBeaconMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b, toneMapped: false });
+    const apcBeacon = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.32, 0.28, 12), this.apcBeaconMat);
+    apcBeacon.position.set(0, 2.78, 0.4);
+
+    // Twin APC forward headlights + volumetric beam cones
+    const headConeGeo = new THREE.ConeGeometry(1.85, 9.5, 12, 1, true);
+    headConeGeo.translate(0, -4.75, 0);
+    headConeGeo.rotateX(-Math.PI * 0.5);
+    const headConeMat = this.textureStudio.createVolumetricConeMaterial(0xe0f2fe, 0.16);
+    const headMat = new THREE.MeshBasicMaterial({ color: 0xfef9c3, toneMapped: false });
+    for (const sx of [-1.05, 1.05]) {
+      const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.24, 0.14), headMat);
+      lamp.position.set(sx, 1.15, 4.32);
+      const cone = new THREE.Mesh(headConeGeo, headConeMat);
+      cone.position.set(sx, 1.12, 4.36);
+      apcGrp.add(lamp, cone);
+    }
+
+    const wheelGeo = new THREE.CylinderGeometry(0.56, 0.56, 0.44, 12);
+    wheelGeo.rotateZ(Math.PI / 2);
+    for (const wz of [-2.2, 0, 2.3]) {
+      for (const side of [-1, 1]) {
+        const wheel = new THREE.Mesh(wheelGeo, tireMat);
+        wheel.position.set(side * 1.68, 0.56, wz);
+        apcGrp.add(wheel);
+      }
+    }
+
+    this.apcRampMesh = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.35, 0.22), apcDarkMat);
+    this.apcRampMesh.position.set(0, 1.15, -3.45);
+    const cabinGlow = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.0, 1.1),
+      new THREE.MeshBasicMaterial({ color: 0x4ade80, transparent: true, opacity: 0.72, side: THREE.DoubleSide })
+    );
+    cabinGlow.position.set(0, 1.25, -3.32);
+
+    apcGrp.add(hull, nose, turret, rescueStripeL, rescueStripeR, apcBeacon, this.apcRampMesh, cabinGlow);
+    this.cityGroup.add(apcGrp);
+    this.extractionApcGroup = apcGrp;
+
+    // 6. Enclosed Subterranean Ceiling Slab, Steel Girders, Ducts & Zone Light Strips (FP ON / Commander Cutaway OFF)
+    const ceilingGrp = new THREE.Group();
+    const slab = new THREE.Mesh(
+      new THREE.BoxGeometry(LAB_HALF_X * 2 + 4, 0.36, LAB_HALF_Z * 2 + 4),
+      concreteCeilingMat
+    );
+    slab.position.set(0, LAB_CEILING_Y + 0.18, 0);
+    ceilingGrp.add(slab);
+
+    const beamZs: number[] = [];
+    for (let bz = -LAB_HALF_Z + 8; bz <= LAB_HALF_Z - 8; bz += 16) beamZs.push(bz);
+    const girderInst = new THREE.InstancedMesh(new THREE.BoxGeometry(LAB_HALF_X * 2, 0.45, 0.65), trimMat, beamZs.length);
+    const ductMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.5, metalness: 0.6 });
+    const ductLeft = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.85, LAB_HALF_Z * 2 - 8), ductMat);
+    ductLeft.position.set(-14, LAB_CEILING_Y - 0.55, 0);
+    const ductRight = ductLeft.clone();
+    ductRight.position.x = 14;
+    const mat4 = new THREE.Matrix4();
+    const stripGeo = new THREE.BoxGeometry(4.2, 0.12, 0.42);
+    for (let bi = 0; bi < beamZs.length; bi++) {
+      const bz = beamZs[bi];
+      girderInst.setMatrixAt(bi, mat4.makeTranslation(0, LAB_CEILING_Y - 0.22, bz));
+      const zoneColor =
+        bz < -136 ? 0x10b981
+        : bz < -58 ? 0x38bdf8
+        : bz < -16 ? 0xe0f2fe
+        : bz < 32 ? 0x22d3ee
+        : bz < 74 ? 0x93c5fd
+        : bz < 122 ? 0xd97706
+        : 0xf8fafc;
+      const stripMat = new THREE.MeshBasicMaterial({ color: zoneColor, toneMapped: false });
+      for (const lx of [-24, 0, 24]) {
+        const strip = new THREE.Mesh(stripGeo, stripMat);
+        strip.position.set(lx, LAB_CEILING_Y - 0.48, bz);
+        ceilingGrp.add(strip);
+      }
+      if (bi % 2 === 0) {
+        const emergMat = new THREE.MeshBasicMaterial({ color: 0xef4444, toneMapped: false });
+        const emerg = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.24, 0.42), emergMat);
+        emerg.position.set(0, LAB_CEILING_Y - 0.55, bz + 8);
+        ceilingGrp.add(emerg);
+        this.labEmergencyLights.push(emergMat);
+      }
+    }
+    girderInst.instanceMatrix.needsUpdate = true;
+    ceilingGrp.add(girderInst, ductLeft, ductRight);
+    ceilingGrp.visible = false; // Default cutaway in aerial Commander view; toggled ON in FP
+    this.cityGroup.add(ceilingGrp);
+    this.labCeilingGroup = ceilingGrp;
+  }
+
   public syncDefenseAndTrain(
     walls: DefenseWallData[],
     gates: BlastGateData[],
@@ -4739,7 +4995,9 @@ export class CityRenderer {
     ammoCaches: AmmoCacheData[] = [],
     fpCamY = 1.68,
     stationGates?: KtxGates,
-    explosiveHazards: ExplosiveHazardData[] = []
+    explosiveHazards: ExplosiveHazardData[] = [],
+    labPods: LabContainmentPodData[] = [],
+    extractionApc?: ExtractionApcData
   ): void {
     // 0a. Walkable Interior Doors (open swing, locked padlock/rattle, cracked glass stages, broken leaves)
     for (let di = 0; di < interiorDoors.length; di++) {
@@ -4805,7 +5063,25 @@ export class CityRenderer {
         fx.coneMesh.visible = true;
       }
     }
-    if (isFirstPerson && (insideTrainCar > 0 || insideBuildingId)) {
+    const isLab = this.currentLayout?.mapId === 'bsl4_lab';
+    if (this.labCeilingGroup) {
+      this.labCeilingGroup.visible = isFirstPerson;
+    }
+
+    if (isLab) {
+      const inDarkBay = fpCamZ >= 74 && fpCamZ < 116;
+      const inGarage = fpCamZ >= 122;
+      if (isFirstPerson) {
+        const mult = insideBuildingId ? 0.22 : inDarkBay ? 0.14 : inGarage ? 0.38 : 0.24;
+        this.ambientLight.intensity = this.baseAmbientIntensity * mult;
+        this.hemiLight.intensity = this.baseHemiIntensity * mult;
+        this.sunLight.intensity = this.baseSunIntensity * (inGarage ? 0.22 : 0.12);
+      } else {
+        this.ambientLight.intensity = this.baseAmbientIntensity * 0.72;
+        this.hemiLight.intensity = this.baseHemiIntensity * 0.72;
+        this.sunLight.intensity = this.baseSunIntensity * 0.75;
+      }
+    } else if (isFirstPerson && (insideTrainCar > 0 || insideBuildingId)) {
       this.ambientLight.intensity = this.baseAmbientIntensity * 0.26;
       this.hemiLight.intensity = this.baseHemiIntensity * 0.24;
       this.sunLight.intensity = this.baseSunIntensity * 0.20;
@@ -4826,6 +5102,16 @@ export class CityRenderer {
         this.interiorPointLight.intensity = 0;
       }
       this.trainRedPointLight.intensity = 0;
+    } else if (isFirstPerson && isLab) {
+      const inDarkBay = fpCamZ >= 74 && fpCamZ < 116;
+      const inGarage = fpCamZ >= 122;
+      const zoneColor = fpCamZ < -136 ? 0x34d399 : fpCamZ < -58 ? 0x38bdf8 : fpCamZ < 32 ? 0x67e8f9 : inDarkBay ? 0xf59e0b : inGarage ? 0xf8fafc : 0xbae6fd;
+      this.interiorPointLight.color.setHex(zoneColor);
+      this.interiorPointLight.distance = inGarage ? 30 : 22;
+      this.interiorPointLight.position.set(fpCamX, 6.8, fpCamZ);
+      this.interiorPointLight.intensity = inGarage ? 3.2 : inDarkBay ? (gridFlickerTimer > 0 ? 0.35 : 0.95) : 1.75;
+      this.trainRedPointLight.position.set(fpCamX, 6.4, fpCamZ - 8);
+      this.trainRedPointLight.intensity = Math.sin(time * 6.5) > 0.25 ? 1.8 : 0.25;
     } else if (isFirstPerson && insideTrainCar > 0) {
       this.interiorPointLight.color.setHex(0xffb570);
       this.interiorPointLight.distance = 16;
@@ -5234,6 +5520,54 @@ export class CityRenderer {
           1,
           1
         );
+      }
+    }
+
+    // BSL-4 Lab pods, reactor rings, emergency beacons, APC-01 & tunnel shutter
+    for (let pi = 0; pi < labPods.length; pi++) {
+      const pod = labPods[pi];
+      const vis = this.labPodVisuals.get(pod.id);
+      if (!vis) continue;
+      vis.glass.visible = !pod.breached;
+      vis.core.visible = !pod.breached;
+      if (pod.breached) {
+        const hot = Math.sin(time * 9 + pod.id) > 0;
+        vis.beaconMat.color.setHex(hot ? 0xef4444 : 0x7f1d1d);
+      } else {
+        vis.beaconMat.color.setHex(0x34d399);
+      }
+    }
+    for (let ri = 0; ri < this.labReactorRings.length; ri++) {
+      this.labReactorRings[ri].rotation.z = time * (ri === 0 ? 1.15 : -1.4);
+    }
+    for (let li = 0; li < this.labEmergencyLights.length; li++) {
+      const hot = Math.sin(time * 7.5 + li * 1.3) > 0.15;
+      this.labEmergencyLights[li].color.setHex(hot ? 0xff2d20 : 0x450a0a);
+    }
+    if (this.extractionApcGroup && extractionApc) {
+      this.extractionApcGroup.position.set(extractionApc.x, 0, extractionApc.z);
+      if (this.apcBeaconMat) {
+        if (extractionApc.state === 'BOARDING' || extractionApc.state === 'DEPARTING' || extractionApc.state === 'ESCAPED') {
+          this.apcBeaconMat.color.setHex(Math.sin(time * 10) > 0 ? 0x4ade80 : 0x16a34a);
+        } else if (extractionApc.state === 'WARMING_UP') {
+          this.apcBeaconMat.color.setHex(Math.sin(time * 8) > 0 ? 0xfacc15 : 0xd97706);
+        } else {
+          this.apcBeaconMat.color.setHex(0x38bdf8);
+        }
+      }
+      if (this.apcRampMesh) {
+        const lowered = extractionApc.state === 'BOARDING';
+        const targetAngle = lowered ? -1.25 : 0;
+        this.apcRampMesh.rotation.x += (targetAngle - this.apcRampMesh.rotation.x) * 0.22;
+        this.apcRampMesh.position.y = lowered ? 0.55 : 1.15;
+        this.apcRampMesh.position.z = lowered ? -3.95 : -3.45;
+      }
+      if (this.tunnelShutterMesh) {
+        const frac = extractionApc.shutterOpenFraction;
+        const scaleY = Math.max(0.06, 1 - frac * 0.94);
+        this.tunnelShutterMesh.scale.y = scaleY;
+        this.tunnelShutterMesh.position.y = 3.2 * scaleY + frac * 6.0;
+        this.tunnelShutterMesh.visible = frac < 0.98;
       }
     }
 

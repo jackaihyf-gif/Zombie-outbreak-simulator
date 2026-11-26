@@ -56,19 +56,22 @@ const existingLabels: Record<string, string | string[]> = {
     "三道防线 · 456 米城市走廊",
     "7×7 路网 · 49 个街区",
     "两道桥头堡防线 · 跨河瓶颈",
-    "5×5 高密度街区"
+    "5×5 高密度街区",
+    "8 段地下隔离区 · APC 隧道突围"
   ],
   ".map-card h3": [
     "🧱 城墙与特快列车",
     "🏙️ 超级都市",
     "🌉 跨河双桥",
-    "🏟️ 霓虹市中心"
+    "🏟️ 霓虹市中心",
+    "☣️ BSL-4 地下绝密实验室"
   ],
   ".map-card p": [
     "穿过高速公路事故区、市中心运河、砖墙小巷与三道防线，抵达南部 KTX 车站。",
     "摩天楼、体育场广场和工业区组成的大城市，设有两处撤离终点。",
     "河流隔开市中心与南部安全区，两岸建有桥头堡城墙与防爆闸门，支持尸潮破城模式与油罐车陷阱。",
-    "高楼间的狭窄街区，恐慌会沿十字路口迅速扩散。"
+    "高楼间的狭窄街区，恐慌会沿十字路口迅速扩散。",
+    "从破裂的 0 号收容舱突围：穿越 3 道防爆密封墙、可反锁冷库与基因实验室、反应堆天桥与停电危化库，在车库坚守 40 秒乘 APC-01 装甲车冲破隧道逃生。"
   ],
   ".scenario-card .tag": [
     "多道防线 · 尸堆与列车",
@@ -172,7 +175,32 @@ const terms: Record<string, string> = {
   'Midtown Arcade Mart': '市中心街机便利店',
   'Southside 24H Pharmacy': '南区24小时药房',
   'Advancing on the South Safe Zone': '向南部安全区推进',
-  'Clinic Bed': '诊所病床', Bench: '长椅', 'KTX Car 1 — Engineer Cabin Console': 'KTX 一号车厢驾驶台'
+  'Clinic Bed': '诊所病床', Bench: '长椅', 'KTX Car 1 — Engineer Cabin Console': 'KTX 一号车厢驾驶台',
+  'Zone 1 • Sector 0 Containment Vault': '第1区 · 0号绝密收容舱室',
+  'Zone 2 • Quarantine & Bio-Lock 1': '第2区 · 检疫缓冲区与1号气密闸',
+  'Zone 3 • Cryo Vault & Biobank': '第3区 · 深冷样本库区',
+  'Zone 4 • Genetics & Autopsy Wing': '第4区 · 基因测序与病理解剖翼楼',
+  'Zone 5 • Reactor Core & Bio-Lock 2': '第5区 · 反应堆大厅与2号气密闸',
+  'Zone 6 • Security Command & Armory': '第6区 · 安保指挥中心与军械库',
+  'Zone 7 • Generator & Hazmat Bay': '第7区 · 备用发电机与断电危化区',
+  'Zone 8 • Extraction Garage & Tunnel': '第8区 · 地下车库与隧道撤离口',
+  'Bio-Lock 1 • Quarantine Bulkhead': '第1道密封墙 · 检疫防爆闸',
+  'Bio-Lock 2 • Reactor Containment': '第2道密封墙 · 反应堆防爆闸',
+  'Bulkhead 3 • Extraction Garage': '第3道密封墙 · 撤离车库防爆闸',
+  'West Reactor Catwalk': '反应堆西侧高架天桥',
+  'East Reactor Catwalk': '反应堆东侧高架天桥',
+  'Cryo Biobank West': '西侧低温生物样本库',
+  'Cryo Specimen Lab East': '东侧深冷实验间',
+  'Virology & Autopsy Suite': '病毒学与病理解剖室',
+  'Genetics Core Lab': '基因测序核心实验室',
+  'BSL-4 Cleanroom Wing': 'BSL-4 正压洁净室',
+  'Security Command Center': '安保监控指挥室',
+  'Tactical Armory & Infirmary': '战术军械与急救医疗室',
+  'APC-01 Armored Extraction': 'APC-01 装甲撤离车',
+  'APC-01 Extraction Garage': 'APC-01 地下撤离车库',
+  'Start APC-01 Extraction [E]': '前往车库启动 APC-01 [E]',
+  'Hold Garage for APC-01': '在车库坚守等待 APC-01 预热',
+  'Board APC-01 Rear Ramp [E]': '从尾门登上 APC-01 [E]'
 };
 
 export function translateWorldLabel(label: string): string {
@@ -228,10 +256,17 @@ const gameplayAlerts: Record<string, string> = {
   '🚄 EMERGENCY EXPRESS DISPATCHED — Train arriving in 7.5s!': '🚄 紧急特快已调度 · 列车 7.5 秒后进站！',
   '⚡ ENERGY DRINK: 8s Unlimited Sprint Surge!': '⚡ 能量饮料 · 8 秒无限体力爆发！',
   '💉 ANTIVIRAL MEDKIT: +65 HP & Infection Cured!': '💉 抗病毒急救包 · 恢复 65 生命并清除感染！',
-  '🎒 EMERGENCY PACK: +40 HP • +60 Stamina • Decoy Refreshed!': '🎒 应急包 · +40 生命 / +60 体力 / 诱饵就绪！'
+  '🎒 EMERGENCY PACK: +40 HP • +60 Stamina • Decoy Refreshed!': '🎒 应急包 · +40 生命 / +60 体力 / 诱饵就绪！',
+  '⚠ SECTOR 0 CONTAINMENT BREACH: Specimen Pods shattering!': '⚠ 0 号绝密收容舱破裂 · 实验样本正全数失控！',
+  '🚨 APC-01 ENGINE IGNITION: Hold Garage 40s while Escape Tunnel unlocks!': '🚨 APC-01 引擎已点火 · 坚守车库 40 秒等待隧道防爆门开启！',
+  '⚠ 20s UNTIL TUNNEL UNLOCK: Second surge breaching Freight Bay!': '⚠ 距隧道开启还有 20 秒 · 第二波尸潮正突破货运区！',
+  '✅ TUNNEL OPEN & APC-01 READY: Board the rear ramp [E]!': '✅ 逃生隧道已开启 · 立即从尾门登上 APC-01 [E]！',
+  '🚐 ALL ABOARD APC-01! Punching through the Escape Tunnel!': '🚐 全员登车完毕 · APC-01 正高速冲破撤离隧道！'
 };
 
 export function translateGameplayAlert(alert: string): string {
+  const apcEscaped = alert.match(/^🚐 ESCAPE SUCCESSFUL: APC-01 cleared the BSL-4 tunnel with (\d+) survivors!$/);
+  if (apcEscaped) return `🚐 突围成功 · APC-01 携 ${apcEscaped[1]} 名幸存者冲出 BSL-4 地下隧道！`;
   const climbers = alert.match(/^INFECTED ON LINE (\d+) WALL: Hold the gates!$/);
   if (climbers) return `感染者爬上第 ${climbers[1]} 道城墙 · 继续守住闸门！`;
   const arrival = alert.match(/^KTX ARRIVED: (\d+) safely evacuated\.$/);
