@@ -311,6 +311,22 @@ class ProjectOutbreakApp {
         this.sound.playDoorPound(x, z, cx, cz, dist);
       } else if (type === 'car_alarm') {
         this.sound.playCarAlarm(x, z, cx, cz, dist);
+      } else if (type === 'tyrant_roar') {
+        this.sound.playTyrantRoar(x, z, cx, cz, dist);
+        if (this.camController.isFirstPerson) {
+          this.camController.addFirstPersonShake(0.045);
+        }
+      } else if (type === 'tyrant_step') {
+        this.sound.playTyrantFootstep(x, z, cx, cz, dist);
+        if (this.camController.isFirstPerson && Math.hypot(x - cx, z - cz) < 22) {
+          this.camController.addFirstPersonShake(0.012);
+        }
+      } else if (type === 'lab_cryo') {
+        this.sound.playLabDevice('cryo_valve');
+      } else if (type === 'lab_turret') {
+        this.sound.playLabDevice('turret_console');
+      } else if (type === 'lab_generator') {
+        this.sound.playLabDevice('backup_generator');
       }
     };
 
@@ -550,8 +566,20 @@ class ProjectOutbreakApp {
     const wood = new THREE.MeshStandardMaterial({ color: 0x745137, emissive: 0x301d16, emissiveIntensity: 0.7, roughness: 0.76 });
     const sleeve = new THREE.MeshStandardMaterial({ color: 0x405573, emissive: 0x172942, emissiveIntensity: 0.68 });
     const sight = new THREE.MeshBasicMaterial({ color: 0xc1e5d8 });
-    const hot = new THREE.MeshBasicMaterial({ color: new THREE.Color(3.6, 1.7, 0.48), toneMapped: false });
-    const core = new THREE.MeshBasicMaterial({ color: new THREE.Color(4.5, 3.6, 1.55), toneMapped: false });
+    const hot = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(1.22, 0.70, 0.26),
+      transparent: true,
+      opacity: 0.58,
+      depthWrite: false,
+      toneMapped: false
+    });
+    const core = new THREE.MeshBasicMaterial({
+      color: new THREE.Color(1.48, 1.20, 0.65),
+      transparent: true,
+      opacity: 0.68,
+      depthWrite: false,
+      toneMapped: false
+    });
     for (const id of Object.keys(PLAYER_WEAPONS) as PlayerWeapon[]) {
       const root = new THREE.Group();
       const muzzle = new THREE.Group();
@@ -589,9 +617,9 @@ class ProjectOutbreakApp {
         box(0.078, 0.08, 0.075, 0, -0.10, 0.055, polymer, magazine);
       }
       muzzle.position.set(0, 0.015, barrelEnd - 0.012);
-      box(0.095, 0.095, 0.27, 0, 0, -0.105, core, flash);
+      box(0.048, 0.048, 0.13, 0, 0, -0.055, core, flash);
       for (const angle of [0.3, 1.3, 2.35]) {
-        box(0.32, 0.035, 0.22, 0, 0, -0.10, hot, flash).rotation.z = angle;
+        box(0.145, 0.018, 0.10, 0, 0, -0.052, hot, flash).rotation.z = angle;
       }
       flash.visible = false;
       muzzle.add(flash);
@@ -814,6 +842,33 @@ class ProjectOutbreakApp {
       this.hoverTooltipEl.style.top = `${clientY + 14}px`;
       this.hoverTooltipEl.style.display = 'block';
       return;
+    }
+
+    const tyrant = this.sim.tyrantAgentId !== null ? this.sim.getAgentById(this.sim.tyrantAgentId) : undefined;
+    if (tyrant && tyrant.isAlive && Math.hypot(hit.x - tyrant.x, hit.z - tyrant.z) <= 3.2) {
+      this.hoverTooltipEl.textContent = `☠ ${tyrant.name} • HP ${Math.ceil(tyrant.health)}/${tyrant.maxHealth} (Phase ${tyrant.bossPhase ?? 1})`;
+      this.hoverTooltipEl.style.left = `${clientX + 14}px`;
+      this.hoverTooltipEl.style.top = `${clientY + 14}px`;
+      this.hoverTooltipEl.style.display = 'block';
+      return;
+    }
+
+    for (const dev of this.sim.labDevices) {
+      if (Math.hypot(hit.x - dev.x, hit.z - dev.z) <= 3.2) {
+        const st =
+          dev.state === 'ready'
+            ? this.ui.t('Ready [E]', '就绪 [E]')
+            : dev.state === 'active'
+            ? this.ui.t(`Active ${Math.ceil(dev.timer)}s`, `激活中 ${Math.ceil(dev.timer)} 秒`)
+            : dev.state === 'cooldown'
+            ? this.ui.t(`Cooldown ${Math.ceil(dev.cooldown)}s`, `冷却 ${Math.ceil(dev.cooldown)} 秒`)
+            : this.ui.t('Online', '已恢复供电');
+        this.hoverTooltipEl.textContent = `⚙️ ${dev.label} • ${st}`;
+        this.hoverTooltipEl.style.left = `${clientX + 14}px`;
+        this.hoverTooltipEl.style.top = `${clientY + 14}px`;
+        this.hoverTooltipEl.style.display = 'block';
+        return;
+      }
     }
 
     for (const h of this.sim.explosiveHazards) {
@@ -1137,7 +1192,9 @@ class ProjectOutbreakApp {
       this.sim.layeredKtx ? this.sim.ktxGates : undefined,
       this.sim.explosiveHazards,
       this.sim.labPods,
-      this.sim.extractionApc
+      this.sim.extractionApc,
+      this.sim.labDevices,
+      this.sim.labPowerRestored
     );
 
     this.syncMissionMarkers();
@@ -1244,13 +1301,14 @@ class ProjectOutbreakApp {
         ? Math.max(0, 1 - Math.abs(age - 0.23) / 0.13) * 0.13
         : recoil * (id === 'pistol' ? 0.065 : 0.028);
       model.magazine.position.y = -Math.max(0, 1 - Math.abs(reload - 0.48) / 0.31) * 0.25;
-      model.flash.visible = age < 0.055;
+      model.flash.visible = age < 0.036;
       if (model.flash.visible) {
-        const envelope = (1 - age / 0.055) * tuning.flash;
-        model.flash.scale.setScalar(0.45 + envelope);
+        const envelope = (1 - age / 0.036) * tuning.flash;
+        const adsDim = 1 - this.adsLerp * 0.38;
+        model.flash.scale.setScalar((0.36 + envelope * 0.48) * adsDim);
         model.flash.rotation.z = weapon.shots * 2.4;
         model.muzzle.getWorldPosition(this.muzzleWorld);
-        this.flashlightSpot.intensity += envelope * 14;
+        this.flashlightSpot.intensity += envelope * 3.2;
         if (age === 0) {
           for (const shot of this.sim.effects) {
             if (shot.type !== 'player_shot' || shot.age !== 0 ||

@@ -23,6 +23,9 @@ export default defineConfig({
           if (normalized.endsWith('/src/bsl4Lab.ts') || normalized.endsWith('/src/cityData.ts')) {
             return 'world-layout';
           }
+          if (normalized.endsWith('/src/cityRenderer.ts') || normalized.endsWith('/src/agentRenderer.ts')) {
+            return 'world-renderer';
+          }
           return undefined;
         }
       }

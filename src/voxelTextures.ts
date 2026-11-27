@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { BuildingInteriorData, DoorDamageStage } from './types';
 
 export type AgentArchetype =
   | 'civilian'
@@ -30,7 +31,14 @@ export type NeonSignLabel =
   | 'METRO'
   | 'RAMEN'
   | 'CAFE'
-  | 'SUBWAY';
+  | 'SUBWAY'
+  | 'CRYO LAB'
+  | 'AUTOPSY'
+  | 'GENETICS'
+  | 'CLEANROOM'
+  | 'SEC CMD'
+  | 'ARMORY'
+  | 'BSL-4';
 
 const PIXEL_FONT_5X5: Record<string, string[]> = {
   A: ['01110', '10001', '11111', '10001', '10001'],
@@ -613,7 +621,7 @@ export class VoxelTextureStudio {
   }
 
   public getBuildingFacadeBundle(
-    style: 'brick' | 'concrete' | 'skyscraper' | 'warehouse',
+    style: 'brick' | 'concrete' | 'skyscraper' | 'warehouse' | 'lab',
     colorHex: number,
     height: number
   ): BuildingFacadeBundle {
@@ -635,6 +643,53 @@ export class VoxelTextureStudio {
 
     ctx.fillStyle = baseHex;
     ctx.fillRect(0, 0, 128, 256);
+
+    if (style === 'lab') {
+      ctx.fillStyle = '#151e2c';
+      ctx.fillRect(0, 0, 128, 256);
+      for (let y = 0; y < 256; y += 32) {
+        ctx.fillStyle = '#0c121c';
+        ctx.fillRect(0, y, 128, 3);
+        ctx.fillStyle = '#243247';
+        ctx.fillRect(0, y + 3, 128, 2);
+        for (let x = 0; x < 128; x += 32) {
+          ctx.fillStyle = this.hash(x, y, 712) > 0.5 ? '#1c2738' : '#182231';
+          ctx.fillRect(x + 2, y + 6, 28, 24);
+          ctx.fillStyle = '#334155';
+          ctx.fillRect(x + 4, y + 8, 2, 2);
+          ctx.fillRect(x + 26, y + 8, 2, 2);
+        }
+      }
+      // Subtle cyan / amber pressurized conduit stripes (zero residential windows)
+      for (const slitY of [68, 134, 196]) {
+        const slitColor = slitY === 134 ? '#0ea5e9' : '#22d3ee';
+        ctx.fillStyle = '#090d16';
+        ctx.fillRect(6, slitY - 4, 116, 12);
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(8, slitY - 2, 112, 8);
+        for (let bx = 12; bx < 112; bx += 26) {
+          if (this.hash(bx, slitY, colorHex & 0xfff) > 0.32) {
+            ctx.fillStyle = slitColor;
+            ctx.fillRect(bx, slitY, 16, 4);
+            emCtx.fillStyle = slitColor;
+            emCtx.fillRect(bx, slitY, 16, 4);
+          }
+        }
+      }
+      ctx.fillStyle = '#0b111a';
+      ctx.fillRect(0, 232, 128, 24);
+      ctx.fillStyle = '#0ea5e9';
+      ctx.fillRect(0, 229, 128, 3);
+      emCtx.fillStyle = '#0369a1';
+      emCtx.fillRect(0, 229, 128, 2);
+
+      const bundle: BuildingFacadeBundle = {
+        map: this.finalizeTexture(canvas, { nearestMin: false }),
+        emissiveMap: this.finalizeTexture(emCanvas, { nearestMin: false })
+      };
+      this.facadeCache.set(key, bundle);
+      return bundle;
+    }
 
     if (style === 'brick') {
       for (let y = 0; y < 256; y += 8) {
@@ -864,6 +919,13 @@ export class VoxelTextureStudio {
     if (label === 'RAMEN') return ['#f97316', '#fde68a'];
     if (label === 'CAFE') return ['#fb7185', '#fef3c7'];
     if (label === 'SUBWAY') return ['#84cc16', '#ecfccb'];
+    if (label === 'CRYO LAB') return ['#38bdf8', '#cffafe'];
+    if (label === 'AUTOPSY') return ['#f43f5e', '#ffe4e6'];
+    if (label === 'GENETICS') return ['#10b981', '#d1fae5'];
+    if (label === 'CLEANROOM') return ['#22d3ee', '#e0f2fe'];
+    if (label === 'SEC CMD') return ['#38bdf8', '#bae6fd'];
+    if (label === 'ARMORY') return ['#f59e0b', '#fef3c7'];
+    if (label === 'BSL-4') return ['#ef4444', '#fecaca'];
     return ['#38bdf8', '#e0f2fe'];
   }
 
@@ -1270,7 +1332,7 @@ export class VoxelTextureStudio {
   }
 
   public getInteriorFloorTexture(
-    theme: 'mart' | 'clinic' | 'hospital' | 'terminal',
+    theme: BuildingInteriorData['theme'],
     repeatX = 4,
     repeatY = 3
   ): THREE.CanvasTexture {
@@ -1295,6 +1357,14 @@ export class VoxelTextureStudio {
           ctx.fillStyle = isDarkCell ? '#3d4c5c' : '#4a5a6b';
         } else if (theme === 'hospital') {
           ctx.fillStyle = isDarkCell ? '#8b99ab' : '#9aa8b8';
+        } else if (theme === 'lab_cryo') {
+          ctx.fillStyle = isDarkCell ? '#162436' : '#1d2f44';
+        } else if (theme === 'lab_bio') {
+          ctx.fillStyle = isDarkCell ? '#1a2733' : '#243544';
+        } else if (theme === 'lab_armory') {
+          ctx.fillStyle = isDarkCell ? '#1d222c' : '#262d39';
+        } else if (theme === 'lab_airlock') {
+          ctx.fillStyle = isDarkCell ? '#161f2c' : '#232f40';
         } else {
           ctx.fillStyle = isDarkCell ? '#202632' : '#2a3242';
         }
@@ -1307,6 +1377,21 @@ export class VoxelTextureStudio {
     if (theme === 'terminal') {
       ctx.fillStyle = '#0ea5e9';
       ctx.fillRect(0, 29, 64, 4);
+    } else if (theme === 'lab_cryo') {
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.48)';
+      ctx.fillRect(0, 31, 64, 2);
+    } else if (theme === 'lab_bio') {
+      ctx.fillStyle = 'rgba(16, 185, 129, 0.48)';
+      ctx.fillRect(0, 31, 64, 2);
+    } else if (theme === 'lab_armory') {
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.5)';
+      ctx.fillRect(0, 31, 64, 2);
+    } else if (theme === 'lab_airlock') {
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.72)';
+      ctx.fillRect(0, 0, 64, 4);
+      ctx.fillRect(0, 60, 64, 4);
+      ctx.fillStyle = 'rgba(45, 212, 191, 0.52)';
+      ctx.fillRect(30, 6, 4, 52);
     }
 
     const tex = this.finalizeTexture(canvas, { repeatX, repeatY });
@@ -1480,58 +1565,202 @@ export class VoxelTextureStudio {
     return tex;
   }
 
-  public getDoorGlassTexture(damageStage: 0 | 1 | 2): THREE.CanvasTexture {
-    const key = `door-glass-${damageStage}`;
+  private drawCrackLine(
+    ctx: CanvasRenderingContext2D,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    color: string,
+    thickness = 2
+  ): void {
+    ctx.fillStyle = color;
+    const steps = Math.max(8, Math.round(Math.hypot(x1 - x0, y1 - y0) * 0.45));
+    for (let s = 0; s <= steps; s++) {
+      const px = Math.round(x0 + ((x1 - x0) * s) / steps + ((s % 3) - 1));
+      const py = Math.round(y0 + ((y1 - y0) * s) / steps + (s % 2 === 0 ? 1 : -1));
+      ctx.fillRect(px, py, thickness, thickness);
+    }
+  }
+
+  public getDoorGlassTexture(damageStage: DoorDamageStage): THREE.CanvasTexture {
+    const key = `door-glass-v2-${damageStage}`;
     const cached = this.texCache.get(key);
     if (cached) return cached;
 
-    const [canvas, ctx] = this.makeCanvas(64, 96);
-    ctx.fillStyle = 'rgba(34, 46, 62, 0.30)';
-    ctx.fillRect(0, 0, 64, 96);
+    const [canvas, ctx] = this.makeCanvas(128, 192);
+    // Translucent cyan-slate armored glass tint so silhouettes behind doors are clearly legible
+    ctx.fillStyle = 'rgba(48, 96, 128, 0.26)';
+    ctx.fillRect(0, 0, 128, 192);
 
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.72)';
-    ctx.fillRect(0, 0, 64, 4);
-    ctx.fillRect(0, 92, 64, 4);
-    ctx.fillRect(0, 0, 3, 96);
-    ctx.fillRect(61, 0, 3, 96);
-    ctx.fillRect(0, 52, 64, 3);
+    // Specular diagonal sheen
+    ctx.fillStyle = 'rgba(186, 230, 253, 0.10)';
+    for (let s = 0; s < 140; s += 6) {
+      ctx.fillRect(14 + Math.round(s * 0.55), 14 + s, 18, 4);
+    }
+
+    if (damageStage >= 3) {
+      // Punched-out transparent hole through reinforced pane (true see-through gap!)
+      if (damageStage === 3) {
+        ctx.clearRect(40, 58, 44, 52);
+        ctx.clearRect(30, 72, 64, 24);
+      } else {
+        ctx.clearRect(22, 34, 84, 108);
+        ctx.clearRect(14, 52, 100, 70);
+      }
+    }
+
+    // Perimeter metallic sash & safety center transom
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+    ctx.fillRect(0, 0, 128, 7);
+    ctx.fillRect(0, 185, 128, 7);
+    ctx.fillRect(0, 0, 6, 192);
+    ctx.fillRect(122, 0, 6, 192);
+    ctx.fillRect(0, 102, 128, 6);
 
     if (damageStage >= 1) {
-      ctx.fillStyle = 'rgba(17, 24, 39, 0.85)';
       const cracks = [
-        [32, 40, 18, 22],
-        [32, 40, 48, 24],
-        [32, 40, 20, 58],
-        [32, 40, 50, 62]
+        [64, 78, 36, 44],
+        [64, 78, 92, 46],
+        [64, 78, 38, 114],
+        [64, 78, 96, 118]
       ];
       for (const [x0, y0, x1, y1] of cracks) {
-        const steps = 10;
-        for (let s = 0; s <= steps; s++) {
-          const px = Math.round(x0 + ((x1 - x0) * s) / steps);
-          const py = Math.round(y0 + ((y1 - y0) * s) / steps + (s % 2 === 0 ? 1 : -1));
-          ctx.fillRect(px, py, 2, 2);
-        }
+        this.drawCrackLine(ctx, x0, y0, x1, y1, 'rgba(226, 232, 240, 0.72)', 2);
       }
     }
     if (damageStage >= 2) {
-      ctx.fillStyle = 'rgba(9, 12, 18, 0.92)';
-      const extra = [
-        [24, 34, 6, 12],
-        [40, 46, 58, 78],
-        [30, 52, 10, 84],
-        [36, 30, 56, 14]
+      const web = [
+        [52, 68, 12, 24],
+        [76, 86, 116, 152],
+        [60, 100, 18, 166],
+        [72, 60, 112, 26],
+        [44, 84, 16, 94],
+        [84, 82, 114, 96]
       ];
-      for (const [x0, y0, x1, y1] of extra) {
-        const steps = 12;
-        for (let s = 0; s <= steps; s++) {
-          const px = Math.round(x0 + ((x1 - x0) * s) / steps);
-          const py = Math.round(y0 + ((y1 - y0) * s) / steps + ((s % 3) - 1));
-          ctx.fillRect(px, py, 2, 2);
+      for (const [x0, y0, x1, y1] of web) {
+        this.drawCrackLine(ctx, x0, y0, x1, y1, 'rgba(15, 23, 42, 0.88)', 3);
+      }
+      ctx.fillStyle = 'rgba(153, 27, 27, 0.58)';
+      ctx.fillRect(46, 82, 16, 12);
+      ctx.fillRect(72, 108, 14, 18);
+    }
+    if (damageStage >= 3) {
+      // Jagged glass shard fringe & smeared crimson warning marks around hole
+      ctx.fillStyle = 'rgba(226, 232, 240, 0.72)';
+      const hole = damageStage === 3 ? [40, 58, 84, 110] : [22, 34, 106, 142];
+      for (let x = hole[0]; x < hole[2]; x += 10) {
+        ctx.fillRect(x, hole[1], 4, 5);
+        ctx.fillRect(x + 3, hole[3] - 5, 4, 5);
+      }
+      for (let y = hole[1]; y < hole[3]; y += 12) {
+        ctx.fillRect(hole[0], y, 5, 4);
+        ctx.fillRect(hole[2] - 5, y + 3, 5, 4);
+      }
+      ctx.fillStyle = 'rgba(185, 28, 28, 0.75)';
+      ctx.fillRect(28, 128, 18, 22);
+      ctx.fillRect(84, 134, 22, 16);
+    }
+    if (damageStage >= 4) {
+      // Flashing red integrity-critical frame strips
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.88)';
+      ctx.fillRect(0, 7, 128, 4);
+      ctx.fillRect(0, 181, 128, 4);
+    }
+
+    const tex = this.finalizeTexture(canvas, { nearestMin: true });
+    this.texCache.set(key, tex);
+    return tex;
+  }
+
+  public getBlastGateGlassTexture(damageStage: DoorDamageStage, isLab = false): THREE.CanvasTexture {
+    const key = `blast-gate-glass-${damageStage}-${isLab ? 'lab' : 'std'}`;
+    const cached = this.texCache.get(key);
+    if (cached) return cached;
+
+    const [canvas, ctx] = this.makeCanvas(128, 128);
+    // 1. Armored steel outer frame, top lintel band & bottom kickplate
+    ctx.fillStyle = isLab ? '#283649' : '#353f50';
+    ctx.fillRect(0, 0, 128, 20);
+    ctx.fillRect(0, 98, 128, 30);
+    ctx.fillRect(0, 0, 10, 128);
+    ctx.fillRect(118, 0, 10, 128);
+    // Vertical steel reinforcement mullions flanking translucent viewport bays
+    ctx.fillStyle = '#1e2736';
+    ctx.fillRect(60, 18, 8, 84);
+    ctx.fillStyle = isLab ? '#38bdf8' : '#94a3b8';
+    ctx.fillRect(0, 20, 128, 2);
+    ctx.fillRect(0, 96, 128, 2);
+
+    // Hazard stripe on armored bottom apron
+    ctx.fillStyle = '#090d14';
+    ctx.fillRect(0, 104, 128, 18);
+    ctx.fillStyle = '#facc15';
+    for (let sx = -24; sx < 152; sx += 18) {
+      ctx.beginPath();
+      ctx.moveTo(sx, 122);
+      ctx.lineTo(sx + 9, 122);
+      ctx.lineTo(sx + 21, 104);
+      ctx.lineTo(sx + 12, 104);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // 2. Translucent armored observation glass across y: 22..96 (left & right bays)
+    const bays: Array<[number, number]> = [
+      [10, 60],
+      [68, 118]
+    ];
+    for (const [bx0, bx1] of bays) {
+      const bw = bx1 - bx0;
+      ctx.fillStyle = isLab ? 'rgba(56, 189, 248, 0.25)' : 'rgba(100, 150, 188, 0.26)';
+      ctx.fillRect(bx0, 22, bw, 74);
+
+      // Horizontal steel safety cross-bar across center of polycarbonate glass
+      ctx.fillStyle = 'rgba(30, 41, 59, 0.84)';
+      ctx.fillRect(bx0, 56, bw, 5);
+
+      if (damageStage >= 3) {
+        if (damageStage === 3) {
+          ctx.clearRect(bx0 + 10, 32, bw - 20, 22);
+          ctx.clearRect(bx0 + 12, 64, bw - 24, 22);
+        } else {
+          ctx.clearRect(bx0 + 4, 25, bw - 8, 66);
         }
       }
-      ctx.fillStyle = 'rgba(110, 14, 18, 0.72)';
-      ctx.fillRect(20, 46, 10, 8);
-      ctx.fillRect(36, 56, 8, 12);
+
+      if (damageStage >= 1) {
+        const cx = (bx0 + bx1) * 0.5;
+        this.drawCrackLine(ctx, cx, 42, bx0 + 4, 26, 'rgba(226, 232, 240, 0.78)', 2);
+        this.drawCrackLine(ctx, cx, 42, bx1 - 4, 72, 'rgba(226, 232, 240, 0.78)', 2);
+        this.drawCrackLine(ctx, cx, 74, bx0 + 6, 90, 'rgba(226, 232, 240, 0.68)', 2);
+      }
+      if (damageStage >= 2) {
+        const cx = (bx0 + bx1) * 0.5;
+        this.drawCrackLine(ctx, cx - 6, 36, bx1 - 4, 25, 'rgba(15, 23, 42, 0.90)', 3);
+        this.drawCrackLine(ctx, cx + 4, 62, bx0 + 3, 92, 'rgba(15, 23, 42, 0.90)', 3);
+        ctx.fillStyle = 'rgba(153, 27, 27, 0.55)';
+        ctx.fillRect(bx0 + 8, 66, 14, 14);
+      }
+      if (damageStage >= 3) {
+        ctx.fillStyle = 'rgba(226, 232, 240, 0.78)';
+        for (let sx = bx0 + 6; sx < bx1 - 6; sx += 9) {
+          ctx.fillRect(sx, 24, 3, 5);
+          ctx.fillRect(sx + 2, 89, 3, 5);
+        }
+        ctx.fillStyle = 'rgba(185, 28, 28, 0.78)';
+        ctx.fillRect(bx0 + 4, 76, bw - 8, 6);
+      }
+    }
+
+    // 3. Stage-specific structural dent & critical warning stripe along lintel
+    if (damageStage >= 3) {
+      ctx.fillStyle = damageStage === 4 ? '#ef4444' : '#f59e0b';
+      ctx.fillRect(10, 4, 108, 6);
+    }
+    if (damageStage === 4) {
+      ctx.fillStyle = 'rgba(127, 29, 29, 0.72)';
+      ctx.fillRect(0, 98, 128, 6);
     }
 
     const tex = this.finalizeTexture(canvas, { nearestMin: true });

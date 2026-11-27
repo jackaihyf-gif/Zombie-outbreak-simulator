@@ -30,9 +30,19 @@ export function describeRadio({ call, unit }: RadioTransmission, language: GameL
     case 'support':
       text = zh ? `${place}有 ${call.count} 名感染者，我们人手不够，请求支援！` : `${place}: ${call.count} infected. We're outnumbered. Requesting backup!`;
       break;
-    case 'warning':
-      text = zh ? `${place}的平民，快离开街道！附近有 ${call.count} 名感染者！` : `Civilians in ${place}, get off the street! ${call.count} infected nearby!`;
+    case 'warning': {
+      const isLabPlace = /^Zone \d/i.test(call.place);
+      if (isLabPlace) {
+        text = zh
+          ? `${place}的工作人员，立即撤离走廊！附近有 ${call.count} 名感染者！`
+          : `Personnel in ${place}, evacuate the corridor! ${call.count} infected nearby!`;
+      } else {
+        text = zh
+          ? `${place}的平民，快离开街道！附近有 ${call.count} 名感染者！`
+          : `Civilians in ${place}, get off the street! ${call.count} infected nearby!`;
+      }
       break;
+    }
     case 'dispatch':
       text = zh ? `收到。已派出 ${call.count} 名队员前往${place}。` : `Copy. ${call.count} responders assigned to ${place}.`;
       break;

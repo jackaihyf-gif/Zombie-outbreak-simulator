@@ -57,7 +57,7 @@ const existingLabels: Record<string, string | string[]> = {
     "7×7 路网 · 49 个街区",
     "两道桥头堡防线 · 跨河瓶颈",
     "5×5 高密度街区",
-    "8 段地下隔离区 · APC 隧道突围"
+    "封闭地下气密隔离区 · APC 隧道突围"
   ],
   ".map-card h3": [
     "🧱 城墙与特快列车",
@@ -71,7 +71,7 @@ const existingLabels: Record<string, string | string[]> = {
     "摩天楼、体育场广场和工业区组成的大城市，设有两处撤离终点。",
     "河流隔开市中心与南部安全区，两岸建有桥头堡城墙与防爆闸门，支持尸潮破城模式与油罐车陷阱。",
     "高楼间的狭窄街区，恐慌会沿十字路口迅速扩散。",
-    "从破裂的 0 号收容舱突围：穿越 3 道防爆密封墙、可反锁冷库与基因实验室、反应堆天桥与停电危化库，在车库坚守 40 秒乘 APC-01 装甲车冲破隧道逃生。"
+    "纯地下封闭式生化综合体：从破裂的 0 号收容舱突围，穿越 3 组气密消毒舱、玻璃观察窄廊、可反锁实验室、挑高反应堆天桥与停电危化区，在地下车库坚守 40 秒乘 APC-01 冲出山体隧道。"
   ],
   ".scenario-card .tag": [
     "多道防线 · 尸堆与列车",
@@ -138,6 +138,7 @@ const terms: Record<string, string> = {
   'CITY NORMAL': '城市正常', 'LOCAL INCIDENT': '局部事件', 'ACTIVE OUTBREAK': '感染爆发',
   'CONTAINED': '疫情受控', 'CRITICAL COLLAPSE': '城市濒临沦陷',
   HOLDING: '守住', WITHDRAWN: '已撤防', BREACHED: '失守', CONTESTED: '交战中', 'UNDER SIEGE': '遭围攻',
+  SEALED: '已气密锁死', OPEN: '已开启',
   'South Express Station': '南部特快车站', 'KTX Platform 1': 'KTX 一号站台',
   'Evac Zone': '撤离区', 'Evacuation Zone': '撤离区', 'Antiviral Medkit': '抗病毒急救包',
   'Energy Drink': '能量饮料', 'Emergency Pack': '应急包', 'Store Counter': '商店柜台',
@@ -178,12 +179,22 @@ const terms: Record<string, string> = {
   'Clinic Bed': '诊所病床', Bench: '长椅', 'KTX Car 1 — Engineer Cabin Console': 'KTX 一号车厢驾驶台',
   'Zone 1 • Sector 0 Containment Vault': '第1区 · 0号绝密收容舱室',
   'Zone 2 • Quarantine & Bio-Lock 1': '第2区 · 检疫缓冲区与1号气密闸',
+  'Zone 2 • Quarantine & Airlock Alpha': '第2区 · 检疫区与 Alpha 气密隔离舱',
   'Zone 3 • Cryo Vault & Biobank': '第3区 · 深冷样本库区',
   'Zone 4 • Genetics & Autopsy Wing': '第4区 · 基因测序与病理解剖翼楼',
   'Zone 5 • Reactor Core & Bio-Lock 2': '第5区 · 反应堆大厅与2号气密闸',
+  'Zone 5 • Vaulted Reactor Core': '第5区 · 挑高反应堆中庭',
   'Zone 6 • Security Command & Armory': '第6区 · 安保指挥中心与军械库',
+  'Zone 6 • Airlock Beta & Security Command': '第6区 · Beta 气密闸与安保区',
   'Zone 7 • Generator & Hazmat Bay': '第7区 · 备用发电机与断电危化区',
   'Zone 8 • Extraction Garage & Tunnel': '第8区 · 地下车库与隧道撤离口',
+  'Zone 8 • Airlock Gamma & Extraction Garage': '第8区 · Gamma 气密闸与撤离车库',
+  'Airlock Alpha': 'Alpha 主气密闸',
+  'Airlock Beta': 'Beta 主气密闸',
+  'Airlock Gamma': 'Gamma 主气密闸',
+  'Airlock α': 'Alpha 气密闸',
+  'Airlock β': 'Beta 气密闸',
+  'Airlock γ': 'Gamma 气密闸',
   'Bio-Lock 1 • Quarantine Bulkhead': '第1道密封墙 · 检疫防爆闸',
   'Bio-Lock 2 • Reactor Containment': '第2道密封墙 · 反应堆防爆闸',
   'Bulkhead 3 • Extraction Garage': '第3道密封墙 · 撤离车库防爆闸',
@@ -200,15 +211,28 @@ const terms: Record<string, string> = {
   'APC-01 Extraction Garage': 'APC-01 地下撤离车库',
   'Start APC-01 Extraction [E]': '前往车库启动 APC-01 [E]',
   'Hold Garage for APC-01': '在车库坚守等待 APC-01 预热',
-  'Board APC-01 Rear Ramp [E]': '从尾门登上 APC-01 [E]'
+  'Board APC-01 Rear Ramp [E]': '从尾门登上 APC-01 [E]',
+  'Subject-00 "TYRANT"': '零号实验体 · 暴君',
+  'Cryo Purge Valve': '液氮泄压阀',
+  'Security Turret Terminal': '自动机枪塔控制台',
+  'Backup Power Generator': '备用应急发电机',
+  'Lab Corridor': '实验室主走廊',
+  'Triggering BIO-ALARM': '正在触发实验室生物警报',
+  'Holding at Extraction Garage (APC-01)': '在撤离车库集结待命（APC-01）',
+  'Boarding APC-01': '正在登上 APC-01 装甲车',
+  'Storming the Extraction Garage': '正突入第 8 区撤离车库'
 };
 
 export function translateWorldLabel(label: string): string {
   return terms[label] ?? label
     .replace(/Line (\d+) (West|East) Gate/g, (_, line, side) => `第${line}道防线${side === 'West' ? '西' : '东'}闸门`)
-    .replace(/^Waiting away from (.+)$/, '在$1外围分散等候')
+    .replace(/waiting away from (.+)$/i, (_, rest: string) => `在${translateWorldLabel(rest)}外围分散等候`)
+    .replace(/^Waiting outside (.+)$/, (_, room: string) => `在${translateWorldLabel(room)}外等待`)
+    .replace(/^Assaulting (.+)$/, (_, target: string) => `正攻击${translateWorldLabel(target)}`)
+    .replace(/^Surging through (.+)$/, (_, target: string) => `正涌入${translateWorldLabel(target)}`)
     .replace(/^Approaching (.+)$/, '前往$1')
     .replace(/^Evacuating through (.+)$/, '经$1撤离')
+    .replace(/^Barricaded inside (.+)$/, (_, room: string) => `在${translateWorldLabel(room)}内反锁坚守`)
     .replace(/^Crossing (.+)$/, '正在通过$1')
     .replace(/^Clearing the inside of (.+)$/, '正在离开$1内侧通道')
     .replace(/^Line (\d+)$/, '第$1道防线')
@@ -232,6 +256,9 @@ const gameplayAlerts: Record<string, string> = {
   'Hunter team deployed': '机动清剿队已部署',
   'EVACUATION: Sector 2, proceed through Line 3 to KTX.': '第一道防线发现感染者 · 第二区居民经第三道防线前往 KTX 车站登车',
   'EVACUATION: Sector 3 and rally groups, proceed to KTX.': '第二道防线发现感染者 · 第三区居民与已集结人群立即前往车站',
+  'BIO-CONTAINMENT ALERT: Zones 2–4 personnel evacuate south through Bio-Lock 2!': '☣ 生化泄露警报：2–4 区科研人员立即经 2 号气密闸向南撤离！',
+  'BIO-CONTAINMENT ALERT: Zones 2–4 personnel evacuate south through Airlock Beta!': '☣ 生化泄露警报：2–4 区科研人员立即经 Beta 气密隔离舱向南撤离！',
+  'FACILITY-WIDE EVACUATION: All personnel report to Zone 8 Extraction Garage (APC-01)!': '🚨 全设施紧急撤离：所有幸存人员立即前往第 8 区地下车库（APC-01）集结！',
   'BREACH: KTX East Gate': 'KTX 东侧登车闸已失守',
   'BREACH: KTX West Gate': 'KTX 西侧勤务闸已失守',
   'BREACH: KTX Mezzanine Gate': 'KTX 夹层咽喉闸已失守',
@@ -261,7 +288,12 @@ const gameplayAlerts: Record<string, string> = {
   '🚨 APC-01 ENGINE IGNITION: Hold Garage 40s while Escape Tunnel unlocks!': '🚨 APC-01 引擎已点火 · 坚守车库 40 秒等待隧道防爆门开启！',
   '⚠ 20s UNTIL TUNNEL UNLOCK: Second surge breaching Freight Bay!': '⚠ 距隧道开启还有 20 秒 · 第二波尸潮正突破货运区！',
   '✅ TUNNEL OPEN & APC-01 READY: Board the rear ramp [E]!': '✅ 逃生隧道已开启 · 立即从尾门登上 APC-01 [E]！',
-  '🚐 ALL ABOARD APC-01! Punching through the Escape Tunnel!': '🚐 全员登车完毕 · APC-01 正高速冲破撤离隧道！'
+  '🚐 ALL ABOARD APC-01! Punching through the Escape Tunnel!': '🚐 全员登车完毕 · APC-01 正高速冲破撤离隧道！',
+  '☠ SUBJECT-00 "TYRANT" BREACHED CONTAINMENT POD 01!': '☠ 零号实验体“暴君”撞破 01 号培养舱逃逸！',
+  '⚠ SUBJECT-00 TYRANT ENRAGED — Phase 2 Sprint & Charge Unlocked!': '⚠ 暴君进入二阶段狂暴 · 解锁冲刺与突进！',
+  '❄️ CRYO PURGE ACTIVE: Zone 3/4 corridors chilled — Infected slowed!': '❄️ 液氮泄压启动 · 3/4 区通道降温，感染者大幅减速！',
+  '🔫 SENTRY TURRETS ONLINE (25s): Automated Overwatch covering Zone 6!': '🔫 自动机枪塔已上线（25 秒）· 正在封锁第 6 区走廊！',
+  '⚡ BACKUP POWER RESTORED: Zone 7 illuminated • APC-01 Warmup reduced to 25s!': '⚡ 备用供电已恢复 · 危化区照明开启，APC-01 预热缩短至 25 秒！'
 };
 
 export function translateGameplayAlert(alert: string): string {
@@ -294,8 +326,8 @@ export function translateGameplayAlert(alert: string): string {
     /^KTX-101 DOCKED \((\d+)s\): BOARD CAR (\d+)$/,
     (_, seconds, car) => `🚄 KTX-101 已进站 · ${seconds} 秒内从 ${car} 号车厢登车`
   ).replace(
-    /^SIEGE WAVE (\d+)\/(\d+): (\d+) infected advancing on (?:Line (\d+)|KTX Terminal|South Safe Zone)!$/,
-    (_, wave, total, size, line) => `尸潮 ${wave}/${total} · ${size} 名感染者正在逼近${line ? `第 ${line} 道防线` : alert.includes('South Safe Zone') ? '南部安全区' : 'KTX 车站'}！`
+    /^SIEGE WAVE (\d+)\/(\d+): (\d+) infected advancing on (?:Line (\d+)|KTX Terminal|South Safe Zone|Extraction Garage|Airlock Alpha|Airlock Beta|Airlock Gamma)!$/,
+    (_, wave, total, size, line) => `尸潮 ${wave}/${total} · ${size} 名感染者正在逼近${line ? `第 ${line} 道防线` : alert.includes('Airlock Alpha') ? 'Alpha 气密闸' : alert.includes('Airlock Beta') ? 'Beta 气密闸' : alert.includes('Airlock Gamma') ? 'Gamma 气密闸' : alert.includes('South Safe Zone') ? '南部安全区' : alert.includes('Extraction Garage') ? '撤离车库' : 'KTX 车站'}！`
   ).replace(
     /^LINE (\d+) (WEST|EAST) GATE (OPENING|CLOSING)!$/,
     (_, line, side, action) => `第${line}道防线${side === 'WEST' ? '西' : '东'}闸门正在${action === 'OPENING' ? '开启' : '关闭'}！`
@@ -312,6 +344,8 @@ export function translateCommanderOrder(order: string): string {
     .replace('Ordered a strike on a zombie pile', '已下令打击尸堆')
     .replace(/Falling back to Line (\d+)/, '正在撤往第$1道防线')
     .replace('Falling back to the KTX forecourt', '正在撤往 KTX 站前广场')
+    .replace('Falling back to Airlock Beta Killzone', '正在撤往 Beta 气密闸杀伤走廊')
+    .replace('Falling back to the Extraction Garage', '正在撤往撤离车库防线')
     .replace('Falling back to the inner city', '正在撤往内城区')
     .replace(/Sent SWAT to Line (\d+)/, '已派特种部队增援第$1道防线')
     .replace(/Sent a patrol to (.+)/, (_, district: string) => `已派巡逻队前往${translateWorldLabel(district)}`);

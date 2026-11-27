@@ -71,6 +71,21 @@ export class AgentRenderer {
   private vehicleRigs: Map<number, VehicleVisualRig> = new Map();
   private selectionBeacon: THREE.Group;
 
+  private tyrantRig: {
+    root: THREE.Group;
+    bodyPivot: THREE.Group;
+    headPivot: THREE.Group;
+    leftArmPivot: THREE.Group;
+    clawArmPivot: THREE.Group;
+    clawForearmPivot: THREE.Group;
+    leftLegPivot: THREE.Group;
+    rightLegPivot: THREE.Group;
+    heartCore: THREE.Mesh;
+    heartMat: THREE.MeshBasicMaterial;
+    eyeMat: THREE.MeshBasicMaterial;
+    heartLight: THREE.PointLight;
+  } | null = null;
+
   private tmpColor = new THREE.Color();
   private whiteColor = new THREE.Color(0xffffff);
   private corpseColor = new THREE.Color(0x827070);
@@ -306,12 +321,240 @@ export class AgentRenderer {
     arr[idx16 + 15] = 1;
   }
 
+  private ensureTyrantRig() {
+    if (this.tyrantRig) return this.tyrantRig;
+    const root = new THREE.Group();
+    const bodyPivot = new THREE.Group();
+    bodyPivot.position.y = 1.15;
+    root.add(bodyPivot);
+
+    const coatMat = new THREE.MeshStandardMaterial({ color: 0x161922, roughness: 0.86, metalness: 0.14 });
+    const fleshMat = new THREE.MeshStandardMaterial({ color: 0x5c4f59, roughness: 0.72, metalness: 0.08 });
+    const veinMat = new THREE.MeshStandardMaterial({ color: 0x5f131b, roughness: 0.48, emissive: 0x260508 });
+    const steelMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.38, metalness: 0.78 });
+    const boneMat = new THREE.MeshStandardMaterial({ color: 0xd6d3d1, roughness: 0.42 });
+    const bloodTipMat = new THREE.MeshStandardMaterial({ color: 0x991b1b, roughness: 0.3, emissive: 0x3f0808 });
+    const heartMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.4, 0.38, 0.18), toneMapped: false });
+    const eyeMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.6, 0.18, 0.12), toneMapped: false });
+
+    // Hulking broad chest + tattered bio-trenchcoat tails & restraint collar
+    const chest = new THREE.Mesh(new THREE.BoxGeometry(1.18, 1.05, 0.62), coatMat);
+    chest.position.set(0, 0.35, 0);
+    chest.castShadow = true;
+    const bareTorso = new THREE.Mesh(new THREE.BoxGeometry(0.92, 0.88, 0.66), fleshMat);
+    bareTorso.position.set(0, 0.32, 0.03);
+    const coatTailL = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.92, 0.46), coatMat);
+    coatTailL.position.set(-0.34, -0.34, -0.08);
+    coatTailL.rotation.z = 0.08;
+    const coatTailR = coatTailL.clone();
+    coatTailR.position.x = 0.34;
+    coatTailR.rotation.z = -0.08;
+    const waistArmor = new THREE.Mesh(new THREE.BoxGeometry(0.98, 0.34, 0.56), coatMat);
+    waistArmor.position.set(0, -0.18, 0);
+    const collar = new THREE.Mesh(new THREE.BoxGeometry(0.76, 0.22, 0.66), steelMat);
+    collar.position.set(0, 0.92, 0.02);
+    bodyPivot.add(chest, bareTorso, coatTailL, coatTailR, waistArmor, collar);
+
+    // Exposed pulsating Bio-Heart weakpoint protruding from ripped left chest cavity
+    const ribFrame = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.42, 0.16), veinMat);
+    ribFrame.position.set(-0.24, 0.42, 0.33);
+    const heartCore = new THREE.Mesh(new THREE.OctahedronGeometry(0.18, 1), heartMat);
+    heartCore.position.set(-0.24, 0.42, 0.42);
+    const heartLight = new THREE.PointLight(0xff2a1f, 3.4, 9.5, 1.7);
+    heartLight.position.set(-0.22, 0.46, 0.72);
+    bodyPivot.add(ribFrame, heartCore, heartLight);
+
+    // Hunched pale necrotic head + inhibitor visor + split bloody jaw + glowing crimson eyes
+    const headPivot = new THREE.Group();
+    headPivot.position.set(0, 1.02, 0.16);
+    const skull = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.56, 0.56), fleshMat);
+    skull.position.y = 0.28;
+    const jaw = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.16, 0.44), veinMat);
+    jaw.position.set(0, 0.04, 0.07);
+    const visorBand = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.16, 0.58), steelMat);
+    visorBand.position.set(0, 0.43, 0);
+    const eyeL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.06), eyeMat);
+    eyeL.position.set(-0.13, 0.32, 0.29);
+    const eyeR = eyeL.clone();
+    eyeR.position.x = 0.13;
+    headPivot.add(skull, jaw, visorBand, eyeL, eyeR);
+    bodyPivot.add(headPivot);
+
+    // Left heavy armored shackle arm
+    const leftArmPivot = new THREE.Group();
+    leftArmPivot.position.set(-0.74, 0.72, 0.04);
+    const lArm = new THREE.Mesh(new THREE.BoxGeometry(0.28, 1.12, 0.28), coatMat);
+    lArm.position.y = -0.46;
+    const shackle = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.22, 0.36), steelMat);
+    shackle.position.y = -0.82;
+    const lFist = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.32), fleshMat);
+    lFist.position.y = -1.04;
+    leftArmPivot.add(lArm, shackle, lFist);
+    bodyPivot.add(leftArmPivot);
+
+    // Enormous mutated scythe-claw right arm
+    const clawArmPivot = new THREE.Group();
+    clawArmPivot.position.set(0.78, 0.74, 0.08);
+    const shoulderTendon = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.54, 0.46), veinMat);
+    shoulderTendon.position.y = -0.14;
+    const rUpper = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.75, 0.34), fleshMat);
+    rUpper.position.y = -0.46;
+    const clawForearmPivot = new THREE.Group();
+    clawForearmPivot.position.set(0, -0.78, 0.04);
+    const rForearm = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.82, 0.44), veinMat);
+    rForearm.position.y = -0.34;
+    clawForearmPivot.add(rForearm);
+    for (const cx of [-0.14, 0, 0.14]) {
+      const bladeBase = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.58, 0.14), boneMat);
+      bladeBase.position.set(cx, -0.92, 0.18);
+      bladeBase.rotation.x = -0.34;
+      const bladeTip = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.48, 0.09), bloodTipMat);
+      bladeTip.position.set(cx, -1.28, 0.36);
+      bladeTip.rotation.x = -0.58;
+      clawForearmPivot.add(bladeBase, bladeTip);
+    }
+    clawArmPivot.add(shoulderTendon, rUpper, clawForearmPivot);
+    bodyPivot.add(clawArmPivot);
+
+    // Heavy stomping legs
+    const leftLegPivot = new THREE.Group();
+    leftLegPivot.position.set(-0.32, 1.05, 0);
+    const lLeg = new THREE.Mesh(new THREE.BoxGeometry(0.36, 1.05, 0.38), coatMat);
+    lLeg.position.y = -0.52;
+    leftLegPivot.add(lLeg);
+    const rightLegPivot = new THREE.Group();
+    rightLegPivot.position.set(0.32, 1.05, 0);
+    const rLeg = lLeg.clone();
+    rightLegPivot.add(rLeg);
+    root.add(leftLegPivot, rightLegPivot);
+
+    this.agentsGroup.add(root);
+    this.tyrantRig = {
+      root,
+      bodyPivot,
+      headPivot,
+      leftArmPivot,
+      clawArmPivot,
+      clawForearmPivot,
+      leftLegPivot,
+      rightLegPivot,
+      heartCore,
+      heartMat,
+      eyeMat,
+      heartLight
+    };
+    return this.tyrantRig;
+  }
+
+  private syncTyrantRig(a: AgentData, simTime: number, isDeadCorpse: boolean): void {
+    const rig = this.ensureTyrantRig();
+    rig.root.visible = true;
+    const kneeling = !isDeadCorpse && (a.bossKneelTimer ?? 0) > 0;
+    const charging = !isDeadCorpse && (a.bossChargeTimer ?? 0) > 0;
+    const enraged = (a.bossPhase ?? 1) === 2;
+    const attacking = !isDeadCorpse && (a.zombieState === 'ATTACKING' || a.attackCooldown > 0.32);
+    const speed = Math.hypot(a.vx, a.vz);
+
+    let yOffset = 0;
+    let bodyPitch = 0.24;
+    let bodyRoll = 0;
+    let bodyYaw = 0;
+    let headPitch = -0.18;
+    let headRoll = -0.14;
+    let lArmPitch = -0.55;
+    let clawPitch = -0.42;
+    let clawForePitch = -0.45;
+    let lLegPitch = 0;
+    let rLegPitch = 0;
+
+    if (isDeadCorpse) {
+      const fallP = Math.min(1, (a.deathAge ?? 0) / 0.48);
+      const ease = 1 - (1 - fallP) * (1 - fallP);
+      const sink = (a.deathTimer ?? 0) < 1.2 ? (1 - (a.deathTimer ?? 0) / 1.2) * 0.55 : 0;
+      rig.root.position.set(a.x, a.climbY - sink, a.z);
+      rig.root.rotation.set(-1.46 * ease, a.rotationY, 0.22 * ease);
+      rig.heartLight.intensity = 0;
+      return;
+    }
+
+    if (kneeling) {
+      const tremor = Math.sin(simTime * 19) * 0.05;
+      yOffset = -0.56;
+      bodyPitch = 0.72 + tremor;
+      headPitch = 0.55;
+      lArmPitch = -0.15;
+      clawPitch = 0.12;
+      clawForePitch = -0.82;
+      lLegPitch = -1.15;
+      rLegPitch = 0.85;
+    } else if (attacking) {
+      const cleave = Math.sin(simTime * 16);
+      bodyPitch = 0.42 + cleave * 0.26;
+      bodyYaw = -0.35 + cleave * 0.65;
+      clawPitch = -1.95 - cleave * 0.95;
+      clawForePitch = -0.18;
+      lArmPitch = -1.1 + cleave * 0.4;
+      lLegPitch = 0.36;
+      rLegPitch = -0.32;
+    } else if (charging) {
+      const ph = simTime * 18;
+      yOffset = Math.abs(Math.sin(ph)) * 0.16;
+      bodyPitch = 0.58;
+      bodyRoll = Math.sin(ph) * 0.14;
+      clawPitch = -1.45;
+      clawForePitch = -0.35;
+      lArmPitch = -1.25;
+      lLegPitch = Math.sin(ph) * 0.95;
+      rLegPitch = -Math.sin(ph) * 0.95;
+    } else if (speed > 0.6) {
+      const ph = a.animPhase * 0.78;
+      yOffset = Math.abs(Math.sin(ph)) * 0.12;
+      bodyPitch = enraged ? 0.36 : 0.22;
+      bodyRoll = Math.sin(ph) * 0.11;
+      lArmPitch = -0.65 + Math.sin(ph) * 0.42;
+      clawPitch = -0.32 - Math.sin(ph) * 0.48;
+      clawForePitch = -0.45 + Math.cos(ph) * 0.22;
+      lLegPitch = Math.sin(ph) * 0.75;
+      rLegPitch = -Math.sin(ph) * 0.75;
+    } else {
+      const breathe = Math.sin(simTime * 3.4);
+      bodyPitch = 0.20 + breathe * 0.04;
+      headRoll = -0.16 + Math.sin(simTime * 2.1) * 0.08;
+      clawPitch = -0.35 + breathe * 0.08;
+    }
+
+    rig.root.position.set(a.x, a.climbY + a.fallY + yOffset, a.z);
+    rig.root.rotation.set(0, a.rotationY, 0);
+    rig.bodyPivot.position.y = 1.15;
+    rig.bodyPivot.rotation.set(bodyPitch, bodyYaw, bodyRoll);
+    rig.headPivot.rotation.set(headPitch, 0, headRoll);
+    rig.leftArmPivot.rotation.set(lArmPitch, 0, 0.14);
+    rig.clawArmPivot.rotation.set(clawPitch, 0, -0.12);
+    rig.clawForearmPivot.rotation.set(clawForePitch, 0, 0);
+    rig.leftLegPivot.rotation.set(lLegPitch, 0, 0);
+    rig.rightLegPivot.rotation.set(rLegPitch, 0, 0);
+
+    const pulseFreq = kneeling ? 14 : enraged ? 10 : 4.5;
+    const pulse = 0.5 + 0.5 * Math.sin(simTime * pulseFreq);
+    const heartScale = (kneeling ? 1.32 : enraged ? 1.22 : 1.0) + pulse * 0.18;
+    rig.heartCore.scale.setScalar(heartScale);
+    if ((a.hitFlashTimer ?? 0) > 0) {
+      rig.heartMat.color.setRGB(3.5, 2.2, 2.0);
+    } else if (kneeling) {
+      rig.heartMat.color.setRGB(3.2, 1.35 + pulse * 0.8, 0.15);
+    } else {
+      rig.heartMat.color.setRGB(1.8 + pulse * 1.4, enraged ? 0.45 : 0.22, 0.12);
+    }
+    rig.heartLight.intensity = kneeling ? 5.2 + pulse * 2.5 : enraged ? 4.2 + pulse * 1.5 : 2.6 + pulse;
+    rig.eyeMat.color.setRGB(enraged ? 3.2 : 2.2, enraged ? 0.35 : 0.14, 0.1);
+  }
+
   private resolveArchetype(a: AgentData): AgentArchetype {
     if (a.role === 'civilian' && a.civState === 'CONVULSING') {
       return 'zombie_normal';
     }
     if (a.role === 'infected') {
-      if (a.zombieVariant === 'brute') return 'zombie_brute';
+      if (a.zombieVariant === 'brute' || a.zombieVariant === 'tyrant') return 'zombie_brute';
       if (a.zombieVariant === 'runner') return 'zombie_runner';
       return 'zombie_normal';
     }
@@ -337,6 +580,7 @@ export class AgentRenderer {
     let shadowCount = 0;
     let weaponCount = 0;
     let selectedFound = false;
+    let tyrantDrawn = false;
 
     const shadowArr = this.shadowInst.instanceMatrix.array as Float32Array;
     const weaponArr = this.weaponInst.instanceMatrix.array as Float32Array;
@@ -377,6 +621,21 @@ export class AgentRenderer {
         distSq = dxC * dxC + dyC * dyC + dzC * dzC;
       }
       const isDistant = useCulling && distSq > 15625;
+
+      if (a.role === 'infected' && a.zombieVariant === 'tyrant') {
+        tyrantDrawn = true;
+        this.syncTyrantRig(a, simTime, isDeadCorpse);
+        if (!isDeadCorpse && shadowCount < this.maxShadows) {
+          this.writeShadowInstance(shadowArr, shadowCount++, a.x, 0.255 + a.climbY, a.z, 2.25);
+        }
+        if (a.id === selectedAgentId) {
+          selectedFound = true;
+          this.selectionBeacon.visible = !isFirstPerson;
+          this.selectionBeacon.position.set(a.x, 0.25 + a.climbY, a.z);
+          this.selectionBeacon.rotation.y = simTime * 2.2;
+        }
+        continue;
+      }
 
       const arch = this.resolveArchetype(a);
       const bucket = this.buckets.get(arch)!;
@@ -859,24 +1118,7 @@ export class AgentRenderer {
 
       // Grounded drop shadow
       if (!isDistant && !isDeadCorpse && shadowCount < this.maxShadows) {
-        const shIdx = shadowCount * 16;
-        shadowArr[shIdx + 0] = scaleMult;
-        shadowArr[shIdx + 1] = 0;
-        shadowArr[shIdx + 2] = 0;
-        shadowArr[shIdx + 3] = 0;
-        shadowArr[shIdx + 4] = 0;
-        shadowArr[shIdx + 5] = 1;
-        shadowArr[shIdx + 6] = 0;
-        shadowArr[shIdx + 7] = 0;
-        shadowArr[shIdx + 8] = 0;
-        shadowArr[shIdx + 9] = 0;
-        shadowArr[shIdx + 10] = scaleMult;
-        shadowArr[shIdx + 11] = 0;
-        shadowArr[shIdx + 12] = ax;
-        shadowArr[shIdx + 13] = 0.255 + a.climbY;
-        shadowArr[shIdx + 14] = az;
-        shadowArr[shIdx + 15] = 1;
-        shadowCount++;
+        this.writeShadowInstance(shadowArr, shadowCount++, ax, 0.255 + a.climbY, az, scaleMult);
       }
 
       // Weapon rifle for Police / SWAT
@@ -949,6 +1191,36 @@ export class AgentRenderer {
     if (!selectedFound || isFirstPerson) {
       this.selectionBeacon.visible = false;
     }
+    if (!tyrantDrawn && this.tyrantRig) {
+      this.tyrantRig.root.visible = false;
+    }
+  }
+
+  private writeShadowInstance(
+    shadowArr: Float32Array,
+    slot: number,
+    x: number,
+    y: number,
+    z: number,
+    scale: number
+  ): void {
+    const shIdx = slot * 16;
+    shadowArr[shIdx + 0] = scale;
+    shadowArr[shIdx + 1] = 0;
+    shadowArr[shIdx + 2] = 0;
+    shadowArr[shIdx + 3] = 0;
+    shadowArr[shIdx + 4] = 0;
+    shadowArr[shIdx + 5] = 1;
+    shadowArr[shIdx + 6] = 0;
+    shadowArr[shIdx + 7] = 0;
+    shadowArr[shIdx + 8] = 0;
+    shadowArr[shIdx + 9] = 0;
+    shadowArr[shIdx + 10] = scale;
+    shadowArr[shIdx + 11] = 0;
+    shadowArr[shIdx + 12] = x;
+    shadowArr[shIdx + 13] = y;
+    shadowArr[shIdx + 14] = z;
+    shadowArr[shIdx + 15] = 1;
   }
 
   private createVehicleRig(v: VehicleData): VehicleVisualRig {

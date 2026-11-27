@@ -853,6 +853,42 @@
       min-width: 300px;
       pointer-events: auto;
     }
+    #fps-boss-bar {
+      margin-top: 7px;
+      padding: 5px 8px 6px;
+      border-radius: 7px;
+      background: rgba(48, 10, 16, 0.88);
+      border: 1px solid rgba(239, 68, 68, 0.72);
+      box-shadow: 0 0 14px rgba(220, 38, 38, 0.32);
+    }
+    .fps-boss-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      color: #fecaca;
+      margin-bottom: 4px;
+    }
+    #fps-boss-state {
+      color: #fde047;
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+    .fps-boss-track {
+      height: 7px;
+      background: rgba(15, 23, 42, 0.9);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    #fps-boss-hp-fill {
+      height: 100%;
+      width: 100%;
+      background: linear-gradient(90deg, #dc2626 0%, #f43f5e 60%, #fb7185 100%);
+      transition: width 0.08s linear;
+    }
     #fps-compass {
       position: absolute;
       top: 10px;
@@ -1244,6 +1280,14 @@
       <div id="fps-objective">OBJECTIVE: Reach South Express Station</div>
       <div id="fps-train-status">Express Train: Approaching</div>
       <div id="fps-commander-status"></div>
+      <div id="fps-boss-bar" hidden>
+        <div class="fps-boss-head">
+          <span id="fps-boss-name">☠ SUBJECT-00 // TYRANT</span>
+          <span id="fps-boss-state">STALKING</span>
+          <span id="fps-boss-hp-text">1600/1600</span>
+        </div>
+        <div class="fps-boss-track"><div id="fps-boss-hp-fill"></div></div>
+      </div>
       <div id="fps-gate-bar" hidden></div>
       <div id="fps-mission-detail"></div>
       <div id="fps-kill-reward" hidden></div>
@@ -1350,9 +1394,9 @@
           <p>Compact vertical skyscraper canyon where panic spreads explosively through dense intersections.</p>
         </div>
         <div class="map-card" data-map="bsl4_lab">
-          <span class="tag">8 Underground Zones • APC Tunnel Escape</span>
+          <span class="tag">Subterranean Airlocks • APC Tunnel Escape</span>
           <h3>☣️ BSL-4 Containment Lab</h3>
-          <p>Break out from shattering Sector 0 pods across 3 bio-locks, lockable cryo/genetics labs, reactor catwalks &amp; a blackout hazmat bay to hold the 40s APC-01 extraction garage.</p>
+          <p>Enclosed underground bio-complex: fight through 3 decontamination airlocks, glass-walled corridors, lockable labs, vaulted reactor catwalks &amp; blackout freight bays to escape in APC-01.</p>
         </div>
       </div>
 

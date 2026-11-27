@@ -31,6 +31,8 @@ export class SoundEngine {
   private lastHeadshotTime = 0;
   private lastDryFireTime = 0;
   private lastCrisisChimeTime = 0;
+  private lastTyrantStepTime = 0;
+  private lastTyrantRoarTime = 0;
   private heartbeatTimer = 0;
   private growlTimer = 0;
   private sharedNoise: AudioBuffer | null = null;
@@ -873,5 +875,114 @@ export class SoundEngine {
       osc.start(start);
       osc.stop(start + 0.13);
     });
+  }
+
+  public playTyrantRoar(x: number, z: number, camX: number, camZ: number, camDist: number): void {
+    const nowMs = performance.now();
+    if (nowMs - this.lastTyrantRoarTime < 1400) return;
+    this.lastTyrantRoarTime = nowMs;
+
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const gainVal = Math.max(0.28, this.getSpatialGain(x, z, camX, camZ, Math.min(camDist, 140)));
+    const t = ctx.currentTime;
+    const out = this.getBus(ctx, 'sfx');
+
+    // Deep guttural bioweapon sub-roar + metallic resonator growl
+    for (const [wave, f0, f1, mul] of [
+      ['sawtooth', 78, 42, 0.36],
+      ['triangle', 118, 56, 0.24],
+      ['square', 52, 34, 0.18]
+    ] as Array<[OscillatorType, number, number, number]>) {
+      const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+      osc.type = wave;
+      osc.frequency.setValueAtTime(f0, t);
+      osc.frequency.exponentialRampToValueAtTime(f1, t + 1.05);
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(420, t);
+      filter.frequency.exponentialRampToValueAtTime(140, t + 1.05);
+      filter.Q.setValueAtTime(3.2, t);
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.linearRampToValueAtTime(gainVal * mul, t + 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.002, t + 1.12);
+      osc.connect(filter).connect(gain).connect(out);
+      osc.start(t);
+      osc.stop(t + 1.15);
+    }
+  }
+
+  public playTyrantFootstep(x: number, z: number, camX: number, camZ: number, camDist: number): void {
+    const nowMs = performance.now();
+    if (nowMs - this.lastTyrantStepTime < 220) return;
+    this.lastTyrantStepTime = nowMs;
+
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const gainVal = this.getSpatialGain(x, z, camX, camZ, Math.min(camDist, 45));
+    if (gainVal <= 0.02) return;
+
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(84, t);
+    osc.frequency.exponentialRampToValueAtTime(28, t + 0.18);
+    gain.gain.setValueAtTime(gainVal * 0.72, t);
+    gain.gain.exponentialRampToValueAtTime(0.002, t + 0.19);
+    osc.connect(gain).connect(this.getBus(ctx, 'sfx'));
+    osc.start(t);
+    osc.stop(t + 0.2);
+  }
+
+  public playLabDevice(kind: 'cryo_valve' | 'turret_console' | 'backup_generator'): void {
+    const ctx = this.ensureContext();
+    if (!ctx) return;
+    const t = ctx.currentTime;
+    const out = this.getBus(ctx, 'sfx');
+
+    if (kind === 'cryo_valve') {
+      // Pressurized liquid nitrogen vent hiss
+      const buf = this.getSharedNoise(ctx);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(2800, t);
+      bp.frequency.exponentialRampToValueAtTime(950, t + 0.85);
+      bp.Q.setValueAtTime(1.4, t);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.linearRampToValueAtTime(0.28, t + 0.06);
+      gain.gain.exponentialRampToValueAtTime(0.002, t + 0.88);
+      src.connect(bp).connect(gain).connect(out);
+      src.start(t);
+      src.stop(t + 0.9);
+      return;
+    }
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    if (kind === 'backup_generator') {
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(62, t);
+      osc.frequency.exponentialRampToValueAtTime(210, t + 0.65);
+      gain.gain.setValueAtTime(0.2, t);
+      gain.gain.exponentialRampToValueAtTime(0.002, t + 0.68);
+      osc.connect(gain).connect(out);
+      osc.start(t);
+      osc.stop(t + 0.7);
+    } else {
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(720, t);
+      osc.frequency.setValueAtTime(1080, t + 0.08);
+      osc.frequency.setValueAtTime(1440, t + 0.16);
+      gain.gain.setValueAtTime(0.18, t);
+      gain.gain.exponentialRampToValueAtTime(0.002, t + 0.28);
+      osc.connect(gain).connect(out);
+      osc.start(t);
+      osc.stop(t + 0.3);
+    }
   }
 }

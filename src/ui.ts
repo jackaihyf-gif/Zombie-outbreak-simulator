@@ -90,6 +90,11 @@ export class UIController {
   private defenseLinesStatusEl = document.getElementById('defense-lines-status')!;
   private defenseGateBarsEl = document.getElementById('defense-gate-bars')!;
   private fpsGateBarEl = document.getElementById('fps-gate-bar')!;
+  private fpsBossBarEl = document.getElementById('fps-boss-bar');
+  private fpsBossNameEl = document.getElementById('fps-boss-name');
+  private fpsBossStateEl = document.getElementById('fps-boss-state');
+  private fpsBossHpTextEl = document.getElementById('fps-boss-hp-text');
+  private fpsBossHpFillEl = document.getElementById('fps-boss-hp-fill');
 
   // After-Action Report Modal Elements
   private aarModalEl = document.getElementById('aar-modal');
@@ -1081,10 +1086,17 @@ export class UIController {
         ? ` • ${this.t('Quarantine', '隔离中')} ${Math.ceil(train.timer)}s · ${this.t('Infected', '感染者')} ${this.sim.countTrainInfected()}` : '';
       const boardingThreat = this.sim.layeredKtx && train.state === 'DOCKED' ? this.trainInfectedStatus() : '';
       const trainTag = this.sim.city.hasExpressRail ? ` • 🚄 ${this.t('Train load', '本班载客')} ${load} · ${this.t('Total boarded', '累计登车')} ${stats.trainBoarded}${boardingThreat}${quarantineTag}` : '';
+      this.defenseLinesStatusEl.innerHTML =
+        `<span style="color:${l1Color};font-weight:700;">${this.t('L1', '防线 1')} · ${this.worldLabel(stats.line1Status)}</span> • ` +
+        `<span style="color:${l2Color};font-weight:700;">${this.t('L2', '防线 2')} · ${this.worldLabel(stats.line2Status)}</span>${l3Tag}${trainTag}`;
+    } else if (this.sim.isLabFacility) {
+      const s1 = this.sim.getLabAirlockLineStatus(1);
+      const s2 = this.sim.getLabAirlockLineStatus(2);
+      const s3 = this.sim.getLabAirlockLineStatus(3);
+      const airlockColor = (status: string) =>
+        status === 'BREACHED' ? '#ef4444' : status === 'SEALED' ? '#fbbf24' : '#22c55e';
       const apc = this.sim.extractionApc;
-      const apcPhase = !apc.active
-        ? ''
-        : apc.state === 'STANDBY'
+      const apcPhase = apc.state === 'STANDBY'
         ? this.t('Standby', '待命')
         : apc.state === 'WARMING_UP'
         ? this.t(`Warming ${Math.max(0, Math.ceil(apc.timer))}s`, `预热 ${Math.max(0, Math.ceil(apc.timer))} 秒`)
@@ -1093,12 +1105,11 @@ export class UIController {
         : apc.state === 'DEPARTING'
         ? this.t('Departing', '突围中')
         : this.t('Escaped', '已撤离');
-      const apcTag = apc.active
-        ? ` • 🚐 ${this.t('APC-01', 'APC-01 装甲车')} ${apcPhase} · ${this.t('Aboard', '载客')} ${apc.boardedCount}`
-        : '';
       this.defenseLinesStatusEl.innerHTML =
-        `<span style="color:${l1Color};font-weight:700;">${this.t('L1', '防线 1')} · ${this.worldLabel(stats.line1Status)}</span> • ` +
-        `<span style="color:${l2Color};font-weight:700;">${this.t('L2', '防线 2')} · ${this.worldLabel(stats.line2Status)}</span>${l3Tag}${trainTag}${apcTag}`;
+        `<span style="color:${airlockColor(s1)};font-weight:700;">${this.t('Airlock α', 'α 气闸')} · ${this.worldLabel(s1)}</span> • ` +
+        `<span style="color:${airlockColor(s2)};font-weight:700;">${this.t('Airlock β', 'β 气闸')} · ${this.worldLabel(s2)}</span> • ` +
+        `<span style="color:${airlockColor(s3)};font-weight:700;">${this.t('Airlock γ', 'γ 气闸')} · ${this.worldLabel(s3)}</span>` +
+        ` • 🚐 ${this.t('APC-01', 'APC-01 装甲车')} ${apcPhase} · ${this.t('Aboard', '载客')} ${apc.boardedCount}`;
     } else {
       this.defenseLinesStatusEl.textContent = '';
     }
@@ -1309,12 +1320,27 @@ export class UIController {
       addPip('◆', 'mission', fp.mission.x, fp.mission.z, true);
     }
 
+    const tyrant = this.sim.tyrantAgentId !== null ? this.sim.getAgentById(this.sim.tyrantAgentId) : undefined;
+    if (tyrant && tyrant.isAlive && Math.hypot(tyrant.x - player.x, tyrant.z - player.z) <= 50) {
+      addPip('☠', 'gate', tyrant.x, tyrant.z, true);
+    }
+
     for (const gate of this.sim.blastGates) {
       if (gate.breached) continue;
       const critical = gate.integrity / gate.maxIntegrity < 0.35;
       const underAttack = this.sim.simTime - gate.lastDamagedAt < 4.0;
       if (critical || underAttack) {
         addPip('⚠', 'gate', gate.x, gate.z, critical);
+      }
+    }
+    if (this.sim.isLabFacility) {
+      for (const door of this.sim.interiorDoors) {
+        if (!door.isAirlock || door.isBroken) continue;
+        const critical = door.integrity / door.maxIntegrity < 0.35;
+        const underAttack = this.sim.simTime - door.lastHitTime < 4.0;
+        if (critical || underAttack) {
+          addPip('⚠', 'gate', door.x, door.z, critical);
+        }
       }
     }
 
@@ -1352,6 +1378,31 @@ export class UIController {
     this.fpsCommanderStatusEl.textContent = `${this.t('AI Commander', 'AI 指挥官')} · ${this.t(order, translateCommanderOrder(order))}${waveSummary}`;
     const player = this.sim.getAgentById(fp.playerId);
     this.refreshNearbyGateBar(player);
+    if (this.fpsBossBarEl) {
+      const bh = fp.bossHud;
+      if (bh) {
+        this.fpsBossBarEl.hidden = false;
+        const pct = Math.max(0, Math.min(100, (bh.hp / Math.max(1, bh.maxHp)) * 100));
+        if (this.fpsBossNameEl) {
+          this.fpsBossNameEl.textContent = `☠ ${this.worldLabel(bh.name)} (${bh.dist}${this.t('m', '米')})`;
+        }
+        if (this.fpsBossStateEl) {
+          this.fpsBossStateEl.textContent =
+            bh.state === 'staggered'
+              ? this.t('STAGGERED — SHOOT HEART!', '跪地硬直 · 集火心脏！')
+              : bh.state === 'charging'
+              ? this.t('CHARGING!', '狂暴冲锋！')
+              : bh.state === 'enraged'
+              ? this.t('PHASE 2 ENRAGED', '二阶段狂暴')
+              : this.t('HUNTING', '猎杀逼近');
+          this.fpsBossStateEl.style.color = bh.state === 'staggered' ? '#4ade80' : bh.state === 'charging' ? '#f87171' : '#fde047';
+        }
+        if (this.fpsBossHpTextEl) this.fpsBossHpTextEl.textContent = `${bh.hp}/${bh.maxHp}`;
+        if (this.fpsBossHpFillEl) this.fpsBossHpFillEl.style.width = `${pct}%`;
+      } else {
+        this.fpsBossBarEl.hidden = true;
+      }
+    }
     const weapon = fp.weapon;
     const mission = fp.mission;
     const activeMission = mission && !mission.complete ? mission : null;
@@ -1474,10 +1525,10 @@ export class UIController {
           : apc.state === 'DEPARTING'
           ? this.t('ESCAPING TUNNEL', '正在冲破撤离隧道')
           : this.t('ESCAPED', '已成功撤离');
-      const linesSummary =
-        line3Status !== 'NONE'
-          ? `1 ${this.worldLabel(line1Status)} / 2 ${this.worldLabel(line2Status)} / 3 ${this.worldLabel(line3Status)}`
-          : `1 ${this.worldLabel(line1Status)} / 2 ${this.worldLabel(line2Status)}`;
+      const s1 = this.sim.getLabAirlockLineStatus(1);
+      const s2 = this.sim.getLabAirlockLineStatus(2);
+      const s3 = this.sim.getLabAirlockLineStatus(3);
+      const linesSummary = `α ${this.worldLabel(s1)} / β ${this.worldLabel(s2)} / γ ${this.worldLabel(s3)}`;
       this.fpsTrainStatusEl.textContent = `${this.t('APC-01', 'APC-01 装甲撤离车')} · ${apcPhase} • ${this.t('Aboard', '车载')} ${apc.boardedCount} • ${linesSummary}`;
     } else {
       this.fpsTrainStatusEl.textContent = weapon ? '' : this.t('Reach evacuation safely', '安全抵达撤离区');
@@ -1589,6 +1640,35 @@ export class UIController {
         this.fpsInteractPromptEl.style.color = '#fde68a';
       } else {
         this.fpsInteractPromptEl.textContent = this.t('Press [E] to board APC-01', '按 E 登上 APC-01 装甲撤离车');
+        this.fpsInteractPromptEl.style.borderColor = '#22c55e';
+        this.fpsInteractPromptEl.style.color = '#bbf7d0';
+      }
+      this.fpsInteractPromptEl.style.display = 'block';
+    } else if (fp.nearLabDevice) {
+      const dev = fp.nearLabDevice;
+      const dLabel = this.worldLabel(dev.label);
+      if (dev.state === 'ready') {
+        this.fpsInteractPromptEl.textContent =
+          dev.kind === 'cryo_valve'
+            ? this.t(`Press [E] to purge ${dLabel} (Slow Infected)`, `按 E 开启${dLabel}（低温减速感染者）`)
+            : dev.kind === 'turret_console'
+            ? this.t(`Press [E] to activate ${dLabel} (25s Overwatch)`, `按 E 启动${dLabel}（自动机枪塔掩护 25 秒）`)
+            : this.t(`Press [E] to start ${dLabel} (Light Bay & -15s APC)`, `按 E 启动${dLabel}（恢复供电且缩短 APC 预热 15 秒）`);
+        this.fpsInteractPromptEl.style.borderColor = '#22d3ee';
+        this.fpsInteractPromptEl.style.color = '#cffafe';
+      } else if (dev.state === 'active') {
+        this.fpsInteractPromptEl.textContent = this.t(`${dev.label} ACTIVE`, `${dLabel}运转中`);
+        this.fpsInteractPromptEl.style.borderColor = '#4ade80';
+        this.fpsInteractPromptEl.style.color = '#bbf7d0';
+      } else if (dev.state === 'cooldown') {
+        this.fpsInteractPromptEl.textContent = this.t(
+          `${dev.label} recharging (${Math.ceil(dev.cooldown)}s)`,
+          `${dLabel}冷却中（${Math.ceil(dev.cooldown)} 秒）`
+        );
+        this.fpsInteractPromptEl.style.borderColor = '#f59e0b';
+        this.fpsInteractPromptEl.style.color = '#fde68a';
+      } else {
+        this.fpsInteractPromptEl.textContent = this.t(`${dev.label} ONLINE`, `${dLabel}已持续供电`);
         this.fpsInteractPromptEl.style.borderColor = '#22c55e';
         this.fpsInteractPromptEl.style.color = '#bbf7d0';
       }
@@ -1969,6 +2049,10 @@ export class UIController {
       ctx.fillStyle = cache.readyAt <= this.sim.simTime ? '#f7ce79' : '#79674c';
       ctx.fillRect(toMapX(cache.x) - 1.8, toMapY(cache.z) - 1.8, 3.6, 3.6);
     }
+    for (const dev of this.sim.labDevices) {
+      ctx.fillStyle = dev.state === 'completed' || dev.state === 'active' ? '#4ade80' : dev.state === 'cooldown' ? '#f59e0b' : '#22d3ee';
+      ctx.fillRect(toMapX(dev.x) - 2.2, toMapY(dev.z) - 2.2, 4.4, 4.4);
+    }
 
     // 4. Evacuation Zones, Acoustic Lure Flares & Roadblocks
     for (const ez of this.sim.evacZones) {
@@ -2018,7 +2102,19 @@ export class UIController {
       const my = toMapY(a.z);
 
       if (a.role === 'infected') {
-        if (a.zombieVariant === 'brute') {
+        if (a.zombieVariant === 'tyrant') {
+          ctx.fillStyle = '#dc2626';
+          ctx.strokeStyle = '#fde047';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(mx, my - 4.2);
+          ctx.lineTo(mx + 4.2, my);
+          ctx.lineTo(mx, my + 4.2);
+          ctx.lineTo(mx - 4.2, my);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        } else if (a.zombieVariant === 'brute') {
           ctx.fillStyle = '#d946ef';
           ctx.fillRect(mx - 2.4, my - 2.4, 4.8, 4.8);
         } else {
@@ -2132,6 +2228,26 @@ export class UIController {
       bars.push(this.gateBar(this.t('KTX Mezzanine', '夹层咽喉闸'), this.sim.ktxGates.mezzanine));
       bars.push(this.gateBar(this.t('KTX Partition', '站台隔门'), this.sim.ktxGates.transfer));
     }
+    if (this.sim.isLabFacility) {
+      const airlockSpecs: Array<{ label: string; bldId: string }> = [
+        { label: this.t('Airlock α', 'α 气密闸'), bldId: 'BLD-LAB-AIRLOCK-1C' },
+        { label: this.t('Airlock β', 'β 气密闸'), bldId: 'BLD-LAB-AIRLOCK-2C' },
+        { label: this.t('Airlock γ', 'γ 气密闸'), bldId: 'BLD-LAB-AIRLOCK-3C' }
+      ];
+      for (const spec of airlockSpecs) {
+        const doors = this.sim.interiorDoors.filter((d) => d.buildingId === spec.bldId);
+        if (doors.length === 0) continue;
+        const worst = doors.reduce((a, b) => (a.integrity / a.maxIntegrity <= b.integrity / b.maxIntegrity ? a : b));
+        const anyLocked = doors.some((d) => d.isLocked);
+        bars.push(this.gateBar(spec.label, {
+          open: !anyLocked,
+          breached: worst.isBroken,
+          integrity: worst.integrity,
+          maxIntegrity: worst.maxIntegrity,
+          lastDamagedAt: worst.lastHitTime
+        }));
+      }
+    }
     this.defenseGateBarsEl.hidden = bars.length === 0;
     this.defenseGateBarsEl.innerHTML = bars.join('');
   }
@@ -2157,6 +2273,24 @@ export class UIController {
           if (Math.abs(player.climbY - point.y) <= 1.5) {
             consider(point.label, this.sim.ktxGates[id], point.x, point.z, 11);
           }
+        }
+      }
+      if (this.sim.isLabFacility) {
+        for (const door of this.sim.interiorDoors) {
+          if (door.isBroken) continue;
+          consider(
+            door.label,
+            {
+              open: !door.isLocked,
+              breached: door.isBroken,
+              integrity: door.integrity,
+              maxIntegrity: door.maxIntegrity,
+              lastDamagedAt: door.lastHitTime
+            },
+            door.x,
+            door.z,
+            9.5
+          );
         }
       }
       const train = this.sim.expressTrain;

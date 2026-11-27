@@ -22,6 +22,9 @@ import {
 import {
   createInitialLabPods,
   getBsl4DistrictAtPos,
+  LAB_AIRLOCK_ROOMS,
+  LAB_AIRLOCK_ZS,
+  LAB_CEILING_Y,
   LAB_HALF_X,
   LAB_HALF_Z,
   LAB_HAZARD_PLACEMENTS,
@@ -30,12 +33,13 @@ import {
   LAB_ROAD_XS,
   LAB_ROAD_ZS,
   LAB_SKYBRIDGES,
+  LAB_SOLID_BULKHEADS,
   LAB_WALL_DEFS,
   LAB_WAYFINDING_SIGNS
 } from './bsl4Lab';
 import { SeededRNG } from './rng';
 import { KTX_LAST_LINE_Z } from './ktxTerminal';
-import { WALL_BUILDING_CLEARANCE } from './perimeter';
+import { BLAST_GATE_WIDTH, WALL_BUILDING_CLEARANCE } from './perimeter';
 import { segmentIntersectsAABB } from './spatial';
 
 export const BLOCK_PITCH = 32; // distance between road centerlines for standard grid maps
@@ -1041,6 +1045,9 @@ export class CityLayout {
       width: number;
       isGlass: boolean;
       label: string;
+      isAirlock?: boolean;
+      airlockLine?: 1 | 2 | 3;
+      maxIntegrity?: number;
     }>,
     props: InteriorBox[],
     lightFixtures: Array<{ x: number; z: number; flickerSeed: number }>
@@ -1073,6 +1080,7 @@ export class CityLayout {
           : ds.side === 'S'
           ? b.maxZ - t * 0.5
           : b.z + ds.offset;
+      const maxInt = ds.maxIntegrity ?? 100;
       this.interiorDoors.push({
         id,
         buildingId: b.id,
@@ -1082,10 +1090,12 @@ export class CityLayout {
         z: dz,
         width: ds.width,
         isGlass: ds.isGlass,
+        isAirlock: ds.isAirlock,
+        airlockLine: ds.airlockLine,
         isLocked: false,
         isBroken: false,
-        integrity: 100,
-        maxIntegrity: 100,
+        integrity: maxInt,
+        maxIntegrity: maxInt,
         lastHitTime: -10
       });
     }
@@ -2838,6 +2848,27 @@ export class CityLayout {
       const rc = this.labReactorCore;
       if (Math.abs(x - rc.x) <= rc.radius + pad && Math.abs(z - rc.z) <= rc.radius + pad) return true;
     }
+    if (this.mapId === 'bsl4_lab') {
+      for (let i = 0; i < this.wallDefs.length; i++) {
+        const wd = this.wallDefs[i];
+        if (Math.abs(z - wd.z) <= wd.thickness * 0.5 + pad) {
+          const inGate = wd.gateXs.some((gx) => Math.abs(x - gx) <= BLAST_GATE_WIDTH * 0.5 - pad);
+          if (!inGate) return true;
+        }
+      }
+      for (let i = 0; i < this.explosiveHazards.length; i++) {
+        const haz = this.explosiveHazards[i];
+        const cosR = haz.cosR ?? Math.cos(haz.rotationY);
+        const sinR = haz.sinR ?? Math.sin(haz.rotationY);
+        const dx = x - haz.x;
+        const dz = z - haz.z;
+        const lx = dx * cosR - dz * sinR;
+        const lz = dx * sinR + dz * cosR;
+        if (Math.abs(lx) <= haz.width * 0.5 + pad && Math.abs(lz) <= haz.depth * 0.5 + pad) {
+          return true;
+        }
+      }
+    }
     return false;
   }
 
@@ -2873,6 +2904,36 @@ export class CityLayout {
       const rc = this.labReactorCore;
       if (segmentIntersectsAABB(x1, z1, x2, z2, rc.x - rc.radius - pad, rc.x + rc.radius + pad, rc.z - rc.radius - pad, rc.z + rc.radius + pad)) {
         return false;
+      }
+    }
+    if (this.mapId === 'bsl4_lab') {
+      for (let i = 0; i < this.wallDefs.length; i++) {
+        const wd = this.wallDefs[i];
+        const wMinZ = wd.z - wd.thickness * 0.5 - pad;
+        const wMaxZ = wd.z + wd.thickness * 0.5 + pad;
+        if (Math.max(z1, z2) < wMinZ || Math.min(z1, z2) > wMaxZ) continue;
+        const sortedGates = [...wd.gateXs].sort((a, b) => a - b);
+        let cursorX = -this.cityHalfX - 10;
+        for (let gi = 0; gi < sortedGates.length; gi++) {
+          const gStart = sortedGates[gi] - BLAST_GATE_WIDTH * 0.5;
+          if (gStart > cursorX && segmentIntersectsAABB(x1, z1, x2, z2, cursorX - pad, gStart + pad, wMinZ, wMaxZ)) {
+            return false;
+          }
+          cursorX = Math.max(cursorX, sortedGates[gi] + BLAST_GATE_WIDTH * 0.5);
+        }
+        const wallEnd = this.cityHalfX + 10;
+        if (wallEnd > cursorX && segmentIntersectsAABB(x1, z1, x2, z2, cursorX - pad, wallEnd + pad, wMinZ, wMaxZ)) {
+          return false;
+        }
+      }
+      for (let i = 0; i < this.explosiveHazards.length; i++) {
+        const haz = this.explosiveHazards[i];
+        const cos = haz.cosR ?? Math.cos(haz.rotationY);
+        const sin = haz.sinR ?? Math.sin(haz.rotationY);
+        const ax = x1 - haz.x, az = z1 - haz.z, bx = x2 - haz.x, bz = z2 - haz.z;
+        const halfWidth = haz.width * 0.5 + pad, halfDepth = haz.depth * 0.5 + pad;
+        if (segmentIntersectsAABB(ax * cos - az * sin, ax * sin + az * cos,
+          bx * cos - bz * sin, bx * sin + bz * cos, -halfWidth, halfWidth, -halfDepth, halfDepth)) return false;
       }
     }
     return true;
@@ -2921,12 +2982,12 @@ export class CityLayout {
     this.skybridges = LAB_SKYBRIDGES.map((sb) => ({ ...sb, ladderXs: sb.ladderXs ? [...sb.ladderXs] : undefined }));
     this.labPods = createInitialLabPods();
     this.labReactorCore = { ...LAB_REACTOR_CORE };
-    this.precinctPos = { x: -40, z: 56 };
-    this.hospitalPos = { x: 40, z: 56 };
+    this.precinctPos = { x: -23, z: 50 };
+    this.hospitalPos = { x: 23, z: 50 };
     this.evacSpawnPoints = [{ x: 0, z: 146 }];
 
-    // 7 walkable multi-door interior lab / cryo / armory rooms
-    for (const spec of LAB_INTERIOR_ROOMS) {
+    // 7 walkable interconnected underground lab suites + 9 Decontamination Airlock Chambers (3 bulkhead lines)
+    for (const spec of [...LAB_INTERIOR_ROOMS, ...LAB_AIRLOCK_ROOMS]) {
       const bld = this.addBuilding({
         id: spec.id,
         name: spec.name,
@@ -2942,7 +3003,7 @@ export class CityLayout {
         color: spec.color,
         accentColor: spec.accentColor,
         roofType: 'flat',
-        isShelterCapable: true,
+        isShelterCapable: !spec.id.startsWith('BLD-LAB-AIRLOCK'),
         shelterCapacity: spec.shelterCapacity
       });
       this.configureWalkableInterior(
@@ -2954,21 +3015,9 @@ export class CityLayout {
       );
     }
 
-    // Structural solid underground facility wings & Zone 8 Escape Tunnel concrete framing
-    const solidBlocks: Array<{
-      id: string; name: string; district: string; x: number; z: number; w: number; d: number; color: number; accent: number;
-    }> = [
-      { id: 'BLD-LAB-Z1-W', name: 'Containment Control West', district: 'Zone 1 • Sector 0 Containment Vault', x: -46, z: -158, w: 22, d: 30, color: 0x1e293b, accent: 0x10b981 },
-      { id: 'BLD-LAB-Z1-E', name: 'Biostasis Server Core East', district: 'Zone 1 • Sector 0 Containment Vault', x: 46, z: -158, w: 22, d: 30, color: 0x1e293b, accent: 0x10b981 },
-      { id: 'BLD-LAB-REACT-W', name: 'Reactor Coolant Plant West', district: 'Zone 5 • Reactor Core & Bio-Lock 2', x: -46, z: -4, w: 16, d: 22, color: 0x263548, accent: 0x38bdf8 },
-      { id: 'BLD-LAB-REACT-E', name: 'Reactor Coolant Plant East', district: 'Zone 5 • Reactor Core & Bio-Lock 2', x: 46, z: -4, w: 16, d: 22, color: 0x263548, accent: 0x38bdf8 },
-      { id: 'BLD-LAB-GEN-W', name: 'Turbine Generator Bank West', district: 'Zone 7 • Generator & Hazmat Bay', x: -44, z: 90, w: 16, d: 20, color: 0x334155, accent: 0xf59e0b },
-      { id: 'BLD-LAB-GEN-E', name: 'Turbine Generator Bank East', district: 'Zone 7 • Generator & Hazmat Bay', x: 44, z: 90, w: 16, d: 20, color: 0x334155, accent: 0xf59e0b },
-      { id: 'BLD-LAB-TUNNEL-W', name: 'Escape Tunnel Concrete West', district: 'Zone 8 • Extraction Garage & Tunnel', x: -41.5, z: 169, w: 61, d: 22, color: 0x111827, accent: 0x22c55e },
-      { id: 'BLD-LAB-TUNNEL-E', name: 'Escape Tunnel Concrete East', district: 'Zone 8 • Extraction Garage & Tunnel', x: 41.5, z: 169, w: 61, d: 22, color: 0x111827, accent: 0x22c55e }
-    ];
-    for (let i = 0; i < solidBlocks.length; i++) {
-      const sb = solidBlocks[i];
+    // Solid subterranean bedrock & bulkhead partitions sealing every zone perimeter cleanly
+    for (let i = 0; i < LAB_SOLID_BULKHEADS.length; i++) {
+      const sb = LAB_SOLID_BULKHEADS[i];
       this.addBuilding({
         id: sb.id,
         name: sb.name,
@@ -2979,7 +3028,7 @@ export class CityLayout {
         z: sb.z,
         width: sb.w,
         depth: sb.d,
-        height: 8.4,
+        height: LAB_CEILING_Y,
         doorSide: sb.x < 0 ? 'E' : 'W',
         color: sb.color,
         accentColor: sb.accent,
@@ -2989,24 +3038,24 @@ export class CityLayout {
       });
     }
 
-    // Hazmat freight containers, vault fences & extraction garage cover
+    // Hazmat freight containers, vault fences & extraction garage cover placed inside enclosed wings
     const hazmatContainers: Array<[number, number, number, number, boolean]> = [
-      [-6.5, -18.0, 0.05, 0x0e7490, false],
-      [6.5, -18.0, -0.05, 0x1e3a5f, false],
-      [-6.8, 79.0, 0.04, 0xd97706, true],
-      [6.8, 79.0, -0.04, 0x0e7490, true],
-      [-6.8, 94.0, -0.05, 0x991b1b, true],
-      [6.8, 94.0, 0.06, 0x1e3a5f, true],
-      [-18.0, 141.0, 0.25, 0x334155, false],
-      [18.0, 141.0, -0.25, 0x334155, false]
+      [-9.0, 10.0, 0.05, 0x0e7490, false],
+      [9.0, 10.0, -0.05, 0x1e3a5f, false],
+      [-11.0, 80.0, 0.04, 0xd97706, true],
+      [11.0, 80.0, -0.04, 0x0e7490, true],
+      [-11.0, 95.0, -0.05, 0x991b1b, true],
+      [11.0, 95.0, 0.06, 0x1e3a5f, true],
+      [-14.0, 139.0, 0.22, 0x334155, false],
+      [14.0, 139.0, -0.22, 0x334155, false]
     ];
     for (const [cx, cz, rot, color, stacked] of hazmatContainers) {
       this.addObstacle({
         x: cx,
         z: cz,
-        width: 5.8,
-        depth: 2.35,
-        height: stacked ? 4.8 : 2.5,
+        width: 5.2,
+        depth: 2.2,
+        height: stacked ? 4.4 : 2.4,
         rotationY: rot,
         kind: 'container',
         color
@@ -3014,23 +3063,23 @@ export class CityLayout {
     }
 
     const parkourItems: Array<[number, number, number, 'parkour_fence' | 'dumpster']> = [
-      [-24.0, -64.0, 0, 'parkour_fence'],
-      [24.0, -64.0, 0, 'parkour_fence'],
-      [-14.5, -24.0, 0.2, 'dumpster'],
-      [14.5, -24.0, -0.2, 'dumpster'],
-      [-24.0, 38.0, 0, 'parkour_fence'],
-      [24.0, 38.0, 0, 'parkour_fence'],
-      [-13.5, 84.5, 0.1, 'parkour_fence'],
-      [13.5, 84.5, -0.1, 'parkour_fence'],
-      [-12.0, 134.0, 0.15, 'jersey_barrier' as never],
-      [12.0, 134.0, -0.15, 'jersey_barrier' as never]
+      [-14.0, -106.0, 0, 'parkour_fence'],
+      [14.0, -106.0, 0, 'parkour_fence'],
+      [-16.0, -13.0, 0.15, 'dumpster'],
+      [16.0, -13.0, -0.15, 'dumpster'],
+      [-4.0, 38.0, 0, 'parkour_fence'],
+      [4.0, 38.0, 0, 'parkour_fence'],
+      [-21.0, 80.0, 0.08, 'parkour_fence'],
+      [21.0, 80.0, -0.08, 'parkour_fence'],
+      [-9.5, 131.0, 0.15, 'jersey_barrier' as never],
+      [9.5, 131.0, -0.15, 'jersey_barrier' as never]
     ];
     for (const [ox, oz, rot, kind] of parkourItems) {
       const k = kind as StaticObstacleData['kind'];
       this.addObstacle({
         x: ox,
         z: oz,
-        width: k === 'parkour_fence' ? 4.8 : k === 'jersey_barrier' ? 4.2 : 3.2,
+        width: k === 'parkour_fence' ? 4.4 : k === 'jersey_barrier' ? 4.0 : 3.0,
         depth: k === 'parkour_fence' ? 0.42 : k === 'jersey_barrier' ? 0.85 : 1.7,
         height: k === 'jersey_barrier' ? 1.05 : 1.28,
         rotationY: rot,
@@ -3039,24 +3088,24 @@ export class CityLayout {
       });
     }
 
-    // Garage military convoy trucks (static burning/abandoned cover)
+    // Garage armored convoy vans (parked near outer sidewalls)
     this.addObstacle({
-      x: -36.0,
-      z: 145.0,
+      x: -28.0,
+      z: 144.0,
       width: 2.3,
       depth: 6.0,
       height: 2.35,
-      rotationY: 0.45,
+      rotationY: 0.35,
       kind: 'van',
       color: 0x334155
     });
     this.addObstacle({
-      x: 36.0,
-      z: 145.0,
+      x: 28.0,
+      z: 144.0,
       width: 2.3,
       depth: 6.0,
       height: 2.35,
-      rotationY: -0.45,
+      rotationY: -0.35,
       kind: 'van',
       color: 0x334155
     });
@@ -3070,34 +3119,48 @@ export class CityLayout {
   private buildBsl4NavigationGraph(): void {
     const addSafeNode = (nx: number, nz: number, isCorner: boolean): number | null => {
       if (Math.abs(nx) > this.cityHalfX - 1.5 || Math.abs(nz) > this.cityHalfZ - 1.5) return null;
-      if (this.isNavPointBlocked(nx, nz, 0.72)) return null;
+      if (this.isNavPointBlocked(nx, nz, 0.65)) return null;
       return this.getOrCreateNode(nx, nz, isCorner);
     };
 
-    const corridorXs = [-58, -32, -24, -14, 0, 14, 24, 32, 58];
-    const corridorZs = [-172, -156, -138, -114, -98, -84, -70, -56, -40, -24, -14, 0, 14, 36, 56, 72, 86, 102, 126, 138, 150];
+    const corridorXs = [-32, -26, -20.5, -16, -12, -4.5, 0, 4.5, 12, 16, 20.5, 26, 32];
+    const corridorZs = [
+      -170, -158, -144, -133,
+      -114, -104, -95,
+      -85, -78, -71,
+      -59, -49, -40, -31, -22,
+      -13, -2, 8, 15,
+      34, 42, 50, 58, 66,
+      74, 84, 93, 103,
+      124, 134, 146, 152
+    ];
     for (const z of corridorZs) {
       for (const x of corridorXs) {
-        addSafeNode(x, z, x === -24 || x === 0 || x === 24);
+        addSafeNode(x, z, x === -12 || x === 0 || x === 12);
       }
     }
-    // Add gate approaches strictly aligned with Blast Gates (x = -24, +24)
-    for (const gx of [-24, 24]) {
-      for (const gz of [-130, -118, 20, 32, 110, 122]) {
-        addSafeNode(gx, gz, false);
-        addSafeNode(gx - 3.6, gz, false);
-        addSafeNode(gx + 3.6, gz, false);
+    // Airlock approach & chamber interior waypoints aligned strictly with Airlocks α / β / γ
+    const airlockAlignedXs: Array<[number, number[]]> = [
+      [LAB_AIRLOCK_ZS[0], [-26, 0, 26]],
+      [LAB_AIRLOCK_ZS[1], [-20, 0, 20]],
+      [LAB_AIRLOCK_ZS[2], [-20.5, 0, 20.5]]
+    ];
+    for (const [az, axList] of airlockAlignedXs) {
+      for (const ax of axList) {
+        for (const dz of [-9, -6, 0, 6, 9]) {
+          addSafeNode(ax, az + dz, false);
+        }
       }
     }
     // Tunnel ramp extraction waypoints
-    for (const tz of [155, 166, 175]) {
+    for (const tz of [156, 165, 173]) {
       addSafeNode(-4, tz, false);
       addSafeNode(0, tz, false);
       addSafeNode(4, tz, false);
     }
 
     this.addInteriorNavNodes(addSafeNode);
-    this.connectLocalNavNodes(26, 27);
+    this.connectLocalNavNodes(22, 23);
   }
 
   private buildOrganicNavigationGraph(): void {

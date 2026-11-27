@@ -34,7 +34,9 @@ export type TacticalTool =
 
 export type AgentRole = 'civilian' | 'infected' | 'police' | 'medic';
 
-export type ZombieVariant = 'standard' | 'runner' | 'brute';
+export type ZombieVariant = 'standard' | 'runner' | 'brute' | 'tyrant';
+
+export type DoorDamageStage = 0 | 1 | 2 | 3 | 4;
 
 export type ZombieAttackMode =
   | 'none'
@@ -188,6 +190,21 @@ export interface LabContainmentPodData {
   breached: boolean;
   breachAt: number;
   label: string;
+}
+
+export interface LabDeviceData {
+  id: number;
+  kind: 'cryo_valve' | 'turret_console' | 'backup_generator';
+  x: number;
+  z: number;
+  label: string;
+  state: 'ready' | 'active' | 'cooldown' | 'completed';
+  timer: number;
+  maxDuration: number;
+  cooldown: number;
+  cooldownDuration: number;
+  zoneZMin: number;
+  zoneZMax: number;
 }
 
 export interface ExtractionApcData {
@@ -389,6 +406,21 @@ export interface FirstPersonState {
   insideTrainCar: number;
   nearExtractionApc?: 'ignite' | 'warming' | 'board' | null;
   insideExtractionApc?: boolean;
+  nearLabDevice?: {
+    id: number;
+    kind: LabDeviceData['kind'];
+    label: string;
+    state: LabDeviceData['state'];
+    cooldown: number;
+  } | null;
+  bossHud?: {
+    name: string;
+    hp: number;
+    maxHp: number;
+    phase: 1 | 2;
+    state: 'stalking' | 'enraged' | 'staggered' | 'charging';
+    dist: number;
+  } | null;
   waypointX: number;
   waypointZ: number;
   waypointLabel: string;
@@ -445,7 +477,11 @@ export interface InteriorBox {
     | 'ticket_booth'
     | 'turnstile'
     | 'departure_board'
-    | 'escalator';
+    | 'escalator'
+    | 'cryo_tank'
+    | 'lab_bench'
+    | 'server_rack'
+    | 'weapon_rack';
   color?: number;
 }
 
@@ -458,6 +494,9 @@ export interface InteriorDoorData {
   z: number;
   width: number;
   isGlass: boolean;
+  isAirlock?: boolean;
+  airlockLine?: 1 | 2 | 3;
+  manualLockUntil?: number;
   isLocked: boolean;
   isBroken: boolean;
   integrity: number;
@@ -466,7 +505,7 @@ export interface InteriorDoorData {
 }
 
 export interface BuildingInteriorData {
-  theme: 'mart' | 'clinic' | 'hospital' | 'terminal';
+  theme: 'mart' | 'clinic' | 'hospital' | 'terminal' | 'lab_cryo' | 'lab_bio' | 'lab_armory' | 'lab_airlock';
   floorHeight: number;
   walls: InteriorBox[];
   props: InteriorBox[];
@@ -616,6 +655,16 @@ export interface AgentData {
   deathDirX?: number;
   deathDirZ?: number;
   deathHeadshot?: boolean;
+  bossPhase?: 1 | 2;
+  bossStaggerDamage?: number;
+  bossKneelTimer?: number;
+  bossRoarCooldown?: number;
+  bossChargeCooldown?: number;
+  bossChargeTimer?: number;
+  bossChargeDirX?: number;
+  bossChargeDirZ?: number;
+  bossStepAccum?: number;
+  slowedTimer?: number;
 }
 
 export interface VehicleData {
@@ -699,7 +748,8 @@ export interface VisualEffectEvent {
     | 'train_horn'
     | 'window_shatter'
     | 'door_pound'
-    | 'car_alarm_pulse';
+    | 'car_alarm_pulse'
+    | 'cryo_mist';
   x: number;
   z: number;
   y?: number;

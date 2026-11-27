@@ -55,16 +55,22 @@ const LAST_NAMES = [
   'Frost', 'Grant', 'Hayes', 'Jensen', 'Keller', 'Lawson', 'Mendez'
 ];
 
-export function generateAgentName(rng: SeededRNG, role: AgentRole, isSwat = false): string {
+export function generateAgentName(rng: SeededRNG, role: AgentRole, isSwat = false, isLab = false): string {
   const first = rng.pick(FIRST_NAMES);
   const last = rng.pick(LAST_NAMES);
   if (role === 'police') {
+    if (isLab) return isSwat ? `BSL-4 SWAT ${first} ${last}` : `Sec. ${first} ${last}`;
     if (isSwat) return `SWAT ${first} ${last}`;
     const rank = rng.chance(0.25) ? 'Sgt.' : 'Ofc.';
     return `${rank} ${first} ${last}`;
   }
   if (role === 'medic') {
-    return `Medic ${first} ${last}`;
+    return isLab ? `Bio-Medic ${first} ${last}` : `Medic ${first} ${last}`;
+  }
+  if (isLab) {
+    const r = rng.next();
+    const title = r < 0.5 ? 'Dr.' : r < 0.75 ? 'Tech' : 'Researcher';
+    return `${title} ${first} ${last}`;
   }
   return `${first} ${last}`;
 }

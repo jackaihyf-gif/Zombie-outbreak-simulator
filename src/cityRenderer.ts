@@ -11,6 +11,7 @@ import {
   BrokenWindowData,
   BuildingData,
   DefenseWallData,
+  DoorDamageStage,
   EvacZoneData,
   ExplosiveHazardData,
   ExpressTrainData,
@@ -19,6 +20,7 @@ import {
   HoldZoneData,
   InteriorDoorData,
   LabContainmentPodData,
+  LabDeviceData,
   LureFlareData,
   PrioritySectorData,
   RoadblockData,
@@ -29,22 +31,37 @@ import {
   VisualEffectEvent
 } from './types';
 import {
+  createInitialLabDevices,
+  LAB_AIRLOCK_ZS,
   LAB_APC_START_Z,
   LAB_CEILING_Y,
   LAB_HALF_X,
   LAB_HALF_Z,
-  LAB_TUNNEL_GATE_Z
+  LAB_REACTOR_CEILING_Y,
+  LAB_TUNNEL_GATE_Z,
+  LAB_TURRET_POSITIONS
 } from './bsl4Lab';
 import { NeonSignLabel, VoxelTextureStudio } from './voxelTextures';
+
+function damageStageFromRatio(pct: number): DoorDamageStage {
+  if (pct > 0.8) return 0;
+  if (pct > 0.6) return 1;
+  if (pct > 0.4) return 2;
+  if (pct > 0.2) return 3;
+  return 4;
+}
 
 export type AtmosphereStage = 'dusk' | 'night' | 'day';
 
 interface BlastGateVisual {
   group: THREE.Group;
-  leftDoor: THREE.Mesh;
-  rightDoor: THREE.Mesh;
+  leftDoor: THREE.Object3D;
+  rightDoor: THREE.Object3D;
+  gateMat: THREE.MeshStandardMaterial;
   boomArmPivot: THREE.Group;
   beaconMat: THREE.MeshBasicMaterial;
+  lastDamageStage: DoorDamageStage;
+  isLab: boolean;
 }
 
 interface TrainDoorVisual {
@@ -53,7 +70,7 @@ interface TrainDoorVisual {
   glassMat: THREE.MeshBasicMaterial;
   lockBadge: THREE.Mesh;
   baseX: number;
-  lastDamageStage: 0 | 1 | 2;
+  lastDamageStage: DoorDamageStage;
 }
 
 interface InteriorDoorVisual {
@@ -66,7 +83,7 @@ interface InteriorDoorVisual {
   baseX: number;
   baseZ: number;
   isGlass: boolean;
-  lastDamageStage: 0 | 1 | 2;
+  lastDamageStage: DoorDamageStage;
 }
 
 interface InteriorLightVisual {
@@ -137,7 +154,10 @@ export class CityRenderer {
   private hazardVisuals: Map<number, HazardVisual> = new Map();
   private dynamicTextures: THREE.Texture[] = [];
   private labCeilingGroup: THREE.Group | null = null;
+  private labCutawayCeilings: THREE.Object3D[] = [];
   private labPodVisuals = new Map<number, { glass: THREE.Mesh; core: THREE.Mesh; beaconMat: THREE.MeshBasicMaterial }>();
+  private labDeviceVisuals = new Map<number, { beaconMat: THREE.MeshBasicMaterial; wheel?: THREE.Object3D }>();
+  private labTurretHeads: Array<{ head: THREE.Object3D; eyeMat: THREE.MeshBasicMaterial }> = [];
   private labEmergencyLights: THREE.MeshBasicMaterial[] = [];
   private labReactorRings: THREE.Mesh[] = [];
   private extractionApcGroup: THREE.Group | null = null;
@@ -186,8 +206,8 @@ export class CityRenderer {
   private beamUnitGeo = new THREE.BoxGeometry(0.065, 0.065, 1.0);
   private barUnitGeo = new THREE.BoxGeometry(1.0, 0.24, 0.24);
 
-  private gunBeamMat = new THREE.MeshBasicMaterial({ color: 0xfef08a, transparent: true, opacity: 0.92 });
-  private gunFlashMat = new THREE.MeshBasicMaterial({ color: 0xfde047 });
+  private gunBeamMat = new THREE.MeshBasicMaterial({ color: 0xfde68a, transparent: true, opacity: 0.52, depthWrite: false });
+  private gunFlashMat = new THREE.MeshBasicMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.68, depthWrite: false });
   private impactDustMat = new THREE.MeshBasicMaterial({ color: 0xc4b9a8, transparent: true, opacity: 0.72 });
   private reportRingMat = new THREE.MeshBasicMaterial({
     color: 0xf59e0b,
@@ -807,6 +827,25 @@ export class CityRenderer {
       this.skyUniforms.uStarIntensity.value = 0.0;
     }
     this.skyUniforms.uSunDir.value.copy(this.sunLight.position).normalize();
+    if (this.currentLayout?.mapId === 'bsl4_lab') {
+      this.applyLabAtmosphereOverrides();
+    }
+  }
+
+  private applyLabAtmosphereOverrides(): void {
+    this.baseFogDensity = 0.0028;
+    this.scene.background = new THREE.Color(0x03060c);
+    this.scene.fog = new THREE.FogExp2(0x050912, this.baseFogDensity);
+    this.baseAmbientIntensity = 0.36;
+    this.baseHemiIntensity = 0.48;
+    this.baseSunIntensity = 0.95;
+    this.ambientLight.intensity = this.baseAmbientIntensity;
+    this.hemiLight.color.setHex(0x64748b);
+    this.hemiLight.groundColor.setHex(0x090d16);
+    this.hemiLight.intensity = this.baseHemiIntensity;
+    this.sunLight.intensity = this.baseSunIntensity;
+    this.sunLight.color.setHex(0x94a3b8);
+    this.sunLight.position.set(24, 90, -18);
   }
 
   public syncSkyToCamera(camPos: THREE.Vector3, simTime: number, isFirstPerson: boolean): void {
@@ -899,7 +938,10 @@ export class CityRenderer {
     for (const tex of this.dynamicTextures) tex.dispose();
     this.dynamicTextures = [];
     this.labCeilingGroup = null;
+    this.labCutawayCeilings = [];
     this.labPodVisuals.clear();
+    this.labDeviceVisuals.clear();
+    this.labTurretHeads = [];
     this.labEmergencyLights = [];
     this.labReactorRings = [];
     this.extractionApcGroup = null;
@@ -927,6 +969,10 @@ export class CityRenderer {
     this.stampedBloodEvents.clear();
 
     this.horizonGroup.visible = layout.mapId !== 'bsl4_lab';
+    if (this.skyDomeMesh) {
+      this.skyDomeMesh.visible = layout.mapId !== 'bsl4_lab';
+    }
+    this.applyAtmosphere(this.atmosphereStage);
     const dx = layout.cityHalfX + 40;
     const dz = layout.cityHalfZ + 40;
     this.sunLight.shadow.camera.left = -dx;
@@ -1103,24 +1149,32 @@ export class CityRenderer {
     this.cityGroup.add(NorthBorder, SouthBorder, WestBorder, EastBorder);
 
     if (layout.mapId === 'bsl4_lab') {
-      const cyanStripMat = new THREE.MeshBasicMaterial({ color: 0x0ea5e9, transparent: true, opacity: 0.6 });
-      const amberStripMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.65 });
-      const greenStripMat = new THREE.MeshBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.72 });
-      const laneGeo = new THREE.PlaneGeometry(0.18, layout.cityHalfZ * 2 - 8);
-      for (const lx of [-24, 0, 24]) {
-        const lane = new THREE.Mesh(laneGeo, cyanStripMat);
-        lane.rotation.x = -Math.PI / 2;
-        lane.position.set(lx, 0.02, 0);
-        this.cityGroup.add(lane);
-      }
-      const zoneLineGeo = new THREE.PlaneGeometry(layout.cityHalfX * 2 - 12, 0.24);
-      for (const zz of [-136, -100, -58, -16, 32, 74, 122]) {
-        const zStrip = new THREE.Mesh(zoneLineGeo, zz >= 74 ? amberStripMat : cyanStripMat);
+      const cyanStripMat = new THREE.MeshBasicMaterial({ color: 0x0ea5e9, transparent: true, opacity: 0.45 });
+      const amberStripMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.55 });
+      const greenStripMat = new THREE.MeshBasicMaterial({ color: 0x22c55e, transparent: true, opacity: 0.68 });
+      // Central Cryo & Killzone guide strip (interrupted only inside buildings or cleanly under them)
+      const spineNorth = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 48), cyanStripMat);
+      spineNorth.rotation.x = -Math.PI / 2;
+      spineNorth.position.set(0, 0.02, -92);
+      const twinGeo = new THREE.PlaneGeometry(0.14, 44);
+      const twinL = new THREE.Mesh(twinGeo, cyanStripMat);
+      twinL.rotation.x = -Math.PI / 2;
+      twinL.position.set(-12, 0.02, -40);
+      const twinR = twinL.clone();
+      twinR.position.x = 12;
+      const spineSouth = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 98), amberStripMat);
+      spineSouth.rotation.x = -Math.PI / 2;
+      spineSouth.position.set(0, 0.02, 75);
+      this.cityGroup.add(spineNorth, twinL, twinR, spineSouth);
+
+      const zoneLineGeo = new THREE.PlaneGeometry(layout.cityHalfX * 2 - 36, 0.22);
+      for (const zz of LAB_AIRLOCK_ZS) {
+        const zStrip = new THREE.Mesh(zoneLineGeo, zz > 50 ? greenStripMat : amberStripMat);
         zStrip.rotation.x = -Math.PI / 2;
         zStrip.position.set(0, 0.022, zz);
         this.cityGroup.add(zStrip);
       }
-      const bayRing = new THREE.Mesh(new THREE.RingGeometry(5.6, 6.1, 32), greenStripMat);
+      const bayRing = new THREE.Mesh(new THREE.RingGeometry(5.2, 5.7, 32), greenStripMat);
       bayRing.rotation.x = -Math.PI / 2;
       bayRing.position.set(0, 0.025, LAB_APC_START_Z);
       this.cityGroup.add(bayRing);
@@ -1225,14 +1279,14 @@ export class CityRenderer {
   private buildDefenseWallsAndGates(layout: CityLayout): void {
     if (layout.wallDefs.length === 0) return;
 
+    const isLabLayout = layout.mapId === 'bsl4_lab';
     const buttressMat = new THREE.MeshStandardMaterial({ color: 0x262d38, roughness: 0.85 });
     const trimMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.65 });
     const edgePaintMat = new THREE.MeshStandardMaterial({ color: 0xd4a33d, emissive: 0x52370d, emissiveIntensity: 0.32 });
-    const steelMat = new THREE.MeshStandardMaterial({
-      map: this.textureStudio.getBlastGateTexture(),
-      color: 0xffffff,
-      metalness: 0.45,
-      roughness: 0.48
+    const frameCapMat = new THREE.MeshStandardMaterial({
+      color: isLabLayout ? 0x263547 : 0x334155,
+      metalness: 0.52,
+      roughness: 0.45
     });
     const wireMat = new THREE.MeshStandardMaterial({
       color: 0xcbd5e1,
@@ -1295,40 +1349,67 @@ export class CityRenderer {
         edgePaint.position.set(segCx, wd.height + WALL_DECK_RISE + 0.006, wd.z - wd.thickness / 2 - WALL_DECK_OVERHANG + 0.12);
         this.cityGroup.add(wallMesh, parapet, edgePaint);
 
-        // Mount the wire on the outer face below the deck sightline.
-        const wireStrandGeo = new THREE.BoxGeometry(segW, 0.06, 0.06);
-        const strand1 = new THREE.Mesh(wireStrandGeo, wireMat);
-        const wireZ = wd.z - wd.thickness / 2 - 0.12;
-        strand1.position.set(segCx, wd.height - 0.62, wireZ);
-        const strand2 = new THREE.Mesh(wireStrandGeo, wireMat);
-        strand2.position.set(segCx, wd.height - 0.27, wireZ);
-        this.cityGroup.add(strand1, strand2);
+        if (isLabLayout) {
+          // Interior overwatch safety railing along the firing deck edge + upper ceiling-seal header (y=7.05..8.4m)
+          const railZ = wd.z - wd.thickness / 2 - WALL_DECK_OVERHANG + 0.14;
+          const topRail = new THREE.Mesh(new THREE.BoxGeometry(segW, 0.08, 0.08), trimMat);
+          topRail.position.set(segCx, wd.height + WALL_DECK_RISE + 0.85, railZ);
+          const midRail = new THREE.Mesh(new THREE.BoxGeometry(segW, 0.05, 0.05), trimMat);
+          midRail.position.set(segCx, wd.height + WALL_DECK_RISE + 0.44, railZ);
+          this.cityGroup.add(topRail, midRail);
+          const railPostCount = Math.max(2, Math.floor(segW / 4));
+          for (let rp = 0; rp <= railPostCount; rp++) {
+            const rpx = seg.start + (rp / railPostCount) * segW;
+            const rPost = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.88, 0.08), frameCapMat);
+            rPost.position.set(rpx, wd.height + WALL_DECK_RISE + 0.44, railZ);
+            this.cityGroup.add(rPost);
+          }
 
-        const postCount = Math.max(3, Math.floor(segW / 5));
-        for (let p = 0; p <= postCount; p++) {
-          const px = seg.start + (p / postCount) * segW;
-          const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.05, 0.14), wirePostMat);
-          post.position.set(px, wd.height - 0.57, wireZ);
-          this.cityGroup.add(post);
+          const upperSealH = 8.4 - 7.05;
+          const upperSeal = new THREE.Mesh(
+            new THREE.BoxGeometry(segW, upperSealH, wd.thickness),
+            concreteMat
+          );
+          upperSeal.position.set(segCx, 7.05 + upperSealH * 0.5, wd.z);
+          upperSeal.receiveShadow = true;
+          this.cityGroup.add(upperSeal);
+        } else {
+          // Mount the wire on the outer face below the deck sightline.
+          const wireStrandGeo = new THREE.BoxGeometry(segW, 0.06, 0.06);
+          const strand1 = new THREE.Mesh(wireStrandGeo, wireMat);
+          const wireZ = wd.z - wd.thickness / 2 - 0.12;
+          strand1.position.set(segCx, wd.height - 0.62, wireZ);
+          const strand2 = new THREE.Mesh(wireStrandGeo, wireMat);
+          strand2.position.set(segCx, wd.height - 0.27, wireZ);
+          this.cityGroup.add(strand1, strand2);
+
+          const postCount = Math.max(3, Math.floor(segW / 5));
+          for (let p = 0; p <= postCount; p++) {
+            const px = seg.start + (p / postCount) * segW;
+            const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.05, 0.14), wirePostMat);
+            post.position.set(px, wd.height - 0.57, wireZ);
+            this.cityGroup.add(post);
+          }
+
+          for (let rx = seg.start + 1.0; rx <= seg.end - 1.0; rx += 1.65) {
+            const coil = new THREE.Mesh(coilGeo, wireMat);
+            coil.position.set(rx, wd.height - 0.57, wireZ);
+            coil.rotation.y = Math.PI * 0.35;
+            coil.rotation.x = 0.15;
+            this.cityGroup.add(coil);
+          }
         }
 
-        for (let rx = seg.start + 1.0; rx <= seg.end - 1.0; rx += 1.65) {
-          const coil = new THREE.Mesh(coilGeo, wireMat);
-          coil.position.set(rx, wd.height - 0.57, wireZ);
-          coil.rotation.y = Math.PI * 0.35;
-          coil.rotation.x = 0.15;
-          this.cityGroup.add(coil);
-        }
-
-        // Buttress pillars along concrete wall
+        // Buttress pillars along concrete wall (floor-to-ceiling structural columns inside BSL-4)
+        const pillarH = isLabLayout ? 8.4 : wd.height + 0.65;
         const pillarCount = Math.max(2, Math.floor(segW / 16));
         for (let p = 0; p < pillarCount; p++) {
           const px = seg.start + ((p + 0.5) / pillarCount) * segW;
           const pillar = new THREE.Mesh(
-            new THREE.BoxGeometry(1.4, wd.height + 0.65, wd.thickness + 1.0),
+            new THREE.BoxGeometry(1.4, pillarH, wd.thickness + 1.0),
             buttressMat
           );
-          pillar.position.set(px, (wd.height + 0.65) * 0.5, wd.z);
+          pillar.position.set(px, pillarH * 0.5, wd.z);
           pillar.castShadow = true;
           this.cityGroup.add(pillar);
         }
@@ -1376,11 +1457,12 @@ export class CityRenderer {
         const gGroup = new THREE.Group();
         gGroup.position.set(gx, 0, wd.z);
 
-        const postGeo = new THREE.BoxGeometry(1.45, wd.height + 1.6, wd.thickness + 1.4);
+        const postH = isLabLayout ? 8.4 : wd.height + 1.6;
+        const postGeo = new THREE.BoxGeometry(1.45, postH, wd.thickness + 1.4);
         const postL = new THREE.Mesh(postGeo, buttressMat);
-        postL.position.set(-gateWidth * 0.5 - 0.5, (wd.height + 1.6) * 0.5, 0);
+        postL.position.set(-gateWidth * 0.5 - 0.5, postH * 0.5, 0);
         const postR = new THREE.Mesh(postGeo, buttressMat);
-        postR.position.set(gateWidth * 0.5 + 0.5, (wd.height + 1.6) * 0.5, 0);
+        postR.position.set(gateWidth * 0.5 + 0.5, postH * 0.5, 0);
 
         const lintel = new THREE.Mesh(
           new THREE.BoxGeometry(gateWidth + 2.6, 1.45, wd.thickness + 1.4),
@@ -1388,17 +1470,29 @@ export class CityRenderer {
         );
         lintel.position.set(0, wd.height + 0.85, 0);
 
-        // Top barbed wire strands & coils over gate lintel
-        const gateWire = new THREE.Mesh(
-          new THREE.BoxGeometry(gateWidth + 2.4, 0.09, 0.09),
-          wireMat
-        );
-        gateWire.position.set(0, wd.height + 2.0, 0);
-        for (let grx = -gateWidth * 0.45; grx <= gateWidth * 0.45; grx += 1.6) {
-          const coil = new THREE.Mesh(coilGeo, wireMat);
-          coil.position.set(grx, wd.height + 1.92, 0);
-          coil.rotation.y = Math.PI * 0.35;
-          gGroup.add(coil);
+        if (isLabLayout) {
+          // Solid bulkhead transom sealing gate arch smoothly up to the 8.4m bunker ceiling
+          const transomH = 8.4 - (wd.height + 1.45);
+          const transom = new THREE.Mesh(
+            new THREE.BoxGeometry(gateWidth + 2.6, transomH, wd.thickness + 1.0),
+            frameCapMat
+          );
+          transom.position.set(0, wd.height + 1.45 + transomH * 0.5, 0);
+          gGroup.add(transom);
+        } else {
+          // Top barbed wire strands & coils over gate lintel
+          const gateWire = new THREE.Mesh(
+            new THREE.BoxGeometry(gateWidth + 2.4, 0.09, 0.09),
+            wireMat
+          );
+          gateWire.position.set(0, wd.height + 2.0, 0);
+          gGroup.add(gateWire);
+          for (let grx = -gateWidth * 0.45; grx <= gateWidth * 0.45; grx += 1.6) {
+            const coil = new THREE.Mesh(coilGeo, wireMat);
+            coil.position.set(grx, wd.height + 1.92, 0);
+            coil.rotation.y = Math.PI * 0.35;
+            gGroup.add(coil);
+          }
         }
 
         const beaconMat = new THREE.MeshBasicMaterial({ color: 0x22c55e });
@@ -1412,17 +1506,45 @@ export class CityRenderer {
           new THREE.BoxGeometry(0.55, 0.55, 0.55),
           new THREE.MeshBasicMaterial({ color: 0xf59e0b })
         );
-        amberCrown.position.set(0, wd.height + 1.85, 0);
+        amberCrown.position.set(
+          0,
+          isLabLayout ? wd.height + 1.35 : wd.height + 1.85,
+          isLabLayout ? -wd.thickness * 0.5 - 0.72 : 0
+        );
 
-        // Left & Right sliding steel blast doors (hazard stripe painted in texture)
-        const doorGeo = new THREE.BoxGeometry(gateWidth * 0.5 - 0.08, wd.height - 0.2, 0.92);
-        const leftDoor = new THREE.Mesh(doorGeo, steelMat);
-        leftDoor.position.set(-gateWidth * 0.55, (wd.height - 0.2) * 0.5, 0);
-        leftDoor.castShadow = true;
+        // Left & Right translucent-viewport sliding blast doors (5-stage fracture texture + steel frame rails)
+        const gateLeafW = gateWidth * 0.5 - 0.08;
+        const gateLeafH = wd.height - 0.2;
+        const gateMat = new THREE.MeshStandardMaterial({
+          map: this.textureStudio.getBlastGateGlassTexture(0, isLabLayout),
+          color: 0xffffff,
+          metalness: 0.25,
+          roughness: 0.32,
+          transparent: true,
+          alphaTest: 0.04,
+          depthWrite: false,
+          side: THREE.DoubleSide
+        });
+        const gatePlaneGeo = new THREE.PlaneGeometry(gateLeafW, gateLeafH);
+        const capBarGeo = new THREE.BoxGeometry(gateLeafW, 0.22, 0.26);
 
-        const rightDoor = new THREE.Mesh(doorGeo, steelMat);
-        rightDoor.position.set(gateWidth * 0.55, (wd.height - 0.2) * 0.5, 0);
-        rightDoor.castShadow = true;
+        const leftDoor = new THREE.Group();
+        leftDoor.position.set(-gateWidth * 0.55, gateLeafH * 0.5, 0);
+        const leftPanel = new THREE.Mesh(gatePlaneGeo, gateMat);
+        const leftTop = new THREE.Mesh(capBarGeo, frameCapMat);
+        leftTop.position.y = gateLeafH * 0.5 - 0.11;
+        const leftBot = new THREE.Mesh(capBarGeo, frameCapMat);
+        leftBot.position.y = -gateLeafH * 0.5 + 0.11;
+        leftDoor.add(leftPanel, leftTop, leftBot);
+
+        const rightDoor = new THREE.Group();
+        rightDoor.position.set(gateWidth * 0.55, gateLeafH * 0.5, 0);
+        const rightPanel = new THREE.Mesh(gatePlaneGeo, gateMat);
+        const rightTop = new THREE.Mesh(capBarGeo, frameCapMat);
+        rightTop.position.y = gateLeafH * 0.5 - 0.11;
+        const rightBot = new THREE.Mesh(capBarGeo, frameCapMat);
+        rightBot.position.y = -gateLeafH * 0.5 + 0.11;
+        rightDoor.add(rightPanel, rightTop, rightBot);
 
         // Red & white striped boom barrier arm in front of threshold
         const boomArmPivot = new THREE.Group();
@@ -1436,34 +1558,37 @@ export class CityRenderer {
           boomArmPivot.add(segBar);
         }
 
-        // Flanking Sandbag Watchtower (left side) + Searchlight cone sweeping avenue
-        const towerX = Math.sign(gx || 1) * (gateWidth * 0.5 + 3.0);
-        for (const lx of [-1.05, 1.05]) {
-          for (const lz of [-1.05, 1.05]) {
-            const leg = new THREE.Mesh(new THREE.BoxGeometry(0.28, 9.2, 0.28), wirePostMat);
-            leg.position.set(towerX + lx, 4.6, lz);
-            leg.castShadow = true;
-            gGroup.add(leg);
+        if (!isLabLayout) {
+          // Flanking Sandbag Watchtower (left side) + Searchlight cone sweeping avenue
+          const towerX = Math.sign(gx || 1) * (gateWidth * 0.5 + 3.0);
+          for (const lx of [-1.05, 1.05]) {
+            for (const lz of [-1.05, 1.05]) {
+              const leg = new THREE.Mesh(new THREE.BoxGeometry(0.28, 9.2, 0.28), wirePostMat);
+              leg.position.set(towerX + lx, 4.6, lz);
+              leg.castShadow = true;
+              gGroup.add(leg);
+            }
           }
+          const deck = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.32, 2.8), buttressMat);
+          deck.position.set(towerX, 7.6, 0);
+          const sandbagWall = new THREE.Mesh(new THREE.BoxGeometry(2.95, 1.05, 2.95), sandbagMat);
+          sandbagWall.position.set(towerX, 8.2, 0);
+          const roof = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.22, 3.1), trimMat);
+          roof.position.set(towerX, 9.45, 0);
+          const searchHead = new THREE.Mesh(
+            new THREE.BoxGeometry(0.6, 0.45, 0.55),
+            new THREE.MeshBasicMaterial({ color: 0xfef9c3 })
+          );
+          searchHead.position.set(towerX + 0.3, 8.9, -1.2);
+          const searchCone = new THREE.Mesh(towerConeGeo, towerConeMat);
+          searchCone.position.set(towerX + 0.3, 8.85, -1.35);
+          searchCone.visible = this.atmosphereStage !== 'day';
+          this.streetLampCones.push(searchCone);
+          gGroup.add(deck, sandbagWall, roof, searchHead, searchCone);
         }
-        const deck = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.32, 2.8), buttressMat);
-        deck.position.set(towerX, 7.6, 0);
-        const sandbagWall = new THREE.Mesh(new THREE.BoxGeometry(2.95, 1.05, 2.95), sandbagMat);
-        sandbagWall.position.set(towerX, 8.2, 0);
-        const roof = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.22, 3.1), trimMat);
-        roof.position.set(towerX, 9.45, 0);
-        const searchHead = new THREE.Mesh(
-          new THREE.BoxGeometry(0.6, 0.45, 0.55),
-          new THREE.MeshBasicMaterial({ color: 0xfef9c3 })
-        );
-        searchHead.position.set(towerX + 0.3, 8.9, -1.2);
-        const searchCone = new THREE.Mesh(towerConeGeo, towerConeMat);
-        searchCone.position.set(towerX + 0.3, 8.85, -1.35);
-        searchCone.visible = this.atmosphereStage !== 'day';
-        this.streetLampCones.push(searchCone);
-        gGroup.add(deck, sandbagWall, roof, searchHead, searchCone);
 
         // Gate floodlight cones
+        const labGateConeGeo = isLabLayout ? new THREE.ConeGeometry(3.4, 4.0, 14, 1, true) : gateConeGeo;
         for (const fx of [-4.0, 4.0]) {
           for (const fz of [-1.4, 1.4]) {
             const bulb = new THREE.Mesh(
@@ -1471,14 +1596,14 @@ export class CityRenderer {
               new THREE.MeshBasicMaterial({ color: 0xfef08a })
             );
             bulb.position.set(fx, wd.height + 0.1, fz);
-            const cone = new THREE.Mesh(gateConeGeo, gateConeMat);
-            cone.position.set(fx, wd.height - 3.6, fz);
+            const cone = new THREE.Mesh(labGateConeGeo, gateConeMat);
+            cone.position.set(fx, isLabLayout ? 2.0 : wd.height - 3.6, fz);
             this.streetLampCones.push(cone);
             gGroup.add(bulb, cone);
           }
         }
 
-        gGroup.add(postL, postR, lintel, gateWire, beacon, amberCrown, leftDoor, rightDoor, boomArmPivot);
+        gGroup.add(postL, postR, lintel, beacon, amberCrown, leftDoor, rightDoor, boomArmPivot);
         this.cityGroup.add(gGroup);
 
         const key = `${wd.layerIndex}:${Math.round(gx)}`;
@@ -1486,8 +1611,11 @@ export class CityRenderer {
           group: gGroup,
           leftDoor,
           rightDoor,
+          gateMat,
           boomArmPivot,
-          beaconMat
+          beaconMat,
+          lastDamageStage: 0,
+          isLab: isLabLayout
         });
       }
     }
@@ -2107,7 +2235,14 @@ export class CityRenderer {
 
   private ktxShutters = new Map<
     KtxGateId,
-    { mesh: THREE.Mesh; closedY: number; height: number; beaconMat: THREE.MeshBasicMaterial }
+    {
+      mesh: THREE.Mesh;
+      mat: THREE.MeshStandardMaterial;
+      closedY: number;
+      height: number;
+      beaconMat: THREE.MeshBasicMaterial;
+      lastDamageStage: DoorDamageStage;
+    }
   >();
 
   private buildKtxBase(railSpan: number, railCenterX: number, railEndX: number): void {
@@ -2642,20 +2777,41 @@ export class CityRenderer {
       pushBox(cyanMats, x, 2.66, 155.24, 0.3, 0.18, 0.16);
     }
 
-    // 7. 4 Progressive Animated Steel Rolling Shutters (public, crew, mezzanine, transfer)
+    // 7. 4 Progressive Animated Translucent-Viewport Steel Rolling Shutters (public, crew, mezzanine, transfer)
     for (const id of KTX_GATE_IDS) {
       const g = KTX_GATES[id];
       const box = ktxGateBox(id);
-      const shutterMesh = block(g.x, g.y + box.height / 2, g.z, box.width, box.height, box.depth, gatePanel);
+      const shutterMat = new THREE.MeshStandardMaterial({
+        map: this.textureStudio.getBlastGateGlassTexture(0, false),
+        color: 0xffffff,
+        roughness: 0.35,
+        metalness: 0.35,
+        transparent: true,
+        alphaTest: 0.04,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      });
+      const shutterMesh = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          g.axis === 'x' ? box.width : 0.16,
+          box.height,
+          g.axis === 'z' ? box.depth : 0.16
+        ),
+        shutterMat
+      );
+      shutterMesh.position.set(g.x, g.y + box.height / 2, g.z);
+      group.add(shutterMesh);
       const beaconMat = new THREE.MeshBasicMaterial({
         color: id === 'public' || id === 'mezzanine' ? new THREE.Color(0.25, 1.5, 1.8) : new THREE.Color(1.85, 1.05, 0.16),
         toneMapped: false
       });
       this.ktxShutters.set(id, {
         mesh: shutterMesh,
+        mat: shutterMat,
         closedY: g.y + box.height / 2,
         height: box.height,
-        beaconMat
+        beaconMat,
+        lastDamageStage: 0
       });
       const alongX = g.axis === 'x';
       for (const side of [-1, 1]) {
@@ -3098,13 +3254,16 @@ export class CityRenderer {
     const balconyPostGeo = new THREE.BoxGeometry(0.08, 0.82, 0.08);
     const ladderRailGeo = new THREE.BoxGeometry(0.07, 1.9, 0.07);
 
+    const isLabMap = this.currentLayout?.mapId === 'bsl4_lab';
     for (let bi = 0; bi < buildings.length; bi++) {
       const b = buildings[bi];
       const bGroup = new THREE.Group();
       bGroup.position.set(b.x, 0.25, b.z);
 
-      let style: 'brick' | 'concrete' | 'skyscraper' | 'warehouse' = 'concrete';
-      if (b.roofType === 'skyscraper') style = 'skyscraper';
+      let style: 'brick' | 'concrete' | 'skyscraper' | 'warehouse' | 'lab' = 'concrete';
+      if (isLabMap) {
+        style = 'lab';
+      } else if (b.roofType === 'skyscraper') style = 'skyscraper';
       else if (b.roofType === 'warehouse') style = 'warehouse';
       else if (
         b.roofType === 'pitched' ||
@@ -3132,13 +3291,31 @@ export class CityRenderer {
 
       const bodyMatArray = [sideMat, sideMat, topMat, topMat, sideMat, sideMat];
       if (!b.interior) {
-        const bodyGeo = new THREE.BoxGeometry(b.width, b.height, b.depth);
-        const bodyMesh = new THREE.Mesh(bodyGeo, bodyMatArray);
-        bodyMesh.position.y = b.height / 2;
-        bodyMesh.castShadow = true;
-        bodyMesh.receiveShadow = true;
-        bodyMesh.userData = { buildingId: b.id };
-        bGroup.add(bodyMesh);
+        if (isLabMap) {
+          const rockSideMat = new THREE.MeshStandardMaterial({ color: b.color, roughness: 0.92, metalness: 0.12 });
+          const rockTopMat = new THREE.MeshStandardMaterial({ color: 0x0b101b, roughness: 0.94, metalness: 0.08 });
+          const bodyMesh = new THREE.Mesh(new THREE.BoxGeometry(b.width, b.height, b.depth), [
+            rockSideMat, rockSideMat, rockTopMat, rockTopMat, rockSideMat, rockSideMat
+          ]);
+          bodyMesh.position.y = b.height / 2;
+          bodyMesh.castShadow = true;
+          bodyMesh.receiveShadow = true;
+          bodyMesh.userData = { buildingId: b.id };
+          const cutTrim = new THREE.Mesh(
+            new THREE.BoxGeometry(b.width + 0.06, 0.14, b.depth + 0.06),
+            new THREE.MeshBasicMaterial({ color: b.accentColor, transparent: true, opacity: 0.42 })
+          );
+          cutTrim.position.y = b.height - 0.04;
+          bGroup.add(bodyMesh, cutTrim);
+        } else {
+          const bodyGeo = new THREE.BoxGeometry(b.width, b.height, b.depth);
+          const bodyMesh = new THREE.Mesh(bodyGeo, bodyMatArray);
+          bodyMesh.position.y = b.height / 2;
+          bodyMesh.castShadow = true;
+          bodyMesh.receiveShadow = true;
+          bodyMesh.userData = { buildingId: b.id };
+          bGroup.add(bodyMesh);
+        }
       } else {
         const floorH = b.interior.floorHeight;
         const upperH = Math.max(0.8, b.height - floorH);
@@ -3150,6 +3327,10 @@ export class CityRenderer {
         upperMesh.castShadow = true;
         upperMesh.receiveShadow = true;
         upperMesh.userData = { buildingId: b.id };
+        if (isLabMap) {
+          upperMesh.visible = false;
+          this.labCutawayCeilings.push(upperMesh);
+        }
         bGroup.add(upperMesh);
 
         // 1st-floor tiled floor slab flush with sidewalk + ceiling liner
@@ -3170,13 +3351,37 @@ export class CityRenderer {
           new THREE.MeshStandardMaterial({ color: 0x1b222e, roughness: 0.9 })
         );
         intCeilMesh.position.y = floorH - 0.04;
+        if (isLabMap) {
+          intCeilMesh.visible = false;
+          this.labCutawayCeilings.push(intCeilMesh);
+        }
         bGroup.add(intFloorMesh, intCeilMesh);
 
         const beamMat = new THREE.MeshStandardMaterial({ color: 0x111722, roughness: 0.85 });
         for (const bxOffset of [-b.width * 0.24, b.width * 0.24]) {
           const beam = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.14, b.depth - 0.3), beamMat);
           beam.position.set(bxOffset, floorH - 0.13, 0);
+          if (isLabMap) {
+            beam.visible = false;
+            this.labCutawayCeilings.push(beam);
+          }
           bGroup.add(beam);
+        }
+
+        if (isLabMap && b.interior.theme === 'lab_airlock') {
+          const archSteelMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.48, metalness: 0.65 });
+          const nozzleGlowMat = new THREE.MeshBasicMaterial({ color: b.accentColor, toneMapped: false });
+          for (const az of [-2.4, 2.4]) {
+            const pL = new THREE.Mesh(new THREE.BoxGeometry(0.26, 3.3, 0.26), archSteelMat);
+            pL.position.set(-b.width * 0.42, 1.65, az);
+            const pR = pL.clone();
+            pR.position.x = b.width * 0.42;
+            const span = new THREE.Mesh(new THREE.BoxGeometry(b.width * 0.86, 0.24, 0.32), archSteelMat);
+            span.position.set(0, 3.35, az);
+            const strip = new THREE.Mesh(new THREE.BoxGeometry(b.width * 0.65, 0.1, 0.14), nozzleGlowMat);
+            strip.position.set(0, 3.2, az);
+            bGroup.add(pL, pR, span, strip);
+          }
         }
 
         // Matte drywall interior surface so fake yellow exterior windows never shine inside
@@ -3187,6 +3392,14 @@ export class CityRenderer {
             ? 0x334155
             : b.interior.theme === 'hospital'
             ? 0x475569
+            : b.interior.theme === 'lab_cryo'
+            ? 0x1e3044
+            : b.interior.theme === 'lab_bio'
+            ? 0x23333d
+            : b.interior.theme === 'lab_armory'
+            ? 0x242a36
+            : b.interior.theme === 'lab_airlock'
+            ? 0x182230
             : 0x1e293b;
         const intWallMat = new THREE.MeshStandardMaterial({
           color: interiorWallColor,
@@ -3194,11 +3407,11 @@ export class CityRenderer {
           metalness: 0.04
         });
 
-        // 1st-floor perimeter wall bays (storefront glass bays on street sides, solid walls elsewhere)
+        // 1st-floor perimeter wall bays (storefront & lab corridor observation glass bays)
         const glassPaneMat = new THREE.MeshStandardMaterial({
-          color: 0x334155,
+          color: isLabMap ? 0x38bdf8 : 0x334155,
           transparent: true,
-          opacity: 0.22,
+          opacity: isLabMap ? 0.24 : 0.22,
           roughness: 0.2,
           metalness: 0.45,
           depthWrite: false
@@ -3211,28 +3424,37 @@ export class CityRenderer {
           const lz = (w.minZ + w.maxZ) * 0.5 - b.z;
 
           const wallMats: THREE.Material[] = [
-            w.maxX >= b.maxX - 0.7 ? sideMat : intWallMat,
-            w.minX <= b.minX + 0.7 ? sideMat : intWallMat,
+            w.maxX >= b.maxX - 0.7 ? (isLabMap ? intWallMat : sideMat) : intWallMat,
+            w.minX <= b.minX + 0.7 ? (isLabMap ? intWallMat : sideMat) : intWallMat,
             roofDarkMat,
             roofDarkMat,
-            w.maxZ >= b.maxZ - 0.7 ? sideMat : intWallMat,
-            w.minZ <= b.minZ + 0.7 ? sideMat : intWallMat
+            w.maxZ >= b.maxZ - 0.7 ? (isLabMap ? intWallMat : sideMat) : intWallMat,
+            w.minZ <= b.minZ + 0.7 ? (isLabMap ? intWallMat : sideMat) : intWallMat
           ];
 
           const isWestGlassBay =
+            !isLabMap &&
             b.interior.theme !== 'terminal' &&
             w.maxX <= b.minX + 0.7 &&
             wd >= 2.2;
           const isSouthHospBay =
+            !isLabMap &&
             b.interior.theme === 'hospital' &&
             w.minZ >= b.maxZ - 0.7 &&
             ww >= 2.2;
           const isTerminalBay =
+            !isLabMap &&
             b.interior.theme === 'terminal' &&
             (w.maxZ <= b.minZ + 0.7 || w.minZ >= b.maxZ - 0.7) &&
             ww >= 2.2;
+          const isLabGlassBay =
+            isLabMap &&
+            b.interior.theme !== 'lab_airlock' &&
+            ((b.id === 'BLD-LAB-GENETICS' && Math.max(ww, wd) >= 2.2) ||
+              (b.x < -5 && w.minX >= b.maxX - 0.7 && wd >= 2.2) ||
+              (b.x > 5 && w.maxX <= b.minX + 0.7 && wd >= 2.2));
 
-          if (isWestGlassBay || isSouthHospBay || isTerminalBay) {
+          if (isWestGlassBay || isSouthHospBay || isTerminalBay || isLabGlassBay) {
             const knee = new THREE.Mesh(new THREE.BoxGeometry(ww, 0.9, wd), wallMats);
             knee.position.set(lx, 0.45, lz);
             knee.castShadow = true;
@@ -3367,6 +3589,50 @@ export class CityRenderer {
             const railR = railL.clone();
             railR.position.x = px + pw * 0.44;
             bGroup.add(escRamp, railL, railR);
+          } else if (p.kind === 'cryo_tank') {
+            const tankBase = new THREE.Mesh(new THREE.BoxGeometry(pw, 0.34, pd), coolerBodyMat);
+            tankBase.position.set(px, 0.17, pz);
+            const cyl = new THREE.Mesh(
+              new THREE.CylinderGeometry(Math.min(pw, pd) * 0.36, Math.min(pw, pd) * 0.38, p.height - 0.55, 12),
+              new THREE.MeshStandardMaterial({ color: 0x0ea5e9, emissive: 0x0369a1, emissiveIntensity: 0.45, roughness: 0.25, metalness: 0.65 })
+            );
+            cyl.position.set(px, p.height * 0.5, pz);
+            const cap = new THREE.Mesh(new THREE.BoxGeometry(pw * 0.92, 0.22, pd * 0.92), propSlateMat);
+            cap.position.set(px, p.height - 0.11, pz);
+            bGroup.add(tankBase, cyl, cap);
+          } else if (p.kind === 'lab_bench') {
+            const bench = new THREE.Mesh(new THREE.BoxGeometry(pw, p.height * 0.72, pd), propSlateMat);
+            bench.position.set(px, p.height * 0.36, pz);
+            const topSlab = new THREE.Mesh(new THREE.BoxGeometry(pw + 0.1, 0.12, pd + 0.1), linenMat);
+            topSlab.position.set(px, p.height * 0.74, pz);
+            const monitor = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.34, 0.08), ticketGlowMat);
+            monitor.position.set(px - pw * 0.18, p.height * 0.74 + 0.24, pz);
+            const vialTray = new THREE.Mesh(
+              new THREE.BoxGeometry(0.45, 0.18, 0.28),
+              new THREE.MeshBasicMaterial({ color: 0x10b981 })
+            );
+            vialTray.position.set(px + pw * 0.2, p.height * 0.74 + 0.12, pz);
+            bGroup.add(bench, topSlab, monitor, vialTray);
+          } else if (p.kind === 'server_rack') {
+            const cabinet = new THREE.Mesh(new THREE.BoxGeometry(pw, p.height, pd), coolerBodyMat);
+            cabinet.position.set(px, p.height * 0.5, pz);
+            const led1 = new THREE.Mesh(new THREE.BoxGeometry(pw * 0.78, 0.08, pd + 0.04), ticketGlowMat);
+            led1.position.set(px, p.height * 0.75, pz);
+            const led2 = new THREE.Mesh(
+              new THREE.BoxGeometry(pw * 0.78, 0.08, pd + 0.04),
+              new THREE.MeshBasicMaterial({ color: 0x4ade80 })
+            );
+            led2.position.set(px, p.height * 0.45, pz);
+            bGroup.add(cabinet, led1, led2);
+          } else if (p.kind === 'weapon_rack') {
+            const locker = new THREE.Mesh(new THREE.BoxGeometry(pw, p.height, pd), shelfRackMat);
+            locker.position.set(px, p.height * 0.5, pz);
+            const strip = new THREE.Mesh(
+              new THREE.BoxGeometry(pw * 0.85, 0.14, pd + 0.05),
+              new THREE.MeshBasicMaterial({ color: 0xf59e0b })
+            );
+            strip.position.set(px, p.height * 0.82, pz);
+            bGroup.add(locker, strip);
           } else {
             const pil = new THREE.Mesh(new THREE.BoxGeometry(pw, p.height, pd), propSlateMat);
             pil.position.set(px, p.height * 0.5, pz);
@@ -3503,7 +3769,7 @@ export class CityRenderer {
         aviationBeacon.position.y = b.height + 14.2;
 
         bGroup.add(tier1, neonCrown, tier2, spire, aviationBeacon);
-      } else if (b.roofType === 'warehouse') {
+      } else if (!isLabMap && b.roofType === 'warehouse') {
         const mutedRoof = new THREE.Color(b.accentColor).lerp(new THREE.Color(0x28303e), 0.82);
         const trim = new THREE.Mesh(
           new THREE.BoxGeometry(b.width + 0.2, 0.4, b.depth + 0.2),
@@ -3515,7 +3781,7 @@ export class CityRenderer {
         const vent2 = vent1.clone();
         vent2.position.x = b.width * 0.22;
         bGroup.add(trim, vent1, vent2);
-      } else if (b.roofType === 'pitched') {
+      } else if (!isLabMap && b.roofType === 'pitched') {
         const roofGeo = new THREE.ConeGeometry(Math.max(b.width, b.depth) * 0.68, 2.6, 4);
         const mutedRoof = new THREE.Color(b.accentColor).lerp(new THREE.Color(0x252d3a), 0.75);
         const roofMat = new THREE.MeshStandardMaterial({ color: mutedRoof, roughness: 0.85 });
@@ -3533,7 +3799,7 @@ export class CityRenderer {
         const spire = new THREE.Mesh(new THREE.BoxGeometry(0.24, 4.4, 0.24), parapetMat);
         spire.position.y = b.height + 4.4;
         bGroup.add(pent, spire);
-      } else if (b.id !== 'BLD-KTX-HALL') {
+      } else if (!isLabMap && b.id !== 'BLD-KTX-HALL') {
         const hvac = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.0, 1.6), hvacMat);
         hvac.position.set(1.2, b.height + 0.75, -1.0);
         const hvac2 = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.85, 1.3), hvacMat);
@@ -3563,7 +3829,7 @@ export class CityRenderer {
       const entryBulb = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.1, 0.16), entryLampMat);
       entryBulb.position.set(0, 2.34, 0.25);
 
-      if (!b.interior) {
+      if (!b.interior && !isLabMap) {
         entryGroup.add(frame, awning, entryBulb);
       }
 
@@ -3589,28 +3855,41 @@ export class CityRenderer {
         b.roofType === 'flat' ||
         b.roofType === 'skyscraper' ||
         bi % 2 === 0;
-      if (shouldAddSign && b.height >= 6) {
+      if (shouldAddSign && b.height >= 6 && (!isLabMap || (b.interior && !b.id.startsWith('BLD-LAB-AIRLOCK')))) {
         const nUpper = b.name.toUpperCase();
-        const chosenLabel: NeonSignLabel =
-          b.id === 'BLD-HOSP' || nUpper.includes('CLINIC') || nUpper.includes('MEDICAL')
-            ? 'CLINIC'
-            : nUpper.includes('PHARMACY')
-            ? 'PHARMACY'
-            : nUpper.includes('24H')
-            ? '24H MART'
-            : nUpper.includes('MART') || nUpper.includes('MARKET')
-            ? 'MART'
-            : nUpper.includes('HOTEL') || nUpper.includes('PLAZA')
-            ? 'HOTEL'
-            : b.district.includes('Station') ||
-              nUpper.includes('STATION') ||
-              nUpper.includes('PRECINCT')
+        const chosenLabel: NeonSignLabel = isLabMap
+          ? b.id === 'BLD-LAB-AUTOPSY'
+            ? 'AUTOPSY'
+            : b.id === 'BLD-LAB-GENETICS'
+            ? 'GENETICS'
+            : b.id === 'BLD-LAB-CLEANROOM'
+            ? 'CLEANROOM'
+            : b.id === 'BLD-LAB-SEC-CMD'
+            ? 'SEC CMD'
+            : b.id === 'BLD-LAB-ARMORY'
+            ? 'ARMORY'
+            : nUpper.includes('CRYO')
+            ? 'CRYO LAB'
+            : 'BSL-4'
+          : b.id === 'BLD-HOSP' || nUpper.includes('CLINIC') || nUpper.includes('MEDICAL')
+          ? 'CLINIC'
+          : nUpper.includes('PHARMACY')
+          ? 'PHARMACY'
+          : nUpper.includes('24H')
+          ? '24H MART'
+          : nUpper.includes('MART') || nUpper.includes('MARKET')
+          ? 'MART'
+          : nUpper.includes('HOTEL') || nUpper.includes('PLAZA')
+          ? 'HOTEL'
+          : b.district.includes('Station') ||
+            nUpper.includes('STATION') ||
+            nUpper.includes('PRECINCT')
+          ? 'METRO'
+          : b.z > 60
+          ? bi % 2 === 0
             ? 'METRO'
-            : b.z > 60
-            ? bi % 2 === 0
-              ? 'METRO'
-              : '24H MART'
-            : signLabels[bi % signLabels.length];
+            : '24H MART'
+          : signLabels[bi % signLabels.length];
 
         const mountNeonSign = (
           lx: number,
@@ -3626,7 +3905,7 @@ export class CityRenderer {
             toneMapped: false
           });
           const sg = new THREE.Group();
-          sg.position.set(lx, yOverride ?? (b.interior ? 4.45 : 3.85), lz);
+          sg.position.set(lx, yOverride ?? (isLabMap ? 3.55 : b.interior ? 4.45 : 3.85), lz);
           sg.rotation.y = rotY;
           const casing = new THREE.Mesh(new THREE.BoxGeometry(4.6, 1.32, 0.24), signCasingMat);
           const face = new THREE.Mesh(new THREE.PlaneGeometry(4.42, 1.18), signFaceMat);
@@ -3671,7 +3950,7 @@ export class CityRenderer {
           clinicBanner.position.set(-b.width * 0.5 - 0.52, 6.2, -b.depth * 0.35);
           clinicBanner.rotation.y = -Math.PI / 2;
           bGroup.add(clinicBanner);
-        } else if (b.width > 9 && bi % 2 === 0) {
+        } else if (!isLabMap && b.width > 9 && bi % 2 === 0) {
           const aveSignX = b.x < 0 ? b.width * 0.5 + 0.14 : -(b.width * 0.5 + 0.14);
           const aveRot = b.x < 0 ? Math.PI / 2 : -Math.PI / 2;
           if (faceNS) {
@@ -3790,16 +4069,28 @@ export class CityRenderer {
 
       const doorH = 2.65;
       const halfW = door.width * 0.5;
-      const postL = new THREE.Mesh(new THREE.BoxGeometry(0.14, doorH + 0.15, 0.58), frameMat);
+      const postW = door.isAirlock ? 0.24 : 0.14;
+      const postD = door.isAirlock ? 0.64 : 0.58;
+      const postL = new THREE.Mesh(new THREE.BoxGeometry(postW, doorH + 0.15, postD), frameMat);
       postL.position.set(-halfW, (doorH + 0.15) * 0.5, 0);
-      const postR = new THREE.Mesh(new THREE.BoxGeometry(0.14, doorH + 0.15, 0.58), frameMat);
+      const postR = new THREE.Mesh(new THREE.BoxGeometry(postW, doorH + 0.15, postD), frameMat);
       postR.position.set(halfW, (doorH + 0.15) * 0.5, 0);
       const transomFill = new THREE.Mesh(
-        new THREE.BoxGeometry(door.width + 0.18, 4.0 - doorH, 0.54),
+        new THREE.BoxGeometry(door.width + (door.isAirlock ? 0.34 : 0.18), 4.0 - doorH, postD),
         frameMat
       );
       transomFill.position.set(0, doorH + (4.0 - doorH) * 0.5, 0);
       grp.add(postL, postR, transomFill);
+
+      if (door.isAirlock) {
+        const airlockColor = door.airlockLine === 1 ? 0xef4444 : door.airlockLine === 2 ? 0xf59e0b : 0x22c55e;
+        const bar = new THREE.Mesh(
+          new THREE.BoxGeometry(door.width * 0.72, 0.16, postD + 0.08),
+          new THREE.MeshBasicMaterial({ color: airlockColor, toneMapped: false })
+        );
+        bar.position.set(0, doorH + 0.28, 0);
+        grp.add(bar);
+      }
 
       // Glowing green EXIT sign above steel exit doors & terminal platform gates
       if (!door.isGlass || door.buildingId === 'BLD-KTX-HALL') {
@@ -3819,14 +4110,13 @@ export class CityRenderer {
       const pivotRight = new THREE.Group();
       pivotRight.position.set(halfW - 0.06, 0, 0);
 
-      let glassMat: THREE.MeshBasicMaterial | undefined;
+      const glassMat = new THREE.MeshBasicMaterial({
+        map: doorGlassStage0,
+        transparent: true,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      });
       if (door.isGlass) {
-        glassMat = new THREE.MeshBasicMaterial({
-          map: doorGlassStage0,
-          transparent: true,
-          side: THREE.DoubleSide,
-          depthWrite: false
-        });
         const leftPane = new THREE.Mesh(new THREE.PlaneGeometry(leafW, doorH - 0.08), glassMat);
         leftPane.position.set(leafW * 0.5, doorH * 0.5, 0);
         const leftBar = new THREE.Mesh(new THREE.BoxGeometry(leafW, 0.1, 0.1), frameMat);
@@ -3839,23 +4129,27 @@ export class CityRenderer {
         rightBar.position.set(-leafW * 0.5, 1.05, 0);
         pivotRight.add(rightPane, rightBar);
       } else {
-        const leftLeaf = new THREE.Mesh(
-          new THREE.BoxGeometry(leafW, doorH - 0.06, 0.1),
-          steelLeafMat
-        );
-        leftLeaf.position.set(leafW * 0.5, doorH * 0.5, 0);
-        const barL = new THREE.Mesh(new THREE.BoxGeometry(leafW * 0.72, 0.12, 0.14), pushBarMat);
-        barL.position.set(leafW * 0.5, 1.05, 0);
-        pivotLeft.add(leftLeaf, barL);
-
-        const rightLeaf = new THREE.Mesh(
-          new THREE.BoxGeometry(leafW, doorH - 0.06, 0.1),
-          steelLeafMat
-        );
-        rightLeaf.position.set(-leafW * 0.5, doorH * 0.5, 0);
-        const barR = new THREE.Mesh(new THREE.BoxGeometry(leafW * 0.72, 0.12, 0.14), pushBarMat);
-        barR.position.set(-leafW * 0.5, 1.05, 0);
-        pivotRight.add(rightLeaf, barR);
+        // Steel doors retain lower solid bulkhead + upper translucent armored vision pane so durability & threats stay visible
+        const lowerH = 1.18;
+        const winH = doorH - lowerH - 0.22;
+        const winW = Math.max(0.42, leafW - 0.18);
+        const buildHalf = (dirSign: 1 | -1, pivot: THREE.Group) => {
+          const lowLeaf = new THREE.Mesh(new THREE.BoxGeometry(leafW, lowerH, 0.1), steelLeafMat);
+          lowLeaf.position.set(dirSign * leafW * 0.5, lowerH * 0.5, 0);
+          const topRail = new THREE.Mesh(new THREE.BoxGeometry(leafW, 0.22, 0.1), steelLeafMat);
+          topRail.position.set(dirSign * leafW * 0.5, doorH - 0.14, 0);
+          const outerStile = new THREE.Mesh(new THREE.BoxGeometry(0.11, winH, 0.1), steelLeafMat);
+          outerStile.position.set(dirSign * 0.055, lowerH + winH * 0.5, 0);
+          const innerStile = outerStile.clone();
+          innerStile.position.x = dirSign * (leafW - 0.055);
+          const visionPane = new THREE.Mesh(new THREE.PlaneGeometry(winW, winH), glassMat);
+          visionPane.position.set(dirSign * leafW * 0.5, lowerH + winH * 0.5, 0);
+          const bar = new THREE.Mesh(new THREE.BoxGeometry(leafW * 0.72, 0.12, 0.14), pushBarMat);
+          bar.position.set(dirSign * leafW * 0.5, 1.05, 0);
+          pivot.add(lowLeaf, topRail, outerStile, innerStile, visionPane, bar);
+        };
+        buildHalf(1, pivotLeft);
+        buildHalf(-1, pivotRight);
       }
 
       // Default unlocked open swing angle (78 deg)
@@ -4614,25 +4908,48 @@ export class CityRenderer {
   }
 
   private buildBsl4FacilityVisuals(layout: CityLayout): void {
-    const bunkerMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.86, metalness: 0.22 });
+    const bunkerMat = new THREE.MeshStandardMaterial({ color: 0x162030, roughness: 0.9, metalness: 0.18 });
+    const bedrockMat = new THREE.MeshStandardMaterial({ color: 0x090e18, roughness: 0.96, metalness: 0.06 });
     const trimMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.55, metalness: 0.55 });
-    const concreteCeilingMat = new THREE.MeshStandardMaterial({ color: 0x141b29, roughness: 0.92, side: THREE.DoubleSide });
+    const cutRimMat = new THREE.MeshBasicMaterial({ color: 0x1e293b, transparent: true, opacity: 0.9 });
+    const concreteCeilingMat = new THREE.MeshStandardMaterial({ color: 0x111826, roughness: 0.92, side: THREE.DoubleSide });
 
-    // 1. Subterranean Bunker Perimeter Enclosure (leaving South Escape Tunnel exit portal open at x in [-11, 11])
-    const northWall = new THREE.Mesh(new THREE.BoxGeometry(LAB_HALF_X * 2 + 4, LAB_CEILING_Y, 2.0), bunkerMat);
-    northWall.position.set(0, LAB_CEILING_Y * 0.5, -LAB_HALF_Z - 0.8);
-    const westWall = new THREE.Mesh(new THREE.BoxGeometry(2.0, LAB_CEILING_Y, LAB_HALF_Z * 2 + 4), bunkerMat);
-    westWall.position.set(-LAB_HALF_X - 0.8, LAB_CEILING_Y * 0.5, 0);
+    // 1. Massive Subterranean Bedrock Cutaway Surround + Inner Bunker Containment Walls (South tunnel open at x in [-11, 11])
+    const surroundBlocks: Array<[number, number, number, number]> = [
+      [-LAB_HALF_X - 24, 0, 48, LAB_HALF_Z * 2 + 80],
+      [LAB_HALF_X + 24, 0, 48, LAB_HALF_Z * 2 + 80],
+      [0, -LAB_HALF_Z - 22, LAB_HALF_X * 2 + 96, 44],
+      [-55.5, LAB_HALF_Z + 22, 89, 44],
+      [55.5, LAB_HALF_Z + 22, 89, 44]
+    ];
+    for (const [bx, bz, bw, bd] of surroundBlocks) {
+      const rock = new THREE.Mesh(new THREE.BoxGeometry(bw, LAB_CEILING_Y, bd), bedrockMat);
+      rock.position.set(bx, LAB_CEILING_Y * 0.5, bz);
+      rock.receiveShadow = true;
+      this.cityGroup.add(rock);
+    }
+
+    const northWall = new THREE.Mesh(new THREE.BoxGeometry(LAB_HALF_X * 2 + 2, LAB_CEILING_Y, 1.6), bunkerMat);
+    northWall.position.set(0, LAB_CEILING_Y * 0.5, -LAB_HALF_Z - 0.6);
+    const westWall = new THREE.Mesh(new THREE.BoxGeometry(1.6, LAB_CEILING_Y, LAB_HALF_Z * 2 + 2), bunkerMat);
+    westWall.position.set(-LAB_HALF_X - 0.6, LAB_CEILING_Y * 0.5, 0);
     const eastWall = westWall.clone();
-    eastWall.position.x = LAB_HALF_X + 0.8;
-    const tunnelLintel = new THREE.Mesh(new THREE.BoxGeometry(26, 2.0, 2.2), trimMat);
-    tunnelLintel.position.set(0, LAB_CEILING_Y - 1.0, LAB_TUNNEL_GATE_Z);
+    eastWall.position.x = LAB_HALF_X + 0.6;
+    const cutRimN = new THREE.Mesh(new THREE.BoxGeometry(LAB_HALF_X * 2 + 4, 0.14, 1.8), cutRimMat);
+    cutRimN.position.set(0, LAB_CEILING_Y + 0.07, -LAB_HALF_Z - 0.6);
+    const cutRimW = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.14, LAB_HALF_Z * 2 + 4), cutRimMat);
+    cutRimW.position.set(-LAB_HALF_X - 0.6, LAB_CEILING_Y + 0.07, 0);
+    const cutRimE = cutRimW.clone();
+    cutRimE.position.x = LAB_HALF_X + 0.6;
+
+    const tunnelLintel = new THREE.Mesh(new THREE.BoxGeometry(24, 1.8, 2.2), trimMat);
+    tunnelLintel.position.set(0, LAB_CEILING_Y - 0.9, LAB_TUNNEL_GATE_Z);
     const exitGlow = new THREE.Mesh(
-      new THREE.PlaneGeometry(21.6, 6.4),
+      new THREE.PlaneGeometry(21.6, LAB_CEILING_Y - 0.6),
       new THREE.MeshBasicMaterial({ color: 0xdbeafe, side: THREE.DoubleSide, toneMapped: false })
     );
-    exitGlow.position.set(0, 3.2, LAB_HALF_Z + 0.4);
-    this.cityGroup.add(northWall, westWall, eastWall, tunnelLintel, exitGlow);
+    exitGlow.position.set(0, (LAB_CEILING_Y - 0.6) * 0.5, LAB_HALF_Z + 0.4);
+    this.cityGroup.add(northWall, westWall, eastWall, cutRimN, cutRimW, cutRimE, tunnelLintel, exitGlow);
 
     // 2. Escape Tunnel Motorized Blast Shutter at z = 158
     const shutterMat = new THREE.MeshStandardMaterial({
@@ -4641,8 +4958,8 @@ export class CityRenderer {
       roughness: 0.45,
       metalness: 0.55
     });
-    this.tunnelShutterMesh = new THREE.Mesh(new THREE.BoxGeometry(22.0, 6.4, 0.95), shutterMat);
-    this.tunnelShutterMesh.position.set(0, 3.2, LAB_TUNNEL_GATE_Z);
+    this.tunnelShutterMesh = new THREE.Mesh(new THREE.BoxGeometry(22.0, LAB_CEILING_Y - 0.8, 0.95), shutterMat);
+    this.tunnelShutterMesh.position.set(0, (LAB_CEILING_Y - 0.8) * 0.5, LAB_TUNNEL_GATE_Z);
     this.tunnelShutterMesh.castShadow = true;
     this.cityGroup.add(this.tunnelShutterMesh);
 
@@ -4677,7 +4994,7 @@ export class CityRenderer {
       this.labPodVisuals.set(pod.id, { glass, core, beaconMat });
     }
 
-    // 4. Central Reactor Core (Zone 5 Atrium)
+    // 4. Central Reactor Core (Zone 5 Vaulted Atrium up to LAB_REACTOR_CEILING_Y = 8.4m)
     if (layout.labReactorCore) {
       const rc = layout.labReactorCore;
       const rGrp = new THREE.Group();
@@ -4685,12 +5002,12 @@ export class CityRenderer {
       const ped = new THREE.Mesh(new THREE.CylinderGeometry(3.0, 3.25, 1.1, 16), trimMat);
       ped.position.y = 0.55;
       const topCrown = new THREE.Mesh(new THREE.CylinderGeometry(3.2, 2.9, 1.2, 16), trimMat);
-      topCrown.position.y = LAB_CEILING_Y - 0.6;
+      topCrown.position.y = LAB_REACTOR_CEILING_Y - 0.6;
       const plasma = new THREE.Mesh(
-        new THREE.CylinderGeometry(1.65, 1.65, LAB_CEILING_Y - 2.0, 16),
+        new THREE.CylinderGeometry(1.65, 1.65, LAB_REACTOR_CEILING_Y - 2.0, 16),
         new THREE.MeshBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.72, toneMapped: false })
       );
-      plasma.position.y = LAB_CEILING_Y * 0.5;
+      plasma.position.y = LAB_REACTOR_CEILING_Y * 0.5;
       rGrp.add(ped, topCrown, plasma);
       for (const ry of [2.6, 5.4]) {
         const ring = new THREE.Mesh(
@@ -4764,46 +5081,61 @@ export class CityRenderer {
     this.cityGroup.add(apcGrp);
     this.extractionApcGroup = apcGrp;
 
-    // 6. Enclosed Subterranean Ceiling Slab, Steel Girders, Ducts & Zone Light Strips (FP ON / Commander Cutaway OFF)
+    // 6. Enclosed Subterranean Ceiling Slab (6.2m corridors, 8.4m vaulted Zone 5 Reactor Atrium)
     const ceilingGrp = new THREE.Group();
-    const slab = new THREE.Mesh(
-      new THREE.BoxGeometry(LAB_HALF_X * 2 + 4, 0.36, LAB_HALF_Z * 2 + 4),
+    const northSlabLen = 158;
+    const northSlab = new THREE.Mesh(
+      new THREE.BoxGeometry(LAB_HALF_X * 2 + 4, 0.36, northSlabLen),
       concreteCeilingMat
     );
-    slab.position.set(0, LAB_CEILING_Y + 0.18, 0);
-    ceilingGrp.add(slab);
+    northSlab.position.set(0, LAB_CEILING_Y + 0.18, -LAB_HALF_Z + northSlabLen * 0.5);
+    const southSlabLen = 158;
+    const southSlab = new THREE.Mesh(
+      new THREE.BoxGeometry(LAB_HALF_X * 2 + 4, 0.36, southSlabLen),
+      concreteCeilingMat
+    );
+    southSlab.position.set(0, LAB_CEILING_Y + 0.18, LAB_HALF_Z - southSlabLen * 0.5);
+    const reactorSlab = new THREE.Mesh(
+      new THREE.BoxGeometry(LAB_HALF_X * 2 + 4, 0.36, 36),
+      concreteCeilingMat
+    );
+    reactorSlab.position.set(0, LAB_REACTOR_CEILING_Y + 0.18, 0);
+    ceilingGrp.add(northSlab, southSlab, reactorSlab);
 
     const beamZs: number[] = [];
-    for (let bz = -LAB_HALF_Z + 8; bz <= LAB_HALF_Z - 8; bz += 16) beamZs.push(bz);
-    const girderInst = new THREE.InstancedMesh(new THREE.BoxGeometry(LAB_HALF_X * 2, 0.45, 0.65), trimMat, beamZs.length);
+    for (let bz = -LAB_HALF_Z + 8; bz <= LAB_HALF_Z - 8; bz += 14) beamZs.push(bz);
+    const girderInst = new THREE.InstancedMesh(new THREE.BoxGeometry(LAB_HALF_X * 2, 0.45, 0.58), trimMat, beamZs.length);
     const ductMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.5, metalness: 0.6 });
-    const ductLeft = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.85, LAB_HALF_Z * 2 - 8), ductMat);
-    ductLeft.position.set(-14, LAB_CEILING_Y - 0.55, 0);
+    const ductLeft = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.72, LAB_HALF_Z * 2 - 12), ductMat);
+    ductLeft.position.set(-7.5, LAB_CEILING_Y - 0.46, 0);
     const ductRight = ductLeft.clone();
-    ductRight.position.x = 14;
+    ductRight.position.x = 7.5;
     const mat4 = new THREE.Matrix4();
-    const stripGeo = new THREE.BoxGeometry(4.2, 0.12, 0.42);
+    const stripGeo = new THREE.BoxGeometry(3.8, 0.12, 0.38);
     for (let bi = 0; bi < beamZs.length; bi++) {
       const bz = beamZs[bi];
-      girderInst.setMatrixAt(bi, mat4.makeTranslation(0, LAB_CEILING_Y - 0.22, bz));
+      const inReactor = Math.abs(bz) < 18;
+      const ceilY = inReactor ? LAB_REACTOR_CEILING_Y : LAB_CEILING_Y;
+      girderInst.setMatrixAt(bi, mat4.makeTranslation(0, ceilY - 0.22, bz));
       const zoneColor =
-        bz < -136 ? 0x10b981
-        : bz < -58 ? 0x38bdf8
-        : bz < -16 ? 0xe0f2fe
-        : bz < 32 ? 0x22d3ee
-        : bz < 74 ? 0x93c5fd
-        : bz < 122 ? 0xd97706
+        bz < -129 ? 0x10b981
+        : bz < -64 ? 0x38bdf8
+        : bz < -18 ? 0xe0f2fe
+        : bz < 18 ? 0x22d3ee
+        : bz < 70 ? 0x93c5fd
+        : bz < 108 ? 0xd97706
         : 0xf8fafc;
       const stripMat = new THREE.MeshBasicMaterial({ color: zoneColor, toneMapped: false });
-      for (const lx of [-24, 0, 24]) {
+      const stripXs = bz >= -64 && bz < -18 ? [-12, 12] : [-20, 0, 20];
+      for (const lx of stripXs) {
         const strip = new THREE.Mesh(stripGeo, stripMat);
-        strip.position.set(lx, LAB_CEILING_Y - 0.48, bz);
+        strip.position.set(lx, ceilY - 0.42, bz);
         ceilingGrp.add(strip);
       }
       if (bi % 2 === 0) {
         const emergMat = new THREE.MeshBasicMaterial({ color: 0xef4444, toneMapped: false });
-        const emerg = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.24, 0.42), emergMat);
-        emerg.position.set(0, LAB_CEILING_Y - 0.55, bz + 8);
+        const emerg = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.22, 0.42), emergMat);
+        emerg.position.set(0, ceilY - 0.48, bz + 7);
         ceilingGrp.add(emerg);
         this.labEmergencyLights.push(emergMat);
       }
@@ -4813,6 +5145,56 @@ export class CityRenderer {
     ceilingGrp.visible = false; // Default cutaway in aerial Commander view; toggled ON in FP
     this.cityGroup.add(ceilingGrp);
     this.labCeilingGroup = ceilingGrp;
+
+    // 7. Interactive BSL-4 Facility Devices (Cryo Valve, Turret Terminal + 2 Sentry Turrets, Backup Generator)
+    const devSpecList = createInitialLabDevices();
+    for (const dev of devSpecList) {
+      const dg = new THREE.Group();
+      dg.position.set(dev.x, 0, dev.z);
+      const ped = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.15, 1.1), trimMat);
+      ped.position.y = 0.58;
+      const consoleTop = new THREE.Mesh(new THREE.BoxGeometry(1.18, 0.34, 0.86), bunkerMat);
+      consoleTop.position.set(0, 1.28, 0);
+      const beaconMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, toneMapped: false });
+      const beacon = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.22, 0.18), beaconMat);
+      beacon.position.set(0, 1.54, 0.28);
+      dg.add(ped, consoleTop, beacon);
+      let wheel: THREE.Object3D | undefined;
+      if (dev.kind === 'cryo_valve') {
+        const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 2.2, 10), trimMat);
+        pipe.position.set(0, 1.1, -0.35);
+        const rim = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.08, 6, 12), new THREE.MeshBasicMaterial({ color: 0x22d3ee }));
+        rim.position.set(0, 1.55, 0);
+        dg.add(pipe, rim);
+        wheel = rim;
+      } else if (dev.kind === 'backup_generator') {
+        const genBody = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.9, 1.8), bunkerMat);
+        genBody.position.set(-0.9, 0.95, 0);
+        dg.add(genBody);
+      }
+      this.cityGroup.add(dg);
+      this.labDeviceVisuals.set(dev.id, { beaconMat, wheel });
+    }
+    for (const tp of LAB_TURRET_POSITIONS) {
+      const tg = new THREE.Group();
+      tg.position.set(tp.x, 0, tp.z);
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.48, 2.75, 10), bunkerMat);
+      post.position.y = 1.38;
+      const head = new THREE.Group();
+      head.position.y = 2.95;
+      const pod = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.56, 1.15), trimMat);
+      const barrelL = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 0.95), bunkerMat);
+      barrelL.position.set(-0.22, -0.05, -0.78);
+      const barrelR = barrelL.clone();
+      barrelR.position.x = 0.22;
+      const eyeMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b, toneMapped: false });
+      const eye = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.16, 0.14), eyeMat);
+      eye.position.set(0, 0.18, -0.58);
+      head.add(pod, barrelL, barrelR, eye);
+      tg.add(post, head);
+      this.cityGroup.add(tg);
+      this.labTurretHeads.push({ head, eyeMat });
+    }
   }
 
   public syncDefenseAndTrain(
@@ -4832,6 +5214,14 @@ export class CityRenderer {
       const vis = this.gateVisuals.get(key);
       if (!vis) continue;
 
+      const pct = g.breached ? 0 : g.integrity / g.maxIntegrity;
+      const stage = damageStageFromRatio(pct);
+      if (stage !== vis.lastDamageStage) {
+        vis.lastDamageStage = stage;
+        vis.gateMat.map = this.textureStudio.getBlastGateGlassTexture(stage, vis.isLab);
+        vis.gateMat.needsUpdate = true;
+      }
+
       if (g.breached) {
         vis.leftDoor.position.x = -g.width * 0.58;
         vis.leftDoor.rotation.z = 0.28;
@@ -4841,12 +5231,19 @@ export class CityRenderer {
         vis.beaconMat.color.setHex(0xef4444);
       } else {
         const doorOffset = g.width * (0.25 + g.openFraction * 0.25);
-        vis.leftDoor.position.x = -doorOffset;
-        vis.rightDoor.position.x = doorOffset;
-        vis.leftDoor.rotation.z = 0;
-        vis.rightDoor.rotation.z = 0;
+        const rattle = !g.isOpen && time - g.lastDamagedAt < 0.28 ? Math.sin(time * 54) * 0.045 : 0;
+        const stageTilt = !g.isOpen && stage >= 3 ? (stage === 4 ? 0.085 : 0.035) : 0;
+        vis.leftDoor.position.x = -doorOffset + rattle;
+        vis.rightDoor.position.x = doorOffset + rattle;
+        vis.leftDoor.rotation.z = stageTilt;
+        vis.rightDoor.rotation.z = -stageTilt;
         vis.boomArmPivot.rotation.z = g.openFraction * 1.18;
-        vis.beaconMat.color.setHex(g.openFraction === 1 ? 0x22c55e : 0xf59e0b);
+        if (stage >= 3 && !g.isOpen) {
+          const strobe = Math.sin(time * (stage === 4 ? 14 : 7) + i) > 0;
+          vis.beaconMat.color.setHex(strobe ? 0xef4444 : 0xf59e0b);
+        } else {
+          vis.beaconMat.color.setHex(g.openFraction === 1 ? 0x22c55e : 0xf59e0b);
+        }
       }
     }
 
@@ -4863,12 +5260,20 @@ export class CityRenderer {
         vis.beaconMat.color.setRGB(2.2, 0.2, 0.25);
         continue;
       }
+      const gStage = damageStageFromRatio(gate.integrity / gate.maxIntegrity);
+      if (gStage !== vis.lastDamageStage) {
+        vis.lastDamageStage = gStage;
+        vis.mat.map = this.textureStudio.getBlastGateGlassTexture(gStage, false);
+        vis.mat.needsUpdate = true;
+      }
       const frac = gate.openFraction ?? (gate.open ? 1 : 0);
       const scaleY = Math.max(0.05, 1 - frac * 0.95);
       vis.mesh.visible = frac < 0.985;
       vis.mesh.scale.y = scaleY;
       vis.mesh.position.y = vis.closedY + frac * vis.height * 0.475;
-      if (gate.open) {
+      if (gStage >= 3 && !gate.open && Math.sin(time * 12) > 0) {
+        vis.beaconMat.color.setRGB(2.2, 0.2, 0.25);
+      } else if (gate.open) {
         vis.beaconMat.color.setRGB(0.25, 1.5, 1.8);
       } else {
         vis.beaconMat.color.setRGB(1.85, 1.05, 0.16);
@@ -4913,7 +5318,7 @@ export class CityRenderer {
             vis.doorGroup.position.set(vis.baseX, 0.23, 0);
           }
           const pct = td.integrity / td.maxIntegrity;
-          const stage: 0 | 1 | 2 = pct > 0.66 ? 0 : pct > 0.33 ? 1 : 2;
+          const stage = damageStageFromRatio(pct);
           if (stage !== vis.lastDamageStage) {
             vis.lastDamageStage = stage;
             vis.glassMat.map = this.textureStudio.getDoorGlassTexture(stage);
@@ -4997,9 +5402,11 @@ export class CityRenderer {
     stationGates?: KtxGates,
     explosiveHazards: ExplosiveHazardData[] = [],
     labPods: LabContainmentPodData[] = [],
-    extractionApc?: ExtractionApcData
+    extractionApc?: ExtractionApcData,
+    labDevices: LabDeviceData[] = [],
+    labPowerRestored = false
   ): void {
-    // 0a. Walkable Interior Doors (open swing, locked padlock/rattle, cracked glass stages, broken leaves)
+    // 0a. Walkable Interior Doors (open swing, locked padlock/rattle, 5-stage cracked/broken glass, sag tilt)
     for (let di = 0; di < interiorDoors.length; di++) {
       const door = interiorDoors[di];
       const vis = this.interiorDoorVisuals.get(door.id);
@@ -5017,6 +5424,12 @@ export class CityRenderer {
         vis.pivotRight.rotation.y = 0;
         vis.lockBadge.visible = true;
 
+        const pct = door.integrity / door.maxIntegrity;
+        const stage = damageStageFromRatio(pct);
+        const sag = stage >= 3 ? (stage === 4 ? 0.08 : 0.035) : 0;
+        vis.pivotLeft.rotation.z = sag;
+        vis.pivotRight.rotation.z = -sag;
+
         if (time - door.lastHitTime < 0.28) {
           vis.group.position.set(
             vis.baseX + Math.sin(time * 52) * 0.04,
@@ -5027,20 +5440,18 @@ export class CityRenderer {
           vis.group.position.set(vis.baseX, 0.25, vis.baseZ);
         }
 
-        if (vis.isGlass && vis.glassMat) {
-          const pct = door.integrity / door.maxIntegrity;
-          const stage: 0 | 1 | 2 = pct > 0.66 ? 0 : pct > 0.33 ? 1 : 2;
-          if (stage !== vis.lastDamageStage) {
-            vis.lastDamageStage = stage;
-            vis.glassMat.map = this.textureStudio.getDoorGlassTexture(stage);
-            vis.glassMat.needsUpdate = true;
-          }
+        if (vis.glassMat && stage !== vis.lastDamageStage) {
+          vis.lastDamageStage = stage;
+          vis.glassMat.map = this.textureStudio.getDoorGlassTexture(stage);
+          vis.glassMat.needsUpdate = true;
         }
       } else {
         vis.pivotLeft.visible = true;
         vis.pivotRight.visible = true;
         vis.pivotLeft.rotation.y = -1.32;
         vis.pivotRight.rotation.y = 1.32;
+        vis.pivotLeft.rotation.z = 0;
+        vis.pivotRight.rotation.z = 0;
         vis.lockBadge.visible = false;
         vis.group.position.set(vis.baseX, 0.25, vis.baseZ);
       }
@@ -5067,18 +5478,21 @@ export class CityRenderer {
     if (this.labCeilingGroup) {
       this.labCeilingGroup.visible = isFirstPerson;
     }
+    for (let ci = 0; ci < this.labCutawayCeilings.length; ci++) {
+      this.labCutawayCeilings[ci].visible = isFirstPerson;
+    }
 
     if (isLab) {
-      const inDarkBay = fpCamZ >= 74 && fpCamZ < 116;
-      const inGarage = fpCamZ >= 122;
+      const inDarkBay = !labPowerRestored && fpCamZ >= 70 && fpCamZ < 108;
+      const inGarage = fpCamZ >= 120;
       if (isFirstPerson) {
         const mult = insideBuildingId ? 0.22 : inDarkBay ? 0.14 : inGarage ? 0.38 : 0.24;
         this.ambientLight.intensity = this.baseAmbientIntensity * mult;
         this.hemiLight.intensity = this.baseHemiIntensity * mult;
         this.sunLight.intensity = this.baseSunIntensity * (inGarage ? 0.22 : 0.12);
       } else {
-        this.ambientLight.intensity = this.baseAmbientIntensity * 0.72;
-        this.hemiLight.intensity = this.baseHemiIntensity * 0.72;
+        this.ambientLight.intensity = this.baseAmbientIntensity * (labPowerRestored ? 0.85 : 0.72);
+        this.hemiLight.intensity = this.baseHemiIntensity * (labPowerRestored ? 0.85 : 0.72);
         this.sunLight.intensity = this.baseSunIntensity * 0.75;
       }
     } else if (isFirstPerson && (insideTrainCar > 0 || insideBuildingId)) {
@@ -5103,7 +5517,7 @@ export class CityRenderer {
       }
       this.trainRedPointLight.intensity = 0;
     } else if (isFirstPerson && isLab) {
-      const inDarkBay = fpCamZ >= 74 && fpCamZ < 116;
+      const inDarkBay = !labPowerRestored && fpCamZ >= 74 && fpCamZ < 116;
       const inGarage = fpCamZ >= 122;
       const zoneColor = fpCamZ < -136 ? 0x34d399 : fpCamZ < -58 ? 0x38bdf8 : fpCamZ < 32 ? 0x67e8f9 : inDarkBay ? 0xf59e0b : inGarage ? 0xf8fafc : 0xbae6fd;
       this.interiorPointLight.color.setHex(zoneColor);
@@ -5186,8 +5600,10 @@ export class CityRenderer {
         this.tacticalGroup.add(mesh);
         this.roadblockMeshes.set(rb.id, mesh);
       }
-      mesh.position.set(rb.x, 0.15, rb.z);
+      const rbPct = rb.integrity / rb.maxIntegrity;
+      mesh.position.set(rb.x, rbPct < 0.25 ? 0.04 : 0.15, rb.z);
       mesh.rotation.y = rb.rotationY;
+      mesh.rotation.z = rbPct < 0.25 ? 0.12 : rbPct < 0.5 ? 0.05 : 0;
     }
     for (const [id, mesh] of this.roadblockMeshes.entries()) {
       if (!activeRbIds.has(id)) {
@@ -5570,6 +5986,28 @@ export class CityRenderer {
         this.tunnelShutterMesh.visible = frac < 0.98;
       }
     }
+    let turretsActive = false;
+    for (let di = 0; di < labDevices.length; di++) {
+      const dev = labDevices[di];
+      const dVis = this.labDeviceVisuals.get(dev.id);
+      if (!dVis) continue;
+      if (dev.kind === 'turret_console' && dev.state === 'active') turretsActive = true;
+      if (dVis.wheel && dev.state === 'active') {
+        dVis.wheel.rotation.z = time * 6.0;
+      }
+      if (dev.state === 'active' || dev.state === 'completed') {
+        dVis.beaconMat.color.setHex(dev.kind === 'cryo_valve' ? 0x67e8f9 : 0x4ade80);
+      } else if (dev.state === 'cooldown') {
+        dVis.beaconMat.color.setHex(0xf59e0b);
+      } else {
+        dVis.beaconMat.color.setHex(Math.sin(time * 4 + dev.id) > 0 ? 0x38bdf8 : 0x0284c7);
+      }
+    }
+    for (let ti = 0; ti < this.labTurretHeads.length; ti++) {
+      const th = this.labTurretHeads[ti];
+      th.head.rotation.y = turretsActive ? Math.sin(time * 2.8 + ti * 1.6) * 0.85 : 0;
+      th.eyeMat.color.setHex(turretsActive ? (Math.sin(time * 14) > 0 ? 0xef4444 : 0x22c55e) : 0xf59e0b);
+    }
 
     // Elevated overpass crashed delivery truck smoke plumes
     for (let ei = 0; ei < this.elevatedSmokeEmitters.length; ei++) {
@@ -5611,7 +6049,7 @@ export class CityRenderer {
           const b = front / distance;
           this.writeBeamInstance(this.fxGunBeamInst, cGunBeam++,
             ev.x + dx * a, y + dy * a, ev.z + dz * a,
-            ev.x + dx * b, y + dy * b, ev.z + dz * b, 0.45);
+            ev.x + dx * b, y + dy * b, ev.z + dz * b, 0.32);
         }
         const impactAge = ev.age - travelTime + 0.006;
         if (ev.impact && impactAge >= 0 && impactAge < 0.21) {
@@ -5648,7 +6086,7 @@ export class CityRenderer {
           );
         }
         if (cGunFlash < 160) {
-          const fs = (1 - t * 0.5) * 0.28;
+          const fs = (1 - t * 0.5) * 0.17;
           this.writeFxInstance(this.fxGunFlashInst, cGunFlash++, ev.x, ev.y ?? 1.35, ev.z, fs, fs, fs);
         }
       } else if (ev.type === 'explosion') {
@@ -5769,6 +6207,20 @@ export class CityRenderer {
           ring.scale.set(radius, 1, radius);
           this.effectsGroup.add(ring);
         }
+      } else if (ev.type === 'cryo_mist') {
+        const s = 1.6 + t * 5.2;
+        const mist = new THREE.Mesh(
+          this.voxelUnitGeo,
+          new THREE.MeshBasicMaterial({
+            color: 0xbae6fd,
+            transparent: true,
+            opacity: Math.max(0.04, 0.32 * (1 - t)),
+            depthWrite: false
+          })
+        );
+        mist.position.set(ev.x, 0.9 + t * 1.4, ev.z);
+        mist.scale.set(s * 1.35, s * 0.55, s * 1.35);
+        this.effectsGroup.add(mist);
       } else if (ev.type === 'blood_burst') {
         const evSeed = Math.abs(Math.round(ev.x * 23 + ev.z * 37));
         const evKey = `${Math.round(ev.x * 4)}:${Math.round(ev.z * 4)}:${Math.floor((time - ev.age) * 2)}`;
